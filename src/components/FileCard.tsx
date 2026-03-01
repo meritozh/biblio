@@ -1,0 +1,116 @@
+import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { FileText, Edit, Trash2 } from 'lucide-react';
+import type { FileEntry, Tag } from '@/types';
+
+interface FileCardProps {
+  file: FileEntry;
+  onEdit?: (file: FileEntry) => void;
+  onDelete?: (file: FileEntry) => void;
+}
+
+export function FileCard({ file, onEdit, onDelete }: FileCardProps) {
+  const statusColor = {
+    available: 'bg-green-500',
+    missing: 'bg-red-500',
+    moved: 'bg-yellow-500',
+  };
+
+  const statusLabel = {
+    available: 'File available',
+    missing: 'File not found',
+    moved: 'File has been moved',
+  };
+
+  return (
+    <Card className="hover:shadow-md transition-shadow">
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-start gap-3 min-w-0 flex-1">
+            <FileText className="h-8 w-8 text-muted-foreground shrink-0" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <h3 className="font-medium truncate" id={`file-name-${file.id}`}>
+                  {file.displayName}
+                </h3>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div
+                        className={`w-2 h-2 rounded-full ${statusColor[file.fileStatus as keyof typeof statusColor]}`}
+                        role="status"
+                        aria-label={statusLabel[file.fileStatus as keyof typeof statusLabel]}
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>{statusLabel[file.fileStatus as keyof typeof statusLabel]}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <p className="text-sm text-muted-foreground truncate">{file.path}</p>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p className="max-w-xs break-all">{file.path}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              {file.tags && file.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {file.tags.map((tag: Tag) => (
+                    <Badge key={tag.id} variant="secondary" className="text-xs">
+                      {tag.name}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex gap-1 shrink-0" role="group" aria-label="File actions">
+            <TooltipProvider>
+              {onEdit && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => onEdit(file)}
+                      aria-label={`Edit ${file.displayName}`}
+                    >
+                      <Edit className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Edit file details</p>
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              {onDelete && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => onDelete(file)}
+                      aria-label={`Delete ${file.displayName}`}
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Remove from library</p>
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </TooltipProvider>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
