@@ -11,6 +11,7 @@ pub fn run() {
                 .add_migrations("sqlite:biblio.db", migrations)
                 .build(),
         )
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::file::file_list,
