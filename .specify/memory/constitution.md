@@ -1,50 +1,103 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!--
+## Sync Impact Report
+
+- **Version change**: 0.0.0 → 1.0.0 (initial ratification)
+- **Modified principles**: N/A (initial creation)
+- **Added sections**: 
+  - I. Code Quality
+  - II. Test Standards  
+  - III. User Experience Consistency
+  - IV. Performance Requirements
+  - Development Workflow
+  - Quality Gates
+  - Governance
+- **Removed sections**: None
+- **Templates status**:
+  - ✅ plan-template.md: Constitution Check section compatible
+  - ✅ spec-template.md: Requirements and success criteria align with principles
+  - ✅ tasks-template.md: Task phases support principle-driven workflow
+- **Follow-up TODOs**: None
+-->
+
+# Biblio Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Code Quality
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+- Code MUST pass linting and type checking before merge (zero warnings)
+- Code MUST follow consistent formatting enforced by automated tools
+- Functions MUST have single responsibility and be under 50 lines where practical
+- All public APIs MUST be documented with purpose, parameters, return values, and examples
+- Code MUST be readable and self-documenting; comments explain "why" not "what"
+- Technical debt MUST be tracked explicitly and addressed within 2 sprints
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+**Rationale**: Maintainable code reduces long-term cost and enables team scalability.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### II. Test Standards (NON-NEGOTIABLE)
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+- Test-Driven Development MUST be followed: write failing tests → approve → implement → pass
+- Unit test coverage MUST be ≥80% for all new code; critical paths MUST have 100% coverage
+- Integration tests MUST cover all external contracts and API boundaries
+- All tests MUST be deterministic: no flaky tests allowed in main branch
+- Tests MUST run in isolation without external dependencies (use mocks/stubs)
+- Test names MUST describe the scenario and expected outcome clearly
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+**Rationale**: Tests are executable documentation and safety net for refactoring.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+### III. User Experience Consistency
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+- All user-facing interfaces MUST follow a unified design system
+- Error messages MUST be actionable, specific, and user-friendly (no stack traces to users)
+- Response times MUST be consistent; operations >1s MUST show progress indication
+- Accessibility MUST meet WCAG 2.1 Level AA standards minimum
+- User workflows MUST be validated against documented user journeys
+- Breaking UX changes MUST be flagged in PR reviews with migration guidance
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+**Rationale**: Consistent UX builds trust and reduces user friction.
+
+### IV. Performance Requirements
+
+- API endpoints MUST respond within 200ms (p95) for read operations
+- API endpoints MUST respond within 500ms (p95) for write operations
+- Memory usage MUST not exceed 512MB per service instance under normal load
+- Database queries MUST use indexed fields; full table scans require explicit justification
+- Large operations MUST support pagination; default page size ≤50 items
+- Performance regressions MUST be caught by automated benchmarking in CI
+
+**Rationale**: Performance is a feature; regressions erode user trust.
+
+## Development Workflow
+
+- Branch naming: `###-feature-name` pattern aligned with spec folders
+- Commits MUST reference task IDs or issue numbers
+- Pull requests MUST include: summary, test evidence, breaking changes noted
+- Code reviews MUST be completed within 24 hours
+- Deployments MUST follow staged rollout: dev → staging → production
+- Rollback procedures MUST be documented and tested for each deployment
+
+## Quality Gates
+
+- **Pre-commit**: Linting, formatting, secret scanning
+- **Pre-merge**: Unit tests pass, coverage threshold met, type check passes
+- **Pre-deploy**: Integration tests pass, performance benchmarks within threshold
+- **Post-deploy**: Smoke tests, error rate monitoring, latency verification
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution supersedes all other development practices and conventions.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Amendment Process**:
+1. Proposed changes MUST be documented with rationale and impact analysis
+2. Amendments MUST be reviewed by at least 2 team members
+3. Breaking changes MUST include migration plan and timeline
+4. All amendments MUST update dependent templates within same PR
+
+**Version Policy**:
+- MAJOR: Backward incompatible principle changes or removals
+- MINOR: New principles added or existing principles materially expanded
+- PATCH: Clarifications, wording improvements, typo fixes
+
+**Compliance**: All PRs and code reviews MUST verify adherence to these principles. Complexity that violates principles MUST be justified in the Complexity Tracking section of the implementation plan.
+
+**Version**: 1.0.0 | **Ratified**: 2026-02-27 | **Last Amended**: 2026-02-27
