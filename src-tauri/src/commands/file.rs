@@ -1,6 +1,6 @@
 use crate::commands::*;
 use crate::commands::validation::validate_display_name;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sqlx::SqlitePool;
 use tauri::State;
 
