@@ -48,3 +48,6 @@ src-tauri/target/
 
 # Tan Stack
 .tanstack/
+
+# Vite
+.vite/
