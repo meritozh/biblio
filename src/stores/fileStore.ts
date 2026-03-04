@@ -34,7 +34,7 @@ const initialState: FileState = {
 
 export const fileStore = new Store<FileState>(initialState);
 
-export async function fetchFiles(params?: { categoryId?: number | null }) {
+export async function fetchFiles(params?: { category_id?: number | null }) {
   fileStore.setState((state) => ({ ...state, loading: true, error: null }));
   try {
     const response = await invoke<{ files: FileEntry[]; total: number }>('file_list', params ?? {});
@@ -51,7 +51,7 @@ export function setSelectedCategory(categoryId: number | null) {
 export async function importFiles(
   paths: string[],
   options?: {
-    categoryId?: number | null;
+    category_id?: number | null;
     onProgress?: (current: number, total: number, file: string) => void;
   }
 ): Promise<{ succeeded: number; failed: number; errors: string[] }> {
@@ -79,8 +79,8 @@ export async function importFiles(
     try {
       await invoke('file_create', {
         path,
-        displayName: fileName,
-        categoryId: options?.categoryId ?? null,
+        display_name: fileName,
+        category_id: options?.category_id ?? null,
       });
       succeeded++;
     } catch (error) {
@@ -94,7 +94,7 @@ export async function importFiles(
     importProgress: { current: total, total, currentFile: '', isImporting: false },
   }));
 
-  await fetchFiles({ categoryId: fileStore.state.selectedCategoryId });
+  await fetchFiles({ category_id: fileStore.state.selectedCategoryId });
 
   return { succeeded, failed, errors };
 }

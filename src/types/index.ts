@@ -5,18 +5,18 @@ export interface Category {
   id: number;
   name: string;
   icon: string | null;
-  isDefault: boolean;
-  createdAt: string;
+  is_default: boolean;
+  created_at: string;
 }
 
 export interface FileEntry {
   id: number;
   path: string;
-  displayName: string;
-  categoryId: number | null;
-  fileStatus: FileStatus;
-  createdAt: string;
-  updatedAt: string;
+  display_name: string;
+  category_id: number | null;
+  file_status: FileStatus;
+  created_at: string;
+  updated_at: string;
   category?: Category | null;
   tags?: Tag[];
   metadata?: Metadata[];
@@ -26,33 +26,33 @@ export interface Tag {
   id: number;
   name: string;
   color: string | null;
-  createdAt: string;
+  created_at: string;
 }
 
 export interface Metadata {
   id: number;
-  fileId: number;
+  file_id: number;
   key: string;
   value: string;
-  dataType: MetadataType;
+  data_type: MetadataType;
 }
 
 export interface FileWithDetails {
   id: number;
   path: string;
-  displayName: string;
-  categoryId: number | null;
-  fileStatus: FileStatus;
-  createdAt: string;
-  updatedAt: string;
+  display_name: string;
+  category_id: number | null;
+  file_status: FileStatus;
+  created_at: string;
+  updated_at: string;
   category: Category | null;
   tags: Tag[];
   metadata: Metadata[];
 }
 
 export interface FileListRequest extends Record<string, unknown> {
-  categoryId?: number | null;
-  tagIds?: number[];
+  category_id?: number | null;
+  tag_ids?: number[];
   status?: FileStatus;
   limit?: number;
   offset?: number;
@@ -65,17 +65,17 @@ export interface FileListResponse {
 
 export interface FileCreateRequest extends Record<string, unknown> {
   path: string;
-  displayName: string;
-  categoryId?: number | null;
-  tagIds?: number[];
-  metadata?: Array<{ key: string; value: string; dataType: MetadataType }>;
+  display_name: string;
+  category_id?: number | null;
+  tag_ids?: number[];
+  metadata?: Array<{ key: string; value: string; data_type: MetadataType }>;
 }
 
 export interface FileSearchRequest extends Record<string, unknown> {
   query: string;
-  categoryId?: number | null;
-  tagIds?: number[];
-  metadataFilters?: Array<{ key: string; value: string }>;
+  category_id?: number | null;
+  tag_ids?: number[];
+  metadata_filters?: Array<{ key: string; value: string }>;
   limit?: number;
   offset?: number;
 }

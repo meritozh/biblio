@@ -33,19 +33,19 @@ export function FileCard({ file, onEdit, onDelete }: FileCardProps) {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <h3 className="font-medium truncate" id={`file-name-${file.id}`}>
-                  {file.displayName}
+                  {file.display_name}
                 </h3>
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <div
-                        className={`w-2 h-2 rounded-full ${statusColor[file.fileStatus as keyof typeof statusColor]}`}
+                        className={`w-2 h-2 rounded-full ${statusColor[file.file_status as keyof typeof statusColor]}`}
                         role="status"
-                        aria-label={statusLabel[file.fileStatus as keyof typeof statusLabel]}
+                        aria-label={statusLabel[file.file_status as keyof typeof statusLabel]}
                       />
                     </TooltipTrigger>
                     <TooltipContent>
-                      <p>{statusLabel[file.fileStatus as keyof typeof statusLabel]}</p>
+                      <p>{statusLabel[file.file_status as keyof typeof statusLabel]}</p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
@@ -80,7 +80,7 @@ export function FileCard({ file, onEdit, onDelete }: FileCardProps) {
                       variant="ghost"
                       size="icon"
                       onClick={() => onEdit(file)}
-                      aria-label={`Edit ${file.displayName}`}
+                      aria-label={`Edit ${file.display_name}`}
                     >
                       <Edit className="h-4 w-4" aria-hidden="true" />
                     </Button>
@@ -97,7 +97,7 @@ export function FileCard({ file, onEdit, onDelete }: FileCardProps) {
                       variant="ghost"
                       size="icon"
                       onClick={() => onDelete(file)}
-                      aria-label={`Delete ${file.displayName}`}
+                      aria-label={`Delete ${file.display_name}`}
                     >
                       <Trash2 className="h-4 w-4" aria-hidden="true" />
                     </Button>

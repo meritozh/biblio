@@ -34,7 +34,7 @@ function HomePage() {
 
   const loadFiles = useCallback(async (categoryId: number | null) => {
     setLoading(true);
-    const result = await fetchFiles({ categoryId });
+    const result = await fetchFiles({ category_id: categoryId });
     setFiles(result.files);
     setTotal(result.total);
     setLoading(false);
@@ -65,20 +65,28 @@ function HomePage() {
   };
 
   const handleAddFile = async () => {
-    for (const path of selectedFiles) {
-      const defaultName = path.substring(Math.max(0, path.lastIndexOf('/') + 1)) || path;
-      const displayName = selectedFiles.length === 1 ? newFileName : defaultName;
-      await fileCreate({
-        path,
-        displayName,
-        categoryId: newFileCategory,
-      });
+    console.log('handleAddFile called', { selectedFiles, newFileName, newFileCategory });
+    try {
+      for (const path of selectedFiles) {
+        const defaultName = path.substring(Math.max(0, path.lastIndexOf('/') + 1)) || path;
+        const display_name = selectedFiles.length === 1 ? newFileName : defaultName;
+        console.log('Creating file with:', { path, display_name, category_id: newFileCategory });
+        const result = await fileCreate({
+          path,
+          display_name,
+          category_id: newFileCategory,
+        });
+        console.log('File created:', result);
+      }
+      setAddDialogOpen(false);
+      setSelectedFiles([]);
+      setNewFileName('');
+      setNewFileCategory(null);
+      loadFiles(selectedCategoryId);
+    } catch (error) {
+      console.error('Failed to add file:', error);
+      alert(`Failed to add file: ${error}`);
     }
-    setAddDialogOpen(false);
-    setSelectedFiles([]);
-    setNewFileName('');
-    setNewFileCategory(null);
-    loadFiles(selectedCategoryId);
   };
 
   const handleFileClick = (file: FileEntry) => {
@@ -130,6 +138,9 @@ function HomePage() {
                     categories={categories}
                     value={newFileCategory}
                     onValueChange={setNewFileCategory}
+                    onCategoryCreated={(newCategory) => {
+                      setCategories((prev) => [...prev, newCategory]);
+                    }}
                   />
                 </div>
               </>

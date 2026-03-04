@@ -29,7 +29,7 @@ export function CategoryDetailPage({ categoryId }: CategoryDetailPageProps) {
       setLoading(true);
       try {
         const response = await invoke<{ files: FileEntry[]; total: number }>('file_list', {
-          categoryId: id,
+          category_id: id,
         });
         setFiles(response.files);
         setTotal(response.total);

@@ -30,7 +30,7 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
 
   const columns = [
     {
-      accessorKey: 'displayName',
+      accessorKey: 'display_name',
       header: ({
         column,
       }: {
@@ -54,10 +54,10 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
       ),
     },
     {
-      accessorKey: 'fileStatus',
+      accessorKey: 'file_status',
       header: 'Status',
       cell: ({ row }: { row: { original: FileEntry } }) => {
-        const status = row.original.fileStatus;
+        const status = row.original.file_status;
         const colors = {
           available: 'text-green-600',
           missing: 'text-red-600',
@@ -67,10 +67,10 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
       },
     },
     {
-      accessorKey: 'createdAt',
+      accessorKey: 'created_at',
       header: 'Added',
       cell: ({ row }: { row: { original: FileEntry } }) =>
-        new Date(row.original.createdAt).toLocaleDateString(),
+        new Date(row.original.created_at).toLocaleDateString(),
     },
     {
       id: 'actions',
@@ -81,7 +81,7 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
               variant="outline"
               size="sm"
               onClick={() => onFileEdit(row.original)}
-              aria-label={`Edit ${row.original.displayName}`}
+              aria-label={`Edit ${row.original.display_name}`}
             >
               Edit
             </Button>
@@ -91,7 +91,7 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
               variant="destructive"
               size="sm"
               onClick={() => onFileDelete(row.original)}
-              aria-label={`Delete ${row.original.displayName}`}
+              aria-label={`Delete ${row.original.display_name}`}
             >
               Delete
             </Button>
@@ -143,7 +143,7 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
                     }
                   }}
                   role={onFileClick ? 'button' : undefined}
-                  aria-label={onFileClick ? `View ${row.original.displayName}` : undefined}
+                  aria-label={onFileClick ? `View ${row.original.display_name}` : undefined}
                 >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell key={cell.id}>

@@ -29,15 +29,15 @@ export function FileEditDialog({
   tags,
   onSave,
 }: FileEditDialogProps) {
-  const [displayName, setDisplayName] = useState('');
-  const [categoryId, setCategoryId] = useState<number | null>(null);
+  const [display_name, setDisplayName] = useState('');
+  const [category_id, setCategoryId] = useState<number | null>(null);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
 
   useState(() => {
     if (file) {
-      setDisplayName(file.displayName);
-      setCategoryId(file.categoryId);
+      setDisplayName(file.display_name);
+      setCategoryId(file.category_id);
       setSelectedTagIds(file.tags?.map((t) => t.id) || []);
     }
   });
@@ -49,8 +49,8 @@ export function FileEditDialog({
     try {
       await onSave({
         ...file,
-        displayName,
-        categoryId,
+        display_name,
+        category_id,
         tags: tags.filter((t) => selectedTagIds.includes(t.id)),
       });
       onOpenChange(false);
@@ -72,7 +72,7 @@ export function FileEditDialog({
           <div className="space-y-2">
             <label className="text-sm font-medium">Display Name</label>
             <Input
-              value={displayName}
+              value={display_name}
               onChange={(e) => setDisplayName(e.target.value)}
               placeholder="File name"
             />
@@ -81,7 +81,7 @@ export function FileEditDialog({
             <label className="text-sm font-medium">Category</label>
             <CategorySelect
               categories={categories}
-              value={categoryId}
+              value={category_id}
               onValueChange={setCategoryId}
             />
           </div>

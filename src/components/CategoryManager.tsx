@@ -80,11 +80,11 @@ export function CategoryManager({
                 <span className="flex items-center gap-2">
                   {cat.icon && <span>{cat.icon}</span>}
                   <span>{cat.name}</span>
-                  {cat.isDefault && (
+                  {cat.is_default && (
                     <span className="text-xs text-muted-foreground">(default)</span>
                   )}
                 </span>
-                {!cat.isDefault && (
+                {!cat.is_default && (
                   <div className="flex gap-1">
                     <Button
                       size="icon"
