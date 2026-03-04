@@ -1,20 +1,20 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { FileEntry } from '@/types';
+import type { FileEntry, Category } from '@/types';
 
 export async function fetchFiles(params?: {
-  categoryId?: number | null;
+  category_id?: number | null;
 }): Promise<{ files: FileEntry[]; total: number }> {
   try {
-    return await invoke<{ files: FileEntry[]; total: number }>('file_list', params ?? {});
+    return await invoke<{ files: FileEntry[]; total: number }>('file_list', {
+      categoryId: params?.category_id,
+    });
   } catch (error) {
     console.error('Failed to fetch files:', error);
     return { files: [], total: 0 };
   }
 }
 
-export async function fetchCategories(): Promise<
-  { id: number; name: string; icon: string | null; isDefault: boolean; createdAt: string }[]
-> {
+export async function fetchCategories(): Promise<Category[]> {
   try {
     return await invoke('category_list');
   } catch (error) {

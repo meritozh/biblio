@@ -2,6 +2,15 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::AppHandle;
 use tauri::Manager;
+use tauri_plugin_sql::{DbPool, DbInstances};
+
+fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
+    let instances_lock = instances.0.try_read().map_err(|e| e.to_string())?;
+    let db_pool = instances_lock.get(db_url).ok_or("Database not found")?;
+    match db_pool {
+        DbPool::Sqlite(pool) => Ok(pool.clone()),
+    }
+}
 
 pub struct DatabaseRecovery;
 
@@ -146,7 +155,9 @@ impl DatabaseRecovery {
 }
 
 #[tauri::command]
-pub async fn db_check_integrity(pool: tauri::State<'_, sqlx::SqlitePool>) -> Result<RecoveryResult, String> {
+pub async fn db_check_integrity(app: AppHandle) -> Result<RecoveryResult, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
     let is_healthy = DatabaseRecovery::check_integrity(&pool).await?;
 
     Ok(RecoveryResult {
@@ -157,7 +168,9 @@ pub async fn db_check_integrity(pool: tauri::State<'_, sqlx::SqlitePool>) -> Res
 }
 
 #[tauri::command]
-pub async fn db_create_backup(app: AppHandle, pool: tauri::State<'_, sqlx::SqlitePool>) -> Result<RecoveryResult, String> {
+pub async fn db_create_backup(app: AppHandle) -> Result<RecoveryResult, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
     let is_healthy = DatabaseRecovery::check_integrity(&pool).await?;
 
     if !is_healthy {
@@ -183,7 +196,9 @@ pub async fn db_create_backup(app: AppHandle, pool: tauri::State<'_, sqlx::Sqlit
 }
 
 #[tauri::command]
-pub async fn db_optimize(pool: tauri::State<'_, sqlx::SqlitePool>) -> Result<RecoveryResult, String> {
+pub async fn db_optimize(app: AppHandle) -> Result<RecoveryResult, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
     DatabaseRecovery::optimize_database(&pool).await?;
     DatabaseRecovery::vacuum_database(&pool).await?;
 
@@ -195,21 +210,23 @@ pub async fn db_optimize(pool: tauri::State<'_, sqlx::SqlitePool>) -> Result<Rec
 }
 
 #[tauri::command]
-pub async fn db_get_stats(app: AppHandle, pool: tauri::State<'_, sqlx::SqlitePool>) -> Result<DatabaseStats, String> {
+pub async fn db_get_stats(app: AppHandle) -> Result<DatabaseStats, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
     let size = DatabaseRecovery::get_database_size(&app).unwrap_or(0);
 
     let file_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files")
-        .fetch_one(&*pool)
+        .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
     let tag_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tags")
-        .fetch_one(&*pool)
+        .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
     let category_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM categories")
-        .fetch_one(&*pool)
+        .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
 

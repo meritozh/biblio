@@ -1,18 +1,29 @@
 use crate::commands::*;
 use crate::commands::validation::validate_display_name;
 use serde::Serialize;
-use sqlx::SqlitePool;
-use tauri::State;
+use tauri::AppHandle;
+use tauri::Manager;
+use tauri_plugin_sql::{DbPool, DbInstances};
+
+fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
+    let instances_lock = instances.0.try_read().map_err(|e| e.to_string())?;
+    let db_pool = instances_lock.get(db_url).ok_or("Database not found")?;
+    match db_pool {
+        DbPool::Sqlite(pool) => Ok(pool.clone()),
+    }
+}
 
 #[tauri::command]
 pub async fn file_list(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     category_id: Option<i64>,
     _tag_ids: Option<Vec<i64>>,
     status: Option<String>,
     limit: Option<i32>,
     offset: Option<i32>,
 ) -> Result<FileListResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
     let limit = limit.unwrap_or(50);
     let offset = offset.unwrap_or(0);
 
@@ -31,12 +42,12 @@ pub async fn file_list(
     query.push_str(&format!(" ORDER BY created_at DESC LIMIT {} OFFSET {}", limit, offset));
 
     let files: Vec<FileEntry> = sqlx::query_as(&query)
-        .fetch_all(&*pool)
+        .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
     let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files")
-        .fetch_one(&*pool)
+        .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -54,14 +65,17 @@ pub struct FileListResponse {
 
 #[tauri::command]
 pub async fn file_get(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     id: i64,
 ) -> Result<FileWithDetails, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     let file: FileEntry = sqlx::query_as(
         "SELECT id, path, display_name, category_id, file_status, created_at, updated_at FROM files WHERE id = ?"
     )
     .bind(id)
-    .fetch_optional(&*pool)
+    .fetch_optional(&pool)
     .await
     .map_err(|e| e.to_string())?
     .ok_or("File not found")?;
@@ -69,7 +83,7 @@ pub async fn file_get(
     let category: Option<Category> = if let Some(cat_id) = file.category_id {
         sqlx::query_as("SELECT id, name, icon, is_default, created_at FROM categories WHERE id = ?")
             .bind(cat_id)
-            .fetch_optional(&*pool)
+            .fetch_optional(&pool)
             .await
             .map_err(|e| e.to_string())?
     } else {
@@ -77,11 +91,11 @@ pub async fn file_get(
     };
 
     let tags: Vec<Tag> = sqlx::query_as(
-        "SELECT t.id, t.name, t.color, t.created_at FROM tags t 
+        "SELECT t.id, t.name, t.color, t.created_at FROM tags t
          INNER JOIN file_tags ft ON t.id = ft.tag_id WHERE ft.file_id = ?"
     )
     .bind(id)
-    .fetch_all(&*pool)
+    .fetch_all(&pool)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -89,7 +103,7 @@ pub async fn file_get(
         "SELECT id, file_id, key, value, data_type FROM metadata WHERE file_id = ?"
     )
     .bind(id)
-    .fetch_all(&*pool)
+    .fetch_all(&pool)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -109,18 +123,21 @@ pub async fn file_get(
 
 #[tauri::command]
 pub async fn file_create(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     path: String,
     display_name: String,
     category_id: Option<i64>,
     tag_ids: Option<Vec<i64>>,
     metadata: Option<Vec<MetadataInput>>,
 ) -> Result<FileCreateResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     let validated_name = validate_display_name(&display_name)?;
-    
+
     let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM files WHERE path = ?")
         .bind(&path)
-        .fetch_optional(&*pool)
+        .fetch_optional(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -134,7 +151,7 @@ pub async fn file_create(
     .bind(&path)
     .bind(&validated_name)
     .bind(category_id)
-    .execute(&*pool)
+    .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -145,7 +162,7 @@ pub async fn file_create(
             sqlx::query("INSERT INTO file_tags (file_id, tag_id) VALUES (?, ?)")
                 .bind(file_id)
                 .bind(tag_id)
-                .execute(&*pool)
+                .execute(&pool)
                 .await
                 .map_err(|e| e.to_string())?;
         }
@@ -158,7 +175,7 @@ pub async fn file_create(
                 .bind(&m.key)
                 .bind(&m.value)
                 .bind(m.data_type.unwrap_or_else(|| "text".to_string()))
-                .execute(&*pool)
+                .execute(&pool)
                 .await
                 .map_err(|e| e.to_string())?;
         }
@@ -174,17 +191,20 @@ pub struct FileCreateResponse {
 
 #[tauri::command]
 pub async fn file_update(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     id: i64,
     display_name: Option<String>,
     category_id: Option<Option<i64>>,
 ) -> Result<FileUpdateResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     if let Some(name) = display_name {
         let validated_name = validate_display_name(&name)?;
         sqlx::query("UPDATE files SET display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
             .bind(&validated_name)
             .bind(id)
-            .execute(&*pool)
+            .execute(&pool)
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -193,7 +213,7 @@ pub async fn file_update(
         sqlx::query("UPDATE files SET category_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
             .bind(cat_id)
             .bind(id)
-            .execute(&*pool)
+            .execute(&pool)
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -208,12 +228,15 @@ pub struct FileUpdateResponse {
 
 #[tauri::command]
 pub async fn file_delete(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     id: i64,
 ) -> Result<FileDeleteResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     sqlx::query("DELETE FROM files WHERE id = ?")
         .bind(id)
-        .execute(&*pool)
+        .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -227,7 +250,7 @@ pub struct FileDeleteResponse {
 
 #[tauri::command]
 pub async fn file_search(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     query: String,
     category_id: Option<i64>,
     _tag_ids: Option<Vec<i64>>,
@@ -235,15 +258,18 @@ pub async fn file_search(
     limit: Option<i32>,
     offset: Option<i32>,
 ) -> Result<FileListResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     let limit = limit.unwrap_or(50);
     let offset = offset.unwrap_or(0);
 
     let sql = if query.is_empty() {
         "SELECT id, path, display_name, category_id, file_status, created_at, updated_at FROM files WHERE 1=1"
     } else {
-        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.created_at, f.updated_at 
-         FROM files f 
-         JOIN files_fts ON files_fts.rowid = f.id 
+        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.created_at, f.updated_at
+         FROM files f
+         JOIN files_fts ON files_fts.rowid = f.id
          WHERE files_fts MATCH ?"
     };
 
@@ -257,19 +283,19 @@ pub async fn file_search(
 
     let files: Vec<FileEntry> = if query.is_empty() {
         sqlx::query_as(&final_query)
-            .fetch_all(&*pool)
+            .fetch_all(&pool)
             .await
             .map_err(|e| e.to_string())?
     } else {
         sqlx::query_as(&final_query)
             .bind(&query)
-            .fetch_all(&*pool)
+            .fetch_all(&pool)
             .await
             .map_err(|e| e.to_string())?
     };
 
     let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files")
-        .fetch_one(&*pool)
+        .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -281,9 +307,12 @@ pub async fn file_search(
 
 #[tauri::command]
 pub async fn file_check_status(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     file_ids: Option<Vec<i64>>,
 ) -> Result<FileCheckStatusResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     let files: Vec<FileEntry> = match file_ids {
         Some(ids) => {
             let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -292,13 +321,13 @@ pub async fn file_check_status(
                 placeholders
             );
             sqlx::query_as(&query)
-                .fetch_all(&*pool)
+                .fetch_all(&pool)
                 .await
                 .map_err(|e| e.to_string())?
         }
         None => {
             sqlx::query_as("SELECT id, path, display_name, category_id, file_status, created_at, updated_at FROM files")
-                .fetch_all(&*pool)
+                .fetch_all(&pool)
                 .await
                 .map_err(|e| e.to_string())?
         }
@@ -313,7 +342,7 @@ pub async fn file_check_status(
             sqlx::query("UPDATE files SET file_status = ? WHERE id = ?")
                 .bind(new_status)
                 .bind(file.id)
-                .execute(&*pool)
+                .execute(&pool)
                 .await
                 .map_err(|e| e.to_string())?;
 

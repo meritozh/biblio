@@ -13,6 +13,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_mcp_bridge::init())
         .invoke_handler(tauri::generate_handler![
             commands::file::file_list,
             commands::file::file_get,

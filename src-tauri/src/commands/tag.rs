@@ -1,7 +1,16 @@
 use crate::commands::validation::{validate_tag_name, validate_color};
 use serde::Serialize;
-use sqlx::SqlitePool;
-use tauri::State;
+use tauri::AppHandle;
+use tauri::Manager;
+use tauri_plugin_sql::{DbPool, DbInstances};
+
+fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
+    let instances_lock = instances.0.try_read().map_err(|e| e.to_string())?;
+    let db_pool = instances_lock.get(db_url).ok_or("Database not found")?;
+    match db_pool {
+        DbPool::Sqlite(pool) => Ok(pool.clone()),
+    }
+}
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct TagWithUsage {
@@ -14,25 +23,28 @@ pub struct TagWithUsage {
 
 #[tauri::command]
 pub async fn tag_list(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     include_usage: Option<bool>,
 ) -> Result<TagListResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     let tags: Vec<TagWithUsage> = if include_usage.unwrap_or(false) {
         sqlx::query_as(
-            "SELECT t.id, t.name, t.color, t.created_at, COUNT(ft.file_id) as usage_count 
-             FROM tags t 
-             LEFT JOIN file_tags ft ON t.id = ft.tag_id 
-             GROUP BY t.id 
+            "SELECT t.id, t.name, t.color, t.created_at, COUNT(ft.file_id) as usage_count
+             FROM tags t
+             LEFT JOIN file_tags ft ON t.id = ft.tag_id
+             GROUP BY t.id
              ORDER BY t.name"
         )
-        .fetch_all(&*pool)
+        .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())?
     } else {
         sqlx::query_as(
             "SELECT t.id, t.name, t.color, t.created_at, 0 as usage_count FROM tags t ORDER BY t.name"
         )
-        .fetch_all(&*pool)
+        .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())?
     };
@@ -47,12 +59,15 @@ pub struct TagListResponse {
 
 #[tauri::command]
 pub async fn tag_create(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     name: String,
     color: Option<String>,
 ) -> Result<TagCreateResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     let validated_name = validate_tag_name(&name)?;
-    
+
     let validated_color = if let Some(c) = color {
         Some(validate_color(&c)?)
     } else {
@@ -61,7 +76,7 @@ pub async fn tag_create(
 
     let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM tags WHERE name = ?")
         .bind(&validated_name)
-        .fetch_optional(&*pool)
+        .fetch_optional(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -72,7 +87,7 @@ pub async fn tag_create(
     let result = sqlx::query("INSERT INTO tags (name, color) VALUES (?, ?)")
         .bind(&validated_name)
         .bind(&validated_color)
-        .execute(&*pool)
+        .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -88,17 +103,20 @@ pub struct TagCreateResponse {
 
 #[tauri::command]
 pub async fn tag_update(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     id: i64,
     name: Option<String>,
     color: Option<String>,
 ) -> Result<TagUpdateResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     if let Some(n) = name {
         let validated_name = validate_tag_name(&n)?;
         sqlx::query("UPDATE tags SET name = ? WHERE id = ?")
             .bind(&validated_name)
             .bind(id)
-            .execute(&*pool)
+            .execute(&pool)
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -108,7 +126,7 @@ pub async fn tag_update(
         sqlx::query("UPDATE tags SET color = ? WHERE id = ?")
             .bind(&validated_color)
             .bind(id)
-            .execute(&*pool)
+            .execute(&pool)
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -123,24 +141,27 @@ pub struct TagUpdateResponse {
 
 #[tauri::command]
 pub async fn tag_delete(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     id: i64,
 ) -> Result<TagDeleteResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     let affected: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM file_tags WHERE tag_id = ?")
         .bind(id)
-        .fetch_one(&*pool)
+        .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
     sqlx::query("DELETE FROM file_tags WHERE tag_id = ?")
         .bind(id)
-        .execute(&*pool)
+        .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
     sqlx::query("DELETE FROM tags WHERE id = ?")
         .bind(id)
-        .execute(&*pool)
+        .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -158,15 +179,18 @@ pub struct TagDeleteResponse {
 
 #[tauri::command]
 pub async fn tag_assign(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     file_id: i64,
     tag_ids: Vec<i64>,
 ) -> Result<TagAssignResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     for tag_id in tag_ids {
         sqlx::query("INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)")
             .bind(file_id)
             .bind(tag_id)
-            .execute(&*pool)
+            .execute(&pool)
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -181,15 +205,18 @@ pub struct TagAssignResponse {
 
 #[tauri::command]
 pub async fn tag_unassign(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     file_id: i64,
     tag_ids: Vec<i64>,
 ) -> Result<TagUnassignResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     for tag_id in tag_ids {
         sqlx::query("DELETE FROM file_tags WHERE file_id = ? AND tag_id = ?")
             .bind(file_id)
             .bind(tag_id)
-            .execute(&*pool)
+            .execute(&pool)
             .await
             .map_err(|e| e.to_string())?;
     }

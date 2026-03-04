@@ -1,21 +1,34 @@
 use crate::commands::*;
 use crate::commands::validation::validate_category_name;
-use sqlx::SqlitePool;
-use tauri::State;
+use tauri::AppHandle;
+use tauri::Manager;
+use tauri_plugin_sql::{DbPool, DbInstances};
+
+fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
+    let instances_lock = instances.0.try_read().map_err(|e| e.to_string())?;
+    let db_pool = instances_lock.get(db_url).ok_or("Database not found")?;
+    match db_pool {
+        DbPool::Sqlite(pool) => Ok(pool.clone()),
+    }
+}
 
 #[tauri::command]
-pub async fn category_list(pool: State<'_, SqlitePool>) -> Result<Vec<Category>, String> {
+pub async fn category_list(app: AppHandle) -> Result<Vec<Category>, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
     sqlx::query_as("SELECT id, name, icon, is_default, created_at FROM categories ORDER BY name")
-        .fetch_all(&*pool)
+        .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn category_get(pool: State<'_, SqlitePool>, id: i64) -> Result<Category, String> {
+pub async fn category_get(app: AppHandle, id: i64) -> Result<Category, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
     sqlx::query_as("SELECT id, name, icon, is_default, created_at FROM categories WHERE id = ?")
         .bind(id)
-        .fetch_optional(&*pool)
+        .fetch_optional(&pool)
         .await
         .map_err(|e| e.to_string())?
         .ok_or("CATEGORY_NOT_FOUND".to_string())
@@ -23,15 +36,18 @@ pub async fn category_get(pool: State<'_, SqlitePool>, id: i64) -> Result<Catego
 
 #[tauri::command]
 pub async fn category_create(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     name: String,
     icon: Option<String>,
 ) -> Result<CategoryCreateResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     let validated_name = validate_category_name(&name)?;
 
     let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM categories WHERE name = ?")
         .bind(&validated_name)
-        .fetch_optional(&*pool)
+        .fetch_optional(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -42,7 +58,7 @@ pub async fn category_create(
     let result = sqlx::query("INSERT INTO categories (name, icon) VALUES (?, ?)")
         .bind(&validated_name)
         .bind(&icon)
-        .execute(&*pool)
+        .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -58,17 +74,20 @@ pub struct CategoryCreateResponse {
 
 #[tauri::command]
 pub async fn category_update(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     id: i64,
     name: Option<String>,
     icon: Option<String>,
 ) -> Result<CategoryUpdateResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     if let Some(n) = name {
         let validated_name = validate_category_name(&n)?;
         sqlx::query("UPDATE categories SET name = ? WHERE id = ?")
             .bind(&validated_name)
             .bind(id)
-            .execute(&*pool)
+            .execute(&pool)
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -77,7 +96,7 @@ pub async fn category_update(
         sqlx::query("UPDATE categories SET icon = ? WHERE id = ?")
             .bind(&i)
             .bind(id)
-            .execute(&*pool)
+            .execute(&pool)
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -92,12 +111,15 @@ pub struct CategoryUpdateResponse {
 
 #[tauri::command]
 pub async fn category_delete(
-    pool: State<'_, SqlitePool>,
+    app: AppHandle,
     id: i64,
 ) -> Result<CategoryDeleteResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
     let is_default: (bool,) = sqlx::query_as("SELECT is_default FROM categories WHERE id = ?")
         .bind(id)
-        .fetch_one(&*pool)
+        .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -107,13 +129,13 @@ pub async fn category_delete(
 
     let affected: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files WHERE category_id = ?")
         .bind(id)
-        .fetch_one(&*pool)
+        .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
     sqlx::query("DELETE FROM categories WHERE id = ?")
         .bind(id)
-        .execute(&*pool)
+        .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
