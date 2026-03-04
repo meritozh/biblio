@@ -12,11 +12,11 @@ configure({ testIdAttribute: 'id' });
 const mockFile: FileEntry = {
   id: 1,
   path: '/test/file.pdf',
-  displayName: 'Test File',
-  categoryId: 1,
-  fileStatus: 'available',
-  createdAt: '2024-01-01T00:00:00Z',
-  updatedAt: '2024-01-01T00:00:00Z',
+  display_name: 'Test File',
+  category_id: 1,
+  file_status: 'available',
+  created_at: '2024-01-01T00:00:00Z',
+  updated_at: '2024-01-01T00:00:00Z',
 };
 
 const mockTag: Tag = {
