@@ -45,3 +45,6 @@ src/routeTree.gen.ts
 # Tauri
 src-tauri/WixTools/
 src-tauri/target/
+
+# Tan Stack
+.tanstack/
