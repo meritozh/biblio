@@ -2,8 +2,8 @@
 name = "biblio"
 version = "0.1.0"
 description = "A desktop application for organizing files by categories, tags, and searchable metadata"
-authors = ["you"]
-edition = "2021"
+authors = ["meritozh"]
+edition = "2024"
 
 [lib]
 name = "biblio_lib"
@@ -24,4 +24,3 @@ serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 uuid = { version = "1", features = ["v4"] }
-

@@ -39,9 +39,6 @@ pnpm-debug.log*
 coverage/
 .nyc_output/
 
-# Generated files
-src/routeTree.gen.ts
-
 # Tauri
 src-tauri/WixTools/
 src-tauri/target/
