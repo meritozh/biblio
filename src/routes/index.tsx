@@ -45,13 +45,15 @@ function HomePage() {
     setCategories(result);
   }, []);
 
+  // Initial data fetch on mount
   useEffect(() => {
-    loadCategories();
-    loadFiles(null);
+    void loadCategories();
+    void loadFiles(null);
   }, [loadCategories, loadFiles]);
 
+  // Reload files when category changes
   useEffect(() => {
-    loadFiles(selectedCategoryId);
+    void loadFiles(selectedCategoryId);
   }, [selectedCategoryId, loadFiles]);
 
   const handleFilesSelected = (paths: string[]) => {
@@ -82,7 +84,7 @@ function HomePage() {
       setSelectedFiles([]);
       setNewFileName('');
       setNewFileCategory(null);
-      loadFiles(selectedCategoryId);
+      void loadFiles(selectedCategoryId);
     } catch (error) {
       console.error('Failed to add file:', error);
       alert(`Failed to add file: ${error}`);
