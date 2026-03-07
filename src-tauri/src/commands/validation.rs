@@ -149,3 +149,25 @@ pub fn validate_category_name(name: &str) -> Result<String, String> {
 
     Ok(normalized)
 }
+
+pub fn validate_author_name(name: &str) -> Result<String, String> {
+    let normalized = normalize_unicode(name);
+
+    if normalized.is_empty() {
+        return Err("Author name cannot be empty".to_string());
+    }
+
+    if normalized.len() > 100 {
+        return Err("Author name must be 100 characters or less".to_string());
+    }
+
+    if contains_control_chars(name) {
+        return Err("Author name contains invalid control characters".to_string());
+    }
+
+    if contains_bidirectional_override(name) {
+        return Err("Author name contains invalid bidirectional override characters".to_string());
+    }
+
+    Ok(normalized)
+}

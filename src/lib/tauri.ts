@@ -7,6 +7,7 @@ import type {
   FileSearchRequest,
   Category,
   Tag,
+  Author,
   Metadata,
 } from '@/types';
 
@@ -30,6 +31,7 @@ export async function fileCreate(params: FileCreateRequest): Promise<{ id: numbe
     displayName: params.display_name,
     categoryId: params.category_id,
     tagIds: params.tag_ids,
+    authorIds: params.author_ids,
     metadata: params.metadata,
   });
 }
@@ -120,4 +122,46 @@ export async function metadataSet(
 
 export async function metadataDelete(file_id: number, key: string): Promise<{ success: boolean }> {
   return invoke('metadata_delete', { fileId: file_id, key });
+}
+
+// Author API functions
+export async function authorList(includeUsage?: boolean): Promise<{ authors: (Author & { usageCount: number })[] }> {
+  return invoke('author_list', { includeUsage: includeUsage || false });
+}
+
+export async function authorCreate(name: string): Promise<{ id: number }> {
+  return invoke('author_create', { name });
+}
+
+export async function authorUpdate(id: number, name: string): Promise<{ success: boolean }> {
+  return invoke('author_update', { id, name });
+}
+
+export async function authorDelete(id: number): Promise<{ success: boolean; affectedFiles: number }> {
+  return invoke('author_delete', { id });
+}
+
+export async function authorAssign(file_id: number, author_ids: number[]): Promise<{ success: boolean }> {
+  return invoke('author_assign', { fileId: file_id, authorIds: author_ids });
+}
+
+export async function authorUnassign(file_id: number, author_ids: number[]): Promise<{ success: boolean }> {
+  return invoke('author_unassign', { fileId: file_id, authorIds: author_ids });
+}
+
+export async function authorSet(file_id: number, author_ids: number[]): Promise<{ success: boolean }> {
+  return invoke('author_set', { fileId: file_id, authorIds: author_ids });
+}
+
+// Cover API functions
+export async function coverSet(file_id: number, data: number[], mimeType?: string): Promise<{ success: boolean }> {
+  return invoke('cover_set', { fileId: file_id, data, mimeType: mimeType || null });
+}
+
+export async function coverGet(file_id: number): Promise<{ data: string; mimeType: string }> {
+  return invoke('cover_get', { fileId: file_id });
+}
+
+export async function coverDelete(file_id: number): Promise<{ success: boolean }> {
+  return invoke('cover_delete', { fileId: file_id });
 }

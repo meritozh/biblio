@@ -99,6 +99,15 @@ pub async fn file_get(
     .await
     .map_err(|e| e.to_string())?;
 
+    let authors: Vec<Author> = sqlx::query_as(
+        "SELECT a.id, a.name, a.created_at FROM authors a
+         INNER JOIN file_authors fa ON a.id = fa.author_id WHERE fa.file_id = ?"
+    )
+    .bind(id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
     let metadata: Vec<Metadata> = sqlx::query_as(
         "SELECT id, file_id, key, value, data_type FROM metadata WHERE file_id = ?"
     )
@@ -117,6 +126,7 @@ pub async fn file_get(
         updated_at: file.updated_at,
         category,
         tags,
+        authors,
         metadata,
     })
 }
@@ -128,6 +138,7 @@ pub async fn file_create(
     display_name: String,
     category_id: Option<i64>,
     tag_ids: Option<Vec<i64>>,
+    author_ids: Option<Vec<i64>>,
     metadata: Option<Vec<MetadataInput>>,
 ) -> Result<FileCreateResponse, String> {
     let instances = app.state::<DbInstances>();
@@ -162,6 +173,17 @@ pub async fn file_create(
             sqlx::query("INSERT INTO file_tags (file_id, tag_id) VALUES (?, ?)")
                 .bind(file_id)
                 .bind(tag_id)
+                .execute(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    if let Some(authors) = author_ids {
+        for author_id in authors {
+            sqlx::query("INSERT INTO file_authors (file_id, author_id) VALUES (?, ?)")
+                .bind(file_id)
+                .bind(author_id)
                 .execute(&pool)
                 .await
                 .map_err(|e| e.to_string())?;
