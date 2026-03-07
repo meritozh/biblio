@@ -43,6 +43,28 @@ CREATE TABLE IF NOT EXISTS metadata (
     UNIQUE(file_id, key)
 );
 
+-- Authors table
+CREATE TABLE IF NOT EXISTS authors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- File-Author junction table
+CREATE TABLE IF NOT EXISTS file_authors (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    author_id INTEGER NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+    PRIMARY KEY (file_id, author_id)
+);
+
+-- Covers table (stores cover images as BLOB)
+CREATE TABLE IF NOT EXISTS covers (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    data BLOB NOT NULL,
+    mime_type TEXT DEFAULT 'image/png',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_files_category ON files(category_id);
 CREATE INDEX IF NOT EXISTS idx_files_status ON files(file_status);
@@ -50,6 +72,7 @@ CREATE INDEX IF NOT EXISTS idx_files_name ON files(display_name);
 CREATE INDEX IF NOT EXISTS idx_file_tags_tag ON file_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_metadata_file ON metadata(file_id);
 CREATE INDEX IF NOT EXISTS idx_metadata_key ON metadata(key);
+CREATE INDEX IF NOT EXISTS idx_file_authors_author ON file_authors(author_id);
 
 -- Full-text search virtual table
 CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(

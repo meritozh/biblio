@@ -19,6 +19,7 @@ export interface FileEntry {
   updated_at: string;
   category?: Category | null;
   tags?: Tag[];
+  authors?: Author[];
   metadata?: Metadata[];
 }
 
@@ -26,6 +27,12 @@ export interface Tag {
   id: number;
   name: string;
   color: string | null;
+  created_at: string;
+}
+
+export interface Author {
+  id: number;
+  name: string;
   created_at: string;
 }
 
@@ -47,6 +54,7 @@ export interface FileWithDetails {
   updated_at: string;
   category: Category | null;
   tags: Tag[];
+  authors: Author[];
   metadata: Metadata[];
 }
 
@@ -68,6 +76,7 @@ export interface FileCreateRequest extends Record<string, unknown> {
   display_name: string;
   category_id?: number | null;
   tag_ids?: number[];
+  author_ids?: number[];
   metadata?: Array<{ key: string; value: string; data_type: MetadataType }>;
 }
 
@@ -88,4 +97,21 @@ export interface CategoryCreateRequest extends Record<string, unknown> {
 export interface TagCreateRequest extends Record<string, unknown> {
   name: string;
   color?: string | null;
+}
+
+export interface AuthorCreateRequest extends Record<string, unknown> {
+  name: string;
+}
+
+// Dynamic form field types
+export type FieldType = 'text' | 'authors' | 'number' | 'date' | 'boolean' | 'select' | 'tags' | 'image';
+
+export interface FieldConfig {
+  key: string;
+  label: string;
+  type: FieldType;
+  required?: boolean;
+  placeholder?: string;
+  options?: string[];
+  defaultValue?: string;
 }

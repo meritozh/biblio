@@ -3,6 +3,8 @@ pub mod category;
 pub mod tag;
 pub mod metadata;
 pub mod validation;
+pub mod author;
+pub mod cover;
 
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +37,13 @@ pub struct Tag {
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Author {
+    pub id: i64,
+    pub name: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Metadata {
     pub id: i64,
     pub file_id: i64,
@@ -54,6 +63,7 @@ pub struct FileWithDetails {
     pub updated_at: String,
     pub category: Option<Category>,
     pub tags: Vec<Tag>,
+    pub authors: Vec<Author>,
     pub metadata: Vec<Metadata>,
 }
 
