@@ -27,10 +27,12 @@ TypeScript 5.x (frontend), Rust 1.75+ (Tauri backend): Follow standard conventio
 
 <!-- MANUAL ADDITIONS START -->
 
-# Soul
+# Practice
 
 The role of this file is to describe project principle, main goal, common mistakes and confusion points that agents might encounter as they work in this project. If you ever encounter something in the project that surprises you, please alert the developer working with you and indicate that this is the case in AgentMD file to help prevent future agents from having same issue.
 
 Each commit you should pass ci test jobs.
+
+Use pnpm instead of npm, bun.
 
 <!-- MANUAL ADDITIONS END -->
