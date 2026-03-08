@@ -4,7 +4,7 @@ import { FilePicker } from '@/components/FilePicker';
 import { FileList } from '@/components/FileList';
 import { CategorySidebar } from '@/components/CategorySidebar';
 import { fetchFiles, fetchCategories } from '@/stores';
-import { fileCreate, authorList, authorCreate, tagCreate, coverSet } from '@/lib/tauri';
+import { fileCreate, authorList, authorCreate, tagList, tagCreate, coverSet } from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -60,12 +60,18 @@ function HomePage() {
     setAuthors(result.authors);
   }, []);
 
+  const loadTags = useCallback(async () => {
+    const result = await tagList(true);
+    setTags(result.tags);
+  }, []);
+
   // Initial data fetch on mount
   useEffect(() => {
     void loadCategories();
+    void loadTags();
     void loadAuthors();
     void loadFiles(null);
-  }, [loadCategories, loadAuthors, loadFiles]);
+  }, [loadCategories, loadTags, loadAuthors, loadFiles]);
 
   // Reload files when category changes
   useEffect(() => {

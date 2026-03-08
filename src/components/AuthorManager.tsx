@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { AuthorBadge } from '@/components/AuthorBadge';
-import { Check, Plus, Search } from 'lucide-react';
+import { Check, Plus, X } from 'lucide-react';
 import type { Author } from '@/types';
 
 interface AuthorManagerProps {
@@ -18,6 +18,7 @@ export function AuthorManager({ authors, selectedAuthorIds, onAuthorAssign, onAu
   const [searchQuery, setSearchQuery] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [newAuthorName, setNewAuthorName] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   const selectedAuthors = useMemo(
     () => authors.filter((a) => selectedAuthorIds.includes(a.id)),
@@ -44,12 +45,19 @@ export function AuthorManager({ authors, selectedAuthorIds, onAuthorAssign, onAu
   };
 
   const handleCreateAuthor = async () => {
-    if (newAuthorName.trim() && onAuthorCreate) {
+    if (!newAuthorName.trim() || !onAuthorCreate) return;
+
+    setIsSaving(true);
+    try {
       const newAuthor = await onAuthorCreate(newAuthorName.trim());
       onAuthorAssign([...selectedAuthorIds, newAuthor.id]);
       setNewAuthorName('');
       setIsCreating(false);
       setSearchQuery('');
+    } catch (error) {
+      console.error('Failed to create author:', error);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -68,14 +76,16 @@ export function AuthorManager({ authors, selectedAuthorIds, onAuthorAssign, onAu
 
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap gap-2">
-        {selectedAuthors.map((author) => (
-          <AuthorBadge key={author.id} author={author} onRemove={handleRemoveAuthor} />
-        ))}
-      </div>
+      {selectedAuthors.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {selectedAuthors.map((author) => (
+            <AuthorBadge key={author.id} author={author} onRemove={handleRemoveAuthor} />
+          ))}
+        </div>
+      )}
 
       {isCreating ? (
-        <div className="flex gap-1">
+        <div className="flex gap-2">
           <Input
             value={newAuthorName}
             onChange={(e) => setNewAuthorName(e.target.value)}
@@ -83,41 +93,39 @@ export function AuthorManager({ authors, selectedAuthorIds, onAuthorAssign, onAu
               if (e.key === 'Enter') handleCreateAuthor();
               if (e.key === 'Escape') handleCancelCreate();
             }}
-            placeholder="Author name"
-            className="h-8 flex-1 text-sm"
+            placeholder="New author name..."
+            disabled={isSaving}
+            className="h-9 flex-1"
             autoFocus
           />
-          <Button size="sm" onClick={handleCreateAuthor} disabled={!newAuthorName.trim()}>
+          <Button size="sm" onClick={handleCreateAuthor} disabled={isSaving || !newAuthorName.trim()}>
             Create
           </Button>
-          <Button size="sm" variant="outline" onClick={handleCancelCreate}>
-            Cancel
+          <Button size="sm" variant="ghost" onClick={handleCancelCreate} disabled={isSaving}>
+            <X className="h-4 w-4" />
           </Button>
         </div>
       ) : (
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>
-            <Button variant="outline" size="sm" className="h-8">
-              <Plus className="h-3 w-3 mr-1" />
-              Add Author
+            <Button variant="outline" size="sm" className="h-9 text-muted-foreground">
+              <Plus className="h-4 w-4 mr-1" />
+              {selectedAuthors.length > 0 ? 'Edit authors' : 'Add authors'}
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="w-64 p-0" align="start">
-            <div className="p-2 border-b">
-              <div className="relative">
-                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
-                <Input
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search authors..."
-                  className="h-8 pl-7 text-sm"
-                />
-              </div>
+          <PopoverContent className="w-72 p-0" align="start">
+            <div className="p-3 border-b">
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search or create author..."
+                className="h-9"
+              />
             </div>
-            <div className="max-h-48 overflow-auto p-1">
+            <div className="max-h-56 overflow-auto p-1">
               {filteredAuthors.length === 0 && !showCreateOption ? (
-                <div className="px-2 py-4 text-center text-sm text-muted-foreground">
-                  {searchQuery ? 'No authors found' : 'No authors available'}
+                <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+                  {searchQuery ? 'No matching authors' : 'No authors yet'}
                 </div>
               ) : (
                 <>
@@ -127,24 +135,24 @@ export function AuthorManager({ authors, selectedAuthorIds, onAuthorAssign, onAu
                       <button
                         key={author.id}
                         type="button"
-                        className="w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded hover:bg-accent text-left"
+                        className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md hover:bg-accent transition-colors"
                         onClick={() => handleToggleAuthor(author.id)}
                       >
-                        <div className="w-4 h-4 border rounded flex items-center justify-center">
+                        <div className={`w-4 h-4 border rounded flex items-center justify-center transition-colors ${isSelected ? 'bg-primary border-primary text-primary-foreground' : 'border-muted-foreground/30'}`}>
                           {isSelected && <Check className="h-3 w-3" />}
                         </div>
-                        <span className="flex-1 truncate">{author.name}</span>
+                        <span className="flex-1 truncate text-left">{author.name}</span>
                       </button>
                     );
                   })}
                   {showCreateOption && onAuthorCreate && (
                     <button
                       type="button"
-                      className="w-full flex items-center gap-2 px-2 py-1.5 text-sm rounded hover:bg-accent text-left text-muted-foreground"
+                      className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md hover:bg-accent transition-colors text-primary"
                       onClick={handleStartCreate}
                     >
                       <Plus className="h-4 w-4" />
-                      Create "{searchQuery}"
+                      <span>Create "{searchQuery}"</span>
                     </button>
                   )}
                 </>
