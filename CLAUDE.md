@@ -15,11 +15,24 @@ tests/
 
 ## Commands
 
-cargo test [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLOGIES] cargo clippy
+pnpm typecheck         # TypeScript check
+pnpm test:run          # Run unit tests
+cd src-tauri && cargo clippy  # Rust linting
+pnpm tauri:dev         # Start dev server
 
 ## Code Style
 
 TypeScript 5.x (frontend), Rust 1.75+ (Tauri backend): Follow standard conventions
+
+## Gotchas
+
+- **Database Migrations**: Never modify existing migration files after they've been applied. Create new migration files (e.g., `migration_2.sql`) and add them to `get_migrations()` in `src-tauri/src/database/mod.rs`.
+
+- **React useEffect**: Avoid circular dependencies between effects. Don't sync internal state with props in one effect and call `onChange` in another - this causes infinite loops. Derive values from props directly.
+
+- **New Tauri Commands**: Must be (1) created in `src-tauri/src/commands/`, (2) exported in `mod.rs`, (3) registered in `lib.rs` invoke_handler.
+
+- **New UI Components**: Install radix package with `pnpm add @radix-ui/react-xxx`, then create component in `src/components/ui/`.
 
 ## Recent Changes
 
