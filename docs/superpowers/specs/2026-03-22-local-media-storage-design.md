@@ -48,11 +48,17 @@ Transform biblio into a local media management desktop application that moves fi
 - Use `std::path::PathBuf` for all path operations
 - Handle Windows drive letters and UNC paths explicitly
 
+**"Uncategorized" folder**:
+- When a file has no category assigned (`category_id = null`), store in folder named "Uncategorized"
+- This is NOT a special category in the database - it's just a default folder name
+- Users can create a category named "Uncategorized" - it will work normally
+- Folder name is derived from a constant, not from category data
+
 ## Architecture
 
 ### Database Schema
 
-**Note**: Schema updates are applied in-place to `schema.sql`. No migration files needed during development.
+**Note**: During active development, schema changes are applied in-place. Delete the database file to apply fresh schema. For production release, proper migrations will be created.
 
 New `app_settings` table:
 ```sql
@@ -96,9 +102,10 @@ INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
   3. Move file from `{storage_path}/{old_category}/file` to `{storage_path}/{new_category}/file`
   4. Update database with new path
 
-- New command: `file_delete_with_storage(file_id: number)`
-  1. Delete file from filesystem
-  2. Delete from database (cascades to metadata, tags, authors, cover)
+- Update `file_delete` command (replace existing, not new command):
+  - If `in_storage = true`: delete file from filesystem, then delete from database
+  - If `in_storage = false`: delete only from database (file stays at original location)
+  - Use SQL transaction to ensure atomicity
 
 **Updated: `src-tauri/src/commands/category.rs`**
 - `category_update` changes:
@@ -107,10 +114,12 @@ INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
   3. Sanitize new name for filesystem
   4. Update all file paths in database
 
-- `category_delete` changes:
+- `category_delete` changes (**breaking change**):
   1. Check if any files have this category_id
   2. If yes: return error, block deletion
   3. If no: proceed with deletion
+  - Previous behavior: Deleted category and unassigned files (files kept `category_id = null`)
+  - New behavior: Must move/delete files before deleting category
 
 ### Frontend Components
 
@@ -119,6 +128,13 @@ INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
 - Button to select folder via Tauri `open` dialog
 - Save via `settings_set('storage_path', path)`
 - Show warning if not configured
+- Validate path is writable before saving
+- **Placement**: In a settings dialog accessed from the main header (gear icon)
+
+**New: `src/components/SettingsDialog.tsx`**
+- Dialog wrapper for app settings
+- Contains `StoragePathSetting` as the first setting
+- Triggered by settings icon in main header
 
 **Updated: `src/routes/index.tsx`**
 - On mount, check if storage_path is configured
@@ -131,15 +147,23 @@ INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
 
 ### Error Handling
 
+**All file operations use SQL transactions** to ensure atomicity. If filesystem operation fails, database changes are rolled back.
+
 | Scenario | Behavior |
 |----------|----------|
 | Storage path not configured | Disable import, show setup prompt |
+| Storage path not writable | Validation error when setting path |
+| Storage path is system directory | Validation error (block common paths: `/`, `/System`, `/Windows`, etc.) |
+| Storage path becomes inaccessible | Show error banner on app, disable import, show "Reconfigure" button |
 | Source file doesn't exist | Error message, don't register |
 | File already in storage_path | Reject with error message |
 | Destination folder creation fails | Error message, don't register |
 | File exists at destination | Auto-rename: `filename (1).ext`, `filename (2).ext`, etc. |
-| Move operation fails | Rollback database, leave file in place |
-| Storage path inaccessible | Error on import, show in UI |
+| Move operation fails (any reason) | Rollback transaction, leave file in place, show error |
+| Permission denied during move | Error message with suggestion to check permissions |
+| File locked by another process | Error message: "File is in use by another application" |
+| Disk full during move | Error message: "Not enough disk space" |
+| Cross-drive move (Windows) | Use copy+delete instead of rename (Rust `fs::copy` + `fs::remove_file`) |
 | Category folder missing | Auto-create when moving files |
 
 ## Implementation Order
@@ -148,12 +172,15 @@ INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
 2. Create `src-tauri/src/commands/settings.rs` with get/set
 3. Export settings module in `mod.rs`, register in `lib.rs`
 4. Add settings functions to `src/lib/tauri.ts`
-5. Update `file_create` in `file.rs` to move files
-6. Add `file_move_category` and `file_delete_with_storage` commands
-7. Create `StoragePathSetting.tsx` component
-8. Add storage path check and warning to `routes/index.tsx`
-9. Update `DynamicMetadataForm.tsx` for category change handling
-10. Add error handling and validation throughout
+5. Update `file_create` in `file.rs` to move files with transaction support
+6. Update `file_delete` to handle `in_storage` flag
+7. Add `file_move_category` command
+8. Update `category_update` to rename folders
+9. Update `category_delete` to block when files exist
+10. Create `StoragePathSetting.tsx` and `SettingsDialog.tsx` components
+11. Add storage path check and warning to `routes/index.tsx`
+12. Update `DynamicMetadataForm.tsx` for category change handling
+13. Add comprehensive error handling throughout
 
 ## Testing
 
