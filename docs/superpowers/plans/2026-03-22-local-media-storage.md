@@ -217,10 +217,18 @@ pub fn sanitize_folder_name(name: &str) -> String {
 }
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 2: Ensure validation module is exported in mod.rs**
+
+If `validation` is not already exported, add to `src-tauri/src/commands/mod.rs`:
+
+```rust
+pub mod validation;
+```
+
+- [ ] **Step 3: Commit**
 
 ```bash
-git add src-tauri/src/commands/validation.rs
+git add src-tauri/src/commands/validation.rs src-tauri/src/commands/mod.rs
 git commit -m "feat: add shared sanitize_folder_name utility"
 ```
 
@@ -299,9 +307,9 @@ pub async fn settings_set(
             }
             // Block system directories
             let path_str = path.to_string_lossy();
-            let dangerous_paths = ["/", "/System", "/Windows", "/usr", "/bin", "/etc"];
+            let dangerous_paths = ["/", "/System", "/Windows", "/usr", "/bin", "/etc", "\\Windows", "\\Program Files", "\\Program Files (x86)"];
             for dangerous in dangerous_paths {
-                if path_str == dangerous || path_str.starts_with(&format!("{}/", dangerous)) {
+                if path_str == dangerous || path_str.starts_with(&format!("{}/", dangerous)) || path_str.starts_with(&format!("{}\\", dangerous)) {
                     // Allow if it's a user subdirectory like /Users/...
                     if dangerous == "/" && path_str.starts_with("/Users/") {
                         continue;
@@ -502,6 +510,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   'CATEGORY_NOT_FOUND': 'The selected category was not found.',
   'CATEGORY_FOLDER_NOT_SET': 'The category folder is not configured.',
   'CANNOT_DELETE_DEFAULT': 'Cannot delete the default category.',
+  'PERMISSION_DENIED': 'Permission denied. Please check folder permissions.',
+  'FILE_LOCKED': 'File is in use by another application.',
+  'DISK_FULL': 'Not enough disk space to complete the operation.',
 };
 
 export function translateError(error: string): string {
@@ -565,7 +576,7 @@ fn get_unique_destination(dest: &PathBuf) -> PathBuf {
         let new_name = if ext.is_empty() {
             format!("{} ({})", stem, counter)
         } else {
-            format!("{} ({}{}", stem, counter, ext)
+            format!("{} ({}){}", stem, counter, ext)
         };
         let new_path = parent.join(&new_name);
         if !new_path.exists() {
@@ -576,6 +587,7 @@ fn get_unique_destination(dest: &PathBuf) -> PathBuf {
 }
 
 /// Move a file, handling cross-drive moves
+/// Returns the final destination path
 fn move_file(source: &PathBuf, dest: &PathBuf) -> Result<PathBuf, String> {
     let final_dest = get_unique_destination(dest);
 
@@ -586,9 +598,26 @@ fn move_file(source: &PathBuf, dest: &PathBuf) -> Result<PathBuf, String> {
 
     // Fall back to copy + delete (cross-drive)
     fs::copy(source, &final_dest)
-        .map_err(|e| format!("Failed to copy file: {}", e))?;
+        .map_err(|e| {
+            // Map common filesystem errors to user-friendly codes
+            let err_str = e.to_string().to_lowercase();
+            if err_str.contains("permission denied") {
+                "PERMISSION_DENIED".to_string()
+            } else if err_str.contains("disk full") || err_str.contains("no space") {
+                "DISK_FULL".to_string()
+            } else if err_str.contains("being used") || err_str.contains("locked") {
+                "FILE_LOCKED".to_string()
+            } else {
+                format!("Failed to copy file: {}", e)
+            }
+        })?;
+
     fs::remove_file(source)
-        .map_err(|e| format!("Failed to remove original: {}", e))?;
+        .map_err(|e| {
+            // Log but don't fail - the copy succeeded
+            eprintln!("Warning: Failed to remove original file after copy: {}", e);
+            format!("Failed to remove original: {}", e)
+        })?;
 
     Ok(final_dest)
 }
@@ -1613,15 +1642,9 @@ Add before the closing `</div>`:
 </AlertDialog>
 ```
 
-- [ ] **Step 6: Ensure alert-dialog UI component exists**
+- [ ] **Step 6: Create alert-dialog UI component if needed**
 
-Check if `src/components/ui/alert-dialog.tsx` exists. If not, create it with the standard shadcn/ui implementation. If it exists, skip this step.
-
-- [ ] **Step 7: Install radix alert-dialog if needed**
-
-Run: `pnpm add @radix-ui/react-alert-dialog` (if not already installed)
-
-- [ ] **Step 8: Commit**
+Check if `src/components/ui/alert-dialog.tsx` exists. If not, create it:
 
 ```tsx
 import * as React from "react"
@@ -1987,3 +2010,5 @@ This implementation adds:
 - Category rename renames folders
 - File deletion removes from filesystem when in storage
 - Warning banner when storage not configured
+
+**Known Limitation**: Full SQL transaction support with filesystem rollback is not implemented in this version. File operations proceed in sequence (filesystem first, then database). If a database operation fails after a successful filesystem operation, manual intervention may be required. This will be addressed in a future enhancement with proper transaction handling and recovery mechanisms.
