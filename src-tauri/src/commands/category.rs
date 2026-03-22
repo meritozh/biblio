@@ -16,7 +16,7 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
 pub async fn category_list(app: AppHandle) -> Result<Vec<Category>, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-    sqlx::query_as("SELECT id, name, icon, is_default, created_at FROM categories ORDER BY name")
+    sqlx::query_as("SELECT id, name, icon, is_default, folder_name, created_at FROM categories ORDER BY name")
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())
@@ -26,7 +26,7 @@ pub async fn category_list(app: AppHandle) -> Result<Vec<Category>, String> {
 pub async fn category_get(app: AppHandle, id: i64) -> Result<Category, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-    sqlx::query_as("SELECT id, name, icon, is_default, created_at FROM categories WHERE id = ?")
+    sqlx::query_as("SELECT id, name, icon, is_default, folder_name, created_at FROM categories WHERE id = ?")
         .bind(id)
         .fetch_optional(&pool)
         .await
