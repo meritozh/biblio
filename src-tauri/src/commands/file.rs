@@ -1,9 +1,11 @@
 use crate::commands::*;
-use crate::commands::validation::validate_display_name;
+use crate::commands::validation::{validate_display_name, sanitize_folder_name};
 use serde::Serialize;
 use tauri::AppHandle;
 use tauri::Manager;
 use tauri_plugin_sql::{DbPool, DbInstances};
+use std::path::PathBuf;
+use std::fs;
 
 fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
     let instances_lock = instances.0.try_read().map_err(|e| e.to_string())?;
@@ -11,6 +13,70 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
     match db_pool {
         DbPool::Sqlite(pool) => Ok(pool.clone()),
     }
+}
+
+const UNCATEGORIZED_FOLDER: &str = "_uncategorized";
+
+/// Generate a unique filename if file already exists
+fn get_unique_destination(dest: &std::path::Path) -> PathBuf {
+    if !dest.exists() {
+        return dest.to_path_buf();
+    }
+
+    let parent = dest.parent().unwrap_or(std::path::Path::new("."));
+    let stem = dest.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file");
+    let ext = dest.extension()
+        .and_then(|s| s.to_str())
+        .map(|e| format!(".{}", e))
+        .unwrap_or_default();
+
+    let mut counter = 1;
+    loop {
+        let new_name = if ext.is_empty() {
+            format!("{} ({})", stem, counter)
+        } else {
+            format!("{} ({}){}", stem, counter, ext)
+        };
+        let new_path = parent.join(&new_name);
+        if !new_path.exists() {
+            return new_path;
+        }
+        counter += 1;
+    }
+}
+
+/// Move a file, handling cross-drive moves
+/// Returns the final destination path
+fn move_file(source: &std::path::Path, dest: &std::path::Path) -> Result<PathBuf, String> {
+    let final_dest = get_unique_destination(dest);
+
+    // Try rename first (fast, same filesystem)
+    if fs::rename(source, &final_dest).is_ok() {
+        return Ok(final_dest);
+    }
+
+    // Fall back to copy + delete (cross-drive)
+    fs::copy(source, &final_dest)
+        .map_err(|e| {
+            // Map common filesystem errors to user-friendly codes
+            let err_str = e.to_string().to_lowercase();
+            if err_str.contains("permission denied") {
+                "PERMISSION_DENIED".to_string()
+            } else if err_str.contains("disk full") || err_str.contains("no space") {
+                "DISK_FULL".to_string()
+            } else if err_str.contains("being used") || err_str.contains("locked") {
+                "FILE_LOCKED".to_string()
+            } else {
+                format!("Failed to copy file: {}", e)
+            }
+        })?;
+
+    fs::remove_file(source)
+        .map_err(|e| format!("Failed to remove original: {}", e))?;
+
+    Ok(final_dest)
 }
 
 #[tauri::command]
@@ -148,6 +214,7 @@ pub async fn file_create(
 
     let validated_name = validate_display_name(&display_name)?;
 
+    // Check for existing file with same path
     let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM files WHERE path = ?")
         .bind(&path)
         .fetch_optional(&pool)
@@ -158,18 +225,93 @@ pub async fn file_create(
         return Err("FILE_ALREADY_EXISTS".to_string());
     }
 
-    let result = sqlx::query(
-        "INSERT INTO files (path, display_name, category_id) VALUES (?, ?, ?)"
+    // Get storage_path from settings
+    let storage_path_result: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM app_settings WHERE key = 'storage_path'"
     )
-    .bind(&path)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let storage_path = match storage_path_result {
+        Some((p,)) if !p.is_empty() => PathBuf::from(&p),
+        _ => return Err("STORAGE_PATH_NOT_CONFIGURED".to_string()),
+    };
+
+    // Verify storage path exists
+    if !storage_path.exists() {
+        return Err("STORAGE_PATH_NOT_FOUND".to_string());
+    }
+
+    // Check source file exists
+    let source_path = PathBuf::from(&path);
+    if !source_path.exists() {
+        return Err("SOURCE_FILE_NOT_FOUND".to_string());
+    }
+
+    // Canonicalize paths for comparison
+    let source_canonical = source_path.canonicalize()
+        .map_err(|e| format!("Failed to resolve source path: {}", e))?;
+    let storage_canonical = storage_path.canonicalize()
+        .map_err(|e| format!("Failed to resolve storage path: {}", e))?;
+
+    // Check source is not inside storage_path
+    if source_canonical.starts_with(&storage_canonical) {
+        return Err("SOURCE_ALREADY_IN_STORAGE".to_string());
+    }
+
+    // Determine destination folder
+    let folder_name = if let Some(cat_id) = category_id {
+        // Get category's folder_name, computing if NULL
+        let cat_result: Option<(Option<String>, String)> = sqlx::query_as(
+            "SELECT folder_name, name FROM categories WHERE id = ?"
+        )
+        .bind(cat_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        match cat_result {
+            Some((Some(folder), _)) => folder,
+            Some((None, name)) => sanitize_folder_name(&name),
+            None => return Err("CATEGORY_NOT_FOUND".to_string()),
+        }
+    } else {
+        UNCATEGORIZED_FOLDER.to_string()
+    };
+
+    // Create destination folder if needed
+    let dest_folder = storage_canonical.join(&folder_name);
+    if !dest_folder.exists() {
+        fs::create_dir_all(&dest_folder)
+            .map_err(|e| format!("Failed to create folder: {}", e))?;
+    }
+
+    // Get filename and build destination path
+    let filename = source_path.file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("Invalid filename")?;
+    let dest_path = dest_folder.join(filename);
+
+    // Move the file
+    let final_path = move_file(&source_canonical, &dest_path)?;
+    let final_path_str = final_path.to_string_lossy().to_string();
+
+    // Insert into database with in_storage=true
+    let result = sqlx::query(
+        "INSERT INTO files (path, display_name, category_id, in_storage, original_path, file_status) VALUES (?, ?, ?, 1, ?, 'available')"
+    )
+    .bind(&final_path_str)
     .bind(&validated_name)
     .bind(category_id)
+    .bind(&path)  // original_path is the source path
     .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;
 
     let file_id = result.last_insert_rowid();
 
+    // Insert tags
     if let Some(tags) = tag_ids {
         for tag_id in tags {
             sqlx::query("INSERT INTO file_tags (file_id, tag_id) VALUES (?, ?)")
@@ -181,6 +323,7 @@ pub async fn file_create(
         }
     }
 
+    // Insert authors
     if let Some(authors) = author_ids {
         for author_id in authors {
             sqlx::query("INSERT INTO file_authors (file_id, author_id) VALUES (?, ?)")
@@ -192,6 +335,7 @@ pub async fn file_create(
         }
     }
 
+    // Insert metadata
     if let Some(meta) = metadata {
         for m in meta {
             sqlx::query("INSERT INTO metadata (file_id, key, value, data_type) VALUES (?, ?, ?, ?)")
@@ -218,7 +362,6 @@ pub async fn file_update(
     app: AppHandle,
     id: i64,
     display_name: Option<String>,
-    category_id: Option<Option<i64>>,
 ) -> Result<FileUpdateResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
@@ -227,15 +370,6 @@ pub async fn file_update(
         let validated_name = validate_display_name(&name)?;
         sqlx::query("UPDATE files SET display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
             .bind(&validated_name)
-            .bind(id)
-            .execute(&pool)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-
-    if let Some(cat_id) = category_id {
-        sqlx::query("UPDATE files SET category_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-            .bind(cat_id)
             .bind(id)
             .execute(&pool)
             .await
@@ -258,11 +392,28 @@ pub async fn file_delete(
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    sqlx::query("DELETE FROM files WHERE id = ?")
-        .bind(id)
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Get file info before deleting
+    let file_info: Option<(String, bool)> = sqlx::query_as(
+        "SELECT path, in_storage FROM files WHERE id = ?"
+    )
+    .bind(id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some((path, in_storage)) = file_info {
+        // If file is in storage, delete from filesystem
+        if in_storage {
+            let _ = fs::remove_file(&path); // Ignore errors if file doesn't exist
+        }
+
+        // Delete from database
+        sqlx::query("DELETE FROM files WHERE id = ?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
 
     Ok(FileDeleteResponse { success: true })
 }
@@ -270,6 +421,115 @@ pub async fn file_delete(
 #[derive(Serialize)]
 pub struct FileDeleteResponse {
     pub success: bool,
+}
+
+#[tauri::command]
+pub async fn file_move_category(
+    app: AppHandle,
+    id: i64,
+    category_id: Option<i64>,
+) -> Result<FileMoveCategoryResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    // Get current file info
+    let file_info: Option<(String, bool, Option<i64>)> = sqlx::query_as(
+        "SELECT path, in_storage, category_id FROM files WHERE id = ?"
+    )
+    .bind(id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let (current_path, in_storage, _current_category) = file_info
+        .ok_or("FILE_NOT_FOUND".to_string())?;
+
+    // Verify file is in storage
+    if !in_storage {
+        return Err("FILE_NOT_IN_STORAGE".to_string());
+    }
+
+    // Get storage_path
+    let storage_path_result: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM app_settings WHERE key = 'storage_path'"
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let storage_path = match storage_path_result {
+        Some((p,)) if !p.is_empty() => PathBuf::from(&p),
+        _ => return Err("STORAGE_PATH_NOT_CONFIGURED".to_string()),
+    };
+
+    // Determine new folder
+    let folder_name = if let Some(cat_id) = category_id {
+        let cat_result: Option<(Option<String>, String)> = sqlx::query_as(
+            "SELECT folder_name, name FROM categories WHERE id = ?"
+        )
+        .bind(cat_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        match cat_result {
+            Some((Some(folder), _)) => folder,
+            Some((None, name)) => sanitize_folder_name(&name),
+            None => return Err("CATEGORY_NOT_FOUND".to_string()),
+        }
+    } else {
+        UNCATEGORIZED_FOLDER.to_string()
+    };
+
+    // Create destination folder if needed
+    let dest_folder = storage_path.join(&folder_name);
+    if !dest_folder.exists() {
+        fs::create_dir_all(&dest_folder)
+            .map_err(|e| format!("Failed to create folder: {}", e))?;
+    }
+
+    // Get current file path and filename
+    let current_path_buf = PathBuf::from(&current_path);
+    let filename = current_path_buf.file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("Invalid filename")?;
+
+    // Check if already in the correct folder
+    if let Some(parent) = current_path_buf.parent()
+        && parent == dest_folder
+    {
+        // Already in correct folder, just update database
+        sqlx::query("UPDATE files SET category_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(category_id)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        return Ok(FileMoveCategoryResponse { success: true, new_path: current_path });
+    }
+
+    // Move the file
+    let dest_path = dest_folder.join(filename);
+    let final_path = move_file(&current_path_buf, &dest_path)?;
+    let final_path_str = final_path.to_string_lossy().to_string();
+
+    // Update database
+    sqlx::query("UPDATE files SET path = ?, category_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(&final_path_str)
+        .bind(category_id)
+        .bind(id)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(FileMoveCategoryResponse { success: true, new_path: final_path_str })
+}
+
+#[derive(Serialize)]
+pub struct FileMoveCategoryResponse {
+    pub success: bool,
+    pub new_path: String,
 }
 
 #[tauri::command]

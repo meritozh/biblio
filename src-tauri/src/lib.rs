@@ -20,6 +20,7 @@ pub fn run() {
             commands::file::file_create,
             commands::file::file_update,
             commands::file::file_delete,
+            commands::file::file_move_category,
             commands::file::file_search,
             commands::file::file_check_status,
             commands::category::category_list,
