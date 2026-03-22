@@ -613,11 +613,7 @@ fn move_file(source: &PathBuf, dest: &PathBuf) -> Result<PathBuf, String> {
         })?;
 
     fs::remove_file(source)
-        .map_err(|e| {
-            // Log but don't fail - the copy succeeded
-            eprintln!("Warning: Failed to remove original file after copy: {}", e);
-            format!("Failed to remove original: {}", e)
-        })?;
+        .map_err(|e| format!("Failed to remove original: {}", e))?;
 
     Ok(final_dest)
 }
@@ -1573,6 +1569,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Button } from '@/components/ui/button';
 ```
 
 Add state in component:
@@ -1605,10 +1602,10 @@ const handleConfirmMove = async () => {
   try {
     await onCategoryChange(pendingCategoryId);
     onChange({ ...values, category_id: pendingCategoryId });
-    setPendingCategoryId(null);
+    setPendingCategoryId(null); // Close dialog on success
   } catch (error) {
     console.error('Failed to move file:', error);
-    // Don't clear pendingCategoryId so user can retry
+    // Don't close dialog or clear pendingCategoryId so user can retry
   } finally {
     setIsMoving(false);
   }
@@ -1634,9 +1631,9 @@ Add before the closing `</div>`:
     </AlertDialogHeader>
     <AlertDialogFooter>
       <AlertDialogCancel onClick={handleCancelMove}>Cancel</AlertDialogCancel>
-      <AlertDialogAction onClick={handleConfirmMove} disabled={isMoving}>
+      <Button onClick={handleConfirmMove} disabled={isMoving}>
         {isMoving ? 'Moving...' : 'Move File'}
-      </AlertDialogAction>
+      </Button>
     </AlertDialogFooter>
   </AlertDialogContent>
 </AlertDialog>
