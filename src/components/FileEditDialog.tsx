@@ -7,13 +7,9 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { CategorySelect } from '@/components/CategorySelect';
-import { TagManager } from '@/components/TagManager';
-import { AuthorManager } from '@/components/AuthorManager';
-import { MetadataEditor } from '@/components/MetadataEditor';
-import { fileUpdate, authorSet, tagAssign, metadataSet, metadataDelete } from '@/lib/tauri';
-import type { FileEntry, Category, Tag, Author, Metadata, MetadataType } from '@/types';
+import { DynamicMetadataForm, type DynamicMetadataFormValues } from '@/components/DynamicMetadataForm';
+import { fileUpdate, authorSet, tagAssign, fileMoveCategory, translateError } from '@/lib/tauri';
+import type { FileEntry, Category, Tag, Author } from '@/types';
 
 interface FileEditDialogProps {
   file: FileEntry | null;
@@ -25,6 +21,7 @@ interface FileEditDialogProps {
   onFileUpdated: () => Promise<void>;
   onTagCreate?: (name: string) => Promise<Tag>;
   onAuthorCreate?: (name: string) => Promise<Author>;
+  onCategoryCreated?: (category: Category) => void;
 }
 
 export function FileEditDialog({
@@ -37,22 +34,33 @@ export function FileEditDialog({
   onFileUpdated,
   onTagCreate,
   onAuthorCreate,
+  onCategoryCreated,
 }: FileEditDialogProps) {
-  const [display_name, setDisplayName] = useState('');
-  const [category_id, setCategoryId] = useState<number | null>(null);
-  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
-  const [selectedAuthorIds, setSelectedAuthorIds] = useState<number[]>([]);
-  const [metadata, setMetadata] = useState<Metadata[]>([]);
+  const [formValues, setFormValues] = useState<DynamicMetadataFormValues>({
+    display_name: '',
+    category_id: null,
+    tag_ids: [],
+    author_ids: [],
+    metadata: [],
+  });
   const [saving, setSaving] = useState(false);
+  const [moveError, setMoveError] = useState<string | null>(null);
 
   // Reset form when file changes
   useEffect(() => {
     if (file && open) {
-      setDisplayName(file.display_name);
-      setCategoryId(file.category_id);
-      setSelectedTagIds(file.tags?.map((t) => t.id) || []);
-      setSelectedAuthorIds(file.authors?.map((a) => a.id) || []);
-      setMetadata(file.metadata || []);
+      setFormValues({
+        display_name: file.display_name,
+        category_id: file.category_id,
+        tag_ids: file.tags?.map((t) => t.id) || [],
+        author_ids: file.authors?.map((a) => a.id) || [],
+        metadata: (file.metadata || []).map((m) => ({
+          key: m.key,
+          value: m.value,
+          data_type: m.data_type,
+        })),
+      });
+      setMoveError(null);
     }
   }, [file, open]);
 
@@ -63,15 +71,15 @@ export function FileEditDialog({
     try {
       // Update basic file info
       await fileUpdate(file.id, {
-        display_name,
-        category_id,
+        display_name: formValues.display_name,
+        category_id: formValues.category_id,
       });
 
       // Update tags
-      await tagAssign(file.id, selectedTagIds);
+      await tagAssign(file.id, formValues.tag_ids);
 
       // Update authors
-      await authorSet(file.id, selectedAuthorIds);
+      await authorSet(file.id, formValues.author_ids);
 
       await onFileUpdated();
       onOpenChange(false);
@@ -82,30 +90,16 @@ export function FileEditDialog({
     setSaving(false);
   };
 
-  const handleMetadataUpdate = async (key: string, value: string, dataType?: string) => {
+  const handleCategoryChange = async (newCategoryId: number | null) => {
     if (!file) return;
-    const typedDataType = (dataType || 'text') as MetadataType;
-    await metadataSet(file.id, key, value, typedDataType);
-    // Refresh metadata
-    const updatedMeta = metadata.map((m) =>
-      m.key === key ? { ...m, value, data_type: typedDataType } : m
-    );
-    if (!metadata.find((m) => m.key === key)) {
-      updatedMeta.push({
-        id: -1,
-        file_id: file.id,
-        key,
-        value,
-        data_type: typedDataType,
-      });
+    setMoveError(null);
+    try {
+      await fileMoveCategory(file.id, newCategoryId);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      setMoveError(translateError(errorMsg));
+      throw error; // Re-throw to let the form know it failed
     }
-    setMetadata(updatedMeta);
-  };
-
-  const handleMetadataDelete = async (key: string) => {
-    if (!file) return;
-    await metadataDelete(file.id, key);
-    setMetadata(metadata.filter((m) => m.key !== key));
   };
 
   if (!file) return null;
@@ -117,45 +111,22 @@ export function FileEditDialog({
           <DialogTitle>Edit File</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-4">
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Display Name</label>
-            <Input
-              value={display_name}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="File name"
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Category</label>
-            <CategorySelect
-              categories={categories}
-              value={category_id}
-              onValueChange={setCategoryId}
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Authors</label>
-            <AuthorManager
-              authors={authors}
-              selectedAuthorIds={selectedAuthorIds}
-              onAuthorAssign={setSelectedAuthorIds}
-              onAuthorCreate={onAuthorCreate}
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Tags</label>
-            <TagManager
-              tags={tags}
-              selectedTagIds={selectedTagIds}
-              onTagAssign={setSelectedTagIds}
-              onTagCreate={onTagCreate}
-            />
-          </div>
-          <MetadataEditor
-            metadata={metadata}
-            onUpdate={handleMetadataUpdate}
-            onDelete={handleMetadataDelete}
+          <DynamicMetadataForm
+            values={formValues}
+            onChange={setFormValues}
+            categories={categories}
+            tags={tags}
+            authors={authors}
+            onCategoryCreated={onCategoryCreated}
+            onTagCreate={onTagCreate}
+            onAuthorCreate={onAuthorCreate}
+            fileId={file?.id}
+            inStorage={file?.in_storage}
+            onCategoryChange={handleCategoryChange}
           />
+          {moveError && (
+            <p className="text-sm text-red-500 mt-2">{moveError}</p>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
