@@ -81,7 +81,7 @@ pub async fn file_get(
     .ok_or("File not found")?;
 
     let category: Option<Category> = if let Some(cat_id) = file.category_id {
-        sqlx::query_as("SELECT id, name, icon, is_default, created_at FROM categories WHERE id = ?")
+        sqlx::query_as("SELECT id, name, icon, is_default, folder_name, created_at FROM categories WHERE id = ?")
             .bind(cat_id)
             .fetch_optional(&pool)
             .await
@@ -289,9 +289,9 @@ pub async fn file_search(
     let offset = offset.unwrap_or(0);
 
     let sql = if query.is_empty() {
-        "SELECT id, path, display_name, category_id, file_status, created_at, updated_at FROM files WHERE 1=1"
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, created_at, updated_at FROM files WHERE 1=1"
     } else {
-        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.created_at, f.updated_at
+        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.created_at, f.updated_at
          FROM files f
          JOIN files_fts ON files_fts.rowid = f.id
          WHERE files_fts MATCH ?"
@@ -341,7 +341,7 @@ pub async fn file_check_status(
         Some(ids) => {
             let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let query = format!(
-                "SELECT id, path, display_name, category_id, file_status, created_at, updated_at FROM files WHERE id IN ({})",
+                "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, created_at, updated_at FROM files WHERE id IN ({})",
                 placeholders
             );
             sqlx::query_as(&query)
@@ -350,7 +350,7 @@ pub async fn file_check_status(
                 .map_err(|e| e.to_string())?
         }
         None => {
-            sqlx::query_as("SELECT id, path, display_name, category_id, file_status, created_at, updated_at FROM files")
+            sqlx::query_as("SELECT id, path, display_name, category_id, file_status, in_storage, original_path, created_at, updated_at FROM files")
                 .fetch_all(&pool)
                 .await
                 .map_err(|e| e.to_string())?

@@ -171,3 +171,35 @@ pub fn validate_author_name(name: &str) -> Result<String, String> {
 
     Ok(normalized)
 }
+
+/// Sanitize a name for use as a folder name
+pub fn sanitize_folder_name(name: &str) -> String {
+    let invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+    let mut sanitized: String = name
+        .chars()
+        .map(|c| if invalid_chars.contains(&c) { '_' } else { c })
+        .collect();
+
+    // Trim whitespace and dots
+    sanitized = sanitized.trim().trim_matches('.').to_string();
+
+    // Handle empty result
+    if sanitized.is_empty() {
+        sanitized = "Untitled".to_string();
+    }
+
+    // Limit length to 200 characters
+    if sanitized.len() > 200 {
+        // Use char_indices to safely truncate at a valid UTF-8 boundary
+        let truncate_pos = sanitized
+            .char_indices()
+            .take(200)
+            .last()
+            .map(|(pos, c)| pos + c.len_utf8())
+            .unwrap_or(0);
+        sanitized = sanitized[..truncate_pos].to_string();
+    }
+
+    // Use lowercase for cross-platform consistency
+    sanitized.to_lowercase()
+}
