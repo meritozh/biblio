@@ -307,13 +307,24 @@ pub async fn settings_set(
             }
             // Block system directories
             let path_str = path.to_string_lossy();
-            let dangerous_paths = ["/", "/System", "/Windows", "/usr", "/bin", "/etc", "\\Windows", "\\Program Files", "\\Program Files (x86)"];
-            for dangerous in dangerous_paths {
-                if path_str == dangerous || path_str.starts_with(&format!("{}/", dangerous)) || path_str.starts_with(&format!("{}\\", dangerous)) {
+            let lower_path = path_str.to_lowercase();
+
+            // Unix system directories
+            let unix_dangerous = ["/", "/system", "/usr", "/bin", "/etc"];
+            for dangerous in unix_dangerous {
+                if lower_path == dangerous || lower_path.starts_with(&format!("{}/", dangerous)) {
                     // Allow if it's a user subdirectory like /Users/...
-                    if dangerous == "/" && path_str.starts_with("/Users/") {
+                    if dangerous == "/" && lower_path.starts_with("/users/") {
                         continue;
                     }
+                    return Err("STORAGE_PATH_SYSTEM_DIRECTORY".to_string());
+                }
+            }
+
+            // Windows system directories (check for patterns like C:\Windows, D:\Program Files, etc.)
+            let windows_patterns = ["\\windows", "\\program files", "\\program files (x86)"];
+            for pattern in windows_patterns {
+                if lower_path.contains(pattern) {
                     return Err("STORAGE_PATH_SYSTEM_DIRECTORY".to_string());
                 }
             }
