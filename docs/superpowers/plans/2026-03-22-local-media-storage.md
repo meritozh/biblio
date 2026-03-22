@@ -184,7 +184,7 @@ git commit -m "feat: add storage fields to Rust structs"
 **Files:**
 - Modify: `src-tauri/src/commands/validation.rs`
 
-**Note**: If `validation.rs` doesn't exist in your codebase, create it as a new file.
+**Note**: If `validation.rs` doesn't exist in your codebase, create it as a new file with the content below. If it exists, add the function to the existing file.
 
 - [ ] **Step 1: Add sanitize_folder_name function**
 
@@ -296,6 +296,18 @@ pub async fn settings_set(
             let path = std::path::PathBuf::from(&value);
             if !path.exists() {
                 return Err("STORAGE_PATH_NOT_FOUND".to_string());
+            }
+            // Block system directories
+            let path_str = path.to_string_lossy();
+            let dangerous_paths = ["/", "/System", "/Windows", "/usr", "/bin", "/etc"];
+            for dangerous in dangerous_paths {
+                if path_str == dangerous || path_str.starts_with(&format!("{}/", dangerous)) {
+                    // Allow if it's a user subdirectory like /Users/...
+                    if dangerous == "/" && path_str.starts_with("/Users/") {
+                        continue;
+                    }
+                    return Err("STORAGE_PATH_SYSTEM_DIRECTORY".to_string());
+                }
             }
             // Try to create a test file to verify write permission
             let test_file = path.join(".biblio_test");
@@ -481,6 +493,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   'STORAGE_PATH_CHANGE_BLOCKED': 'Cannot change storage path while files are stored. Remove all files first.',
   'STORAGE_PATH_NOT_FOUND': 'The selected folder does not exist.',
   'STORAGE_PATH_NOT_WRITABLE': 'Cannot write to the selected folder. Please choose another location.',
+  'STORAGE_PATH_SYSTEM_DIRECTORY': 'Cannot use a system directory. Please choose another location.',
   'SOURCE_FILE_NOT_FOUND': 'The source file could not be found.',
   'FILE_ALREADY_IN_STORAGE': 'This file is already in the managed storage.',
   'FILE_NOT_IN_STORAGE': 'This file is not in managed storage.',
@@ -1188,7 +1201,7 @@ import { useState, useEffect } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { settingsGet, settingsSet } from '@/lib/tauri';
+import { settingsGet, settingsSet, translateError } from '@/lib/tauri';
 import { FolderOpen, AlertCircle, Check } from 'lucide-react';
 
 export function StoragePathSetting() {
@@ -1223,7 +1236,8 @@ export function StoragePathSetting() {
         setSuccess(true);
         setTimeout(() => setSuccess(false), 3000);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to save');
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        setError(translateError(errorMsg));
       } finally {
         setSaving(false);
       }
