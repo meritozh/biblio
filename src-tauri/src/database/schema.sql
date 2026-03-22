@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS categories (
     name TEXT NOT NULL UNIQUE,
     icon TEXT,
     is_default BOOLEAN DEFAULT 0,
+    folder_name TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -14,9 +15,20 @@ CREATE TABLE IF NOT EXISTS files (
     display_name TEXT NOT NULL,
     category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
     file_status TEXT DEFAULT 'available' CHECK (file_status IN ('available', 'missing', 'moved')),
+    in_storage BOOLEAN DEFAULT 0,
+    original_path TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- App settings table
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- Default storage path setting
+INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
 
 -- Tags table
 CREATE TABLE IF NOT EXISTS tags (
