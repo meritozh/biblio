@@ -96,6 +96,14 @@ function HomePage() {
     void loadFiles(selectedCategoryId);
   }, [selectedCategoryId, loadFiles]);
 
+  const handleSettingsOpenChange = useCallback((open: boolean) => {
+    setSettingsOpen(open);
+    // Re-check storage path when dialog closes
+    if (!open) {
+      void checkStoragePath();
+    }
+  }, [checkStoragePath]);
+
   const handleFilesSelected = (paths: string[]) => {
     setSelectedFiles(paths);
     if (paths.length === 1 && paths[0]) {
@@ -210,7 +218,7 @@ function HomePage() {
             <p className="text-muted-foreground">{total} files</p>
           </div>
           <div className="flex items-center gap-2">
-            <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+            <SettingsDialog open={settingsOpen} onOpenChange={handleSettingsOpenChange} />
             <FilePicker onFilesSelected={handleFilesSelected} disabled={storagePathConfigured === false} />
           </div>
         </div>
