@@ -1341,9 +1341,14 @@ import { Button } from '@/components/ui/button';
 import { Settings } from 'lucide-react';
 import { StoragePathSetting } from './StoragePathSetting';
 
-export function SettingsDialog() {
+interface SettingsDialogProps {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   return (
-    <Dialog>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
         <Button variant="ghost" size="icon">
           <Settings className="h-5 w-5" />
@@ -1399,6 +1404,7 @@ Add state after other useState calls:
 ```tsx
 const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
 const [storagePathAccessible, setStoragePathAccessible] = useState(true);
+const [settingsOpen, setSettingsOpen] = useState(false);
 ```
 
 Add the check function and useEffect:
@@ -1444,7 +1450,10 @@ Add after the main header div:
   <div className="flex items-center gap-2 p-3 mb-4 bg-red-50 dark:bg-red-950/20 rounded-md border border-red-200 dark:border-red-800">
     <AlertCircle className="h-4 w-4 text-red-600 dark:text-red-500" />
     <span className="text-sm text-red-800 dark:text-red-200">
-      Storage path is not accessible. <button className="underline" onClick={() => {/* open settings */}}>Reconfigure</button>
+      Storage path is not accessible.{' '}
+      <button className="underline" onClick={() => setSettingsOpen(true)}>
+        Reconfigure
+      </button>
     </span>
   </div>
 )}
@@ -1461,7 +1470,7 @@ Update the header to include the settings button:
     <p className="text-muted-foreground">{total} files</p>
   </div>
   <div className="flex items-center gap-2">
-    <SettingsDialog />
+    <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     <FilePicker onFilesSelected={handleFilesSelected} disabled={storagePathConfigured === false} />
   </div>
 </div>
@@ -1569,7 +1578,7 @@ import {
 Add state in component:
 
 ```tsx
-const [pendingCategoryId, setPendingCategoryId] = useState<number | null | null>(null);
+const [pendingCategoryId, setPendingCategoryId] = useState<number | null>(null);
 const [isMoving, setIsMoving] = useState(false);
 ```
 
@@ -1596,22 +1605,16 @@ const handleConfirmMove = async () => {
   try {
     await onCategoryChange(pendingCategoryId);
     onChange({ ...values, category_id: pendingCategoryId });
+    setPendingCategoryId(null);
   } catch (error) {
     console.error('Failed to move file:', error);
+    // Don't clear pendingCategoryId so user can retry
   } finally {
     setIsMoving(false);
-    setPendingCategoryId(null);
   }
 };
 
 const handleCancelMove = () => {
-  setPendingCategoryId(null);
-};
-
-const handleUpdateOnly = () => {
-  if (pendingCategoryId !== null) {
-    onChange({ ...values, category_id: pendingCategoryId });
-  }
   setPendingCategoryId(null);
 };
 ```
@@ -1621,7 +1624,7 @@ const handleUpdateOnly = () => {
 Add before the closing `</div>`:
 
 ```tsx
-<AlertDialog open={pendingCategoryId !== null} onOpenChange={() => setPendingCategoryId(null)}>
+<AlertDialog open={pendingCategoryId !== null} onOpenChange={(open) => { if (!open) setPendingCategoryId(null); }}>
   <AlertDialogContent>
     <AlertDialogHeader>
       <AlertDialogTitle>Move file to new category folder?</AlertDialogTitle>
@@ -1631,9 +1634,6 @@ Add before the closing `</div>`:
     </AlertDialogHeader>
     <AlertDialogFooter>
       <AlertDialogCancel onClick={handleCancelMove}>Cancel</AlertDialogCancel>
-      <AlertDialogAction onClick={handleUpdateOnly} className="bg-secondary text-secondary-foreground">
-        Update Only
-      </AlertDialogAction>
       <AlertDialogAction onClick={handleConfirmMove} disabled={isMoving}>
         {isMoving ? 'Moving...' : 'Move File'}
       </AlertDialogAction>
@@ -1979,9 +1979,11 @@ git commit -m "feat: update SQL queries for new storage fields"
 
 - [ ] **Step 2: Test error cases**
 
-1. Try to add file without configuring storage path
-2. Try to add file from inside storage path
-3. Try to delete category with files
+1. Try to add file without configuring storage path → verify disabled state
+2. Try to add file from inside storage path → verify rejection error
+3. Try to delete category with files → verify blocked with error message
+4. Try to delete category with no files → verify successful deletion
+5. Rename category with files → verify folder renamed and file paths updated
 
 - [ ] **Step 3: Run typecheck and tests**
 
