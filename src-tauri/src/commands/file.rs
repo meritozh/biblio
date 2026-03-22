@@ -462,6 +462,15 @@ pub async fn file_move_category(
         _ => return Err("STORAGE_PATH_NOT_CONFIGURED".to_string()),
     };
 
+    // Verify storage path exists
+    if !storage_path.exists() {
+        return Err("STORAGE_PATH_NOT_FOUND".to_string());
+    }
+
+    // Canonicalize storage path
+    let storage_canonical = storage_path.canonicalize()
+        .map_err(|e| format!("Failed to resolve storage path: {}", e))?;
+
     // Determine new folder
     let folder_name = if let Some(cat_id) = category_id {
         let cat_result: Option<(Option<String>, String)> = sqlx::query_as(
@@ -482,7 +491,7 @@ pub async fn file_move_category(
     };
 
     // Create destination folder if needed
-    let dest_folder = storage_path.join(&folder_name);
+    let dest_folder = storage_canonical.join(&folder_name);
     if !dest_folder.exists() {
         fs::create_dir_all(&dest_folder)
             .map_err(|e| format!("Failed to create folder: {}", e))?;
