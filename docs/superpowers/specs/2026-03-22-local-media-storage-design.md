@@ -50,8 +50,13 @@ Transform biblio into a local media management desktop application that moves fi
 - Folder name is derived from a constant, not from category data
 
 **Cross-platform path handling**:
+- Use `std::path::PathBuf` for all path operations (handles separators automatically)
+- Use `canonicalize()` for path comparisons to resolve symlinks and normalize
+- Case sensitivity: macOS is case-insensitive, Linux is case-sensitive. Always use lowercase for folder name uniqueness checks.
+- Maximum path length: 260 chars on Windows (unless long paths enabled), 4096 on Linux/macOS. Keep category folder names under 200 chars.
+- Path comparison: Always use canonicalized paths for storage_path containment checks
 
-### Database Schema
+## Architecture
 
 **Note**: During active development, schema changes are applied in-place. Delete the database file to apply fresh schema. For production release, proper migrations will be created.
 
@@ -76,6 +81,7 @@ ALTER TABLE categories ADD COLUMN folder_name TEXT;
 - Stores the sanitized, unique folder name for the category
 - Set automatically on category creation/update
 - Used for file path construction instead of computing from name
+- **For existing categories**: `folder_name` is NULL. On first access (file import or category update), compute and save the sanitized folder name.
 
 Default setting:
 ```sql
@@ -94,16 +100,22 @@ INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
   1. Get storage_path from settings
   2. If not configured, return error
   3. Check if source path is inside storage_path (prefix check) - reject if so
-  4. Determine category folder name (use "Uncategorized" if no category)
-  5. Create `{storage_path}/{category_name}/` if not exists
+  4. Determine category folder name:
+     - If category assigned: use `category.folder_name`
+     - If no category: use `_uncategorized` constant
+  5. Create `{storage_path}/{folder_name}/` if not exists
   6. Move file to destination (auto-rename if exists)
-  7. Save to database with `path = new_path`, `in_storage = true`, `original_path = source_path`
+  7. **Original file is deleted** after successful move (for cross-drive: after copy succeeds)
+  8. Save to database with `path = new_path`, `in_storage = true`, `original_path = source_path`
 
 - New command: `file_move_category(file_id: number, new_category_id: number | null)`
-  1. Get file and current category
-  2. Get new category name
-  3. Move file from `{storage_path}/{old_category}/file` to `{storage_path}/{new_category}/file`
-  4. Update database with new path
+  1. Get file with current path
+  2. Determine destination folder:
+     - If `new_category_id` is not null: use that category's `folder_name`
+     - If `new_category_id` is null: use `_uncategorized` constant
+  3. Move file from current path to `{storage_path}/{dest_folder}/filename`
+  4. Update database with new path and `category_id`
+  5. Works for files moving from `_uncategorized` to category, or category to `_uncategorized`, or between categories
 
 - Update `file_delete` command (replace existing, not new command):
   - If `in_storage = true`: delete file from filesystem, then delete from database
@@ -199,8 +211,23 @@ INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
 
 ## Testing
 
-- Import file → verify moved to correct category folder
-- Change category → verify file moved to new folder
-- Try importing file from storage_path → verify rejection
-- Delete file → verify removed from filesystem and database
-- Configure storage path → verify setting persisted
+**Core functionality:**
+- Import file with category → verify moved to correct category folder
+- Import file without category → verify moved to `_uncategorized` folder
+- Change category on existing file → verify file moved to new folder
+- Move file from `_uncategorized` to category → verify correct movement
+- Delete file with `in_storage = true` → verify removed from filesystem and database
+- Delete file with `in_storage = false` → verify removed from database only, file preserved
+
+**Edge cases:**
+- Try importing file from storage_path → verify rejection with error
+- Category rename with files → verify folder renamed and file paths updated
+- Category delete with files → verify blocked with error
+- File collision on import → verify auto-rename with suffix
+- Category name with invalid characters → verify sanitized folder name
+- Two categories with colliding sanitized names → verify suffix added
+
+**Error scenarios:**
+- Storage path not configured → verify import disabled
+- Storage path becomes inaccessible → verify error banner shown
+- Import when disk full → verify error message, no partial state
