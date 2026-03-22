@@ -89,7 +89,12 @@ CREATE TABLE IF NOT EXISTS categories (
 
 - [ ] **Step 4: Delete database and test**
 
-Run: `rm -f biblio.db` (or the database file location)
+Delete the existing database file to apply the new schema. The database file is typically located at:
+- macOS/Linux: `~/.local/share/com.biblio.app/biblio.db` or in the app's data directory
+- Windows: `%APPDATA%\com.biblio.app\biblio.db`
+
+Or use the app's configuration to find the exact path. During development with `pnpm tauri:dev`, the database is usually created in the current working directory or a subdirectory.
+
 Run: `pnpm tauri:dev`
 Expected: App starts, database recreated with new schema
 
@@ -178,6 +183,8 @@ git commit -m "feat: add storage fields to Rust structs"
 
 **Files:**
 - Modify: `src-tauri/src/commands/validation.rs`
+
+**Note**: If `validation.rs` doesn't exist in your codebase, create it as a new file.
 
 - [ ] **Step 1: Add sanitize_folder_name function**
 
@@ -481,6 +488,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   'CATEGORY_HAS_FILES': 'Cannot delete category with files. Move or delete files first.',
   'CATEGORY_NOT_FOUND': 'The selected category was not found.',
   'CATEGORY_FOLDER_NOT_SET': 'The category folder is not configured.',
+  'CANNOT_DELETE_DEFAULT': 'Cannot delete the default category.',
 };
 
 export function translateError(error: string): string {
@@ -807,15 +815,28 @@ pub async fn file_move_category(
 
     // Determine new folder
     let new_folder = if let Some(cat_id) = new_category_id {
-        let cat: (Option<String>,) = sqlx::query_as(
-            "SELECT folder_name FROM categories WHERE id = ?"
+        let cat: (Option<String>, String) = sqlx::query_as(
+            "SELECT folder_name, name FROM categories WHERE id = ?"
         )
         .bind(cat_id)
         .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
-        cat.0.ok_or("CATEGORY_FOLDER_NOT_SET")?
+        match cat.0 {
+            Some(folder) => folder,
+            None => {
+                // Compute and save folder_name for existing category
+                let sanitized = sanitize_folder_name(&cat.1);
+                sqlx::query("UPDATE categories SET folder_name = ? WHERE id = ?")
+                    .bind(&sanitized)
+                    .bind(cat_id)
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                sanitized
+            }
+        }
     } else {
         UNCATEGORIZED_FOLDER.to_string()
     };
@@ -880,6 +901,8 @@ pub async fn file_update(
     Ok(FileUpdateResponse { success: true })
 }
 ```
+
+**Note**: This removes `category_id` from `file_update`. Check that no frontend code passes `category_id` to `file_update`. Category changes must go through `file_move_category` to ensure proper file movement.
 
 - [ ] **Step 6: Register file_move_category in lib.rs**
 
@@ -1322,6 +1345,7 @@ git commit -m "feat: add settings dialog with storage path configuration"
 Add to the imports at the top:
 
 ```tsx
+import { useState, useEffect, useCallback } from 'react';
 import { storageGetPath, storageCheckAccess } from '@/lib/tauri';
 import { SettingsDialog } from '@/components/SettingsDialog';
 import { AlertCircle } from 'lucide-react';
@@ -1331,14 +1355,22 @@ Add state after other useState calls:
 
 ```tsx
 const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
+const [storagePathAccessible, setStoragePathAccessible] = useState(true);
 ```
 
-Add to the useEffect:
+Add the check function and useEffect:
 
 ```tsx
 const checkStoragePath = useCallback(async () => {
   const path = await storageGetPath();
-  setStoragePathConfigured(path !== null && path !== '');
+  if (path && path !== '') {
+    const accessible = await storageCheckAccess();
+    setStoragePathConfigured(true);
+    setStoragePathAccessible(accessible);
+  } else {
+    setStoragePathConfigured(false);
+    setStoragePathAccessible(true);
+  }
 }, []);
 
 // In the useEffect
@@ -1351,7 +1383,7 @@ useEffect(() => {
 }, [loadCategories, loadTags, loadAuthors, loadFiles, checkStoragePath]);
 ```
 
-- [ ] **Step 2: Add warning banner**
+- [ ] **Step 2: Add warning banners**
 
 Add after the main header div:
 
@@ -1361,6 +1393,15 @@ Add after the main header div:
     <AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-500" />
     <span className="text-sm text-yellow-800 dark:text-yellow-200">
       Configure a storage folder in settings to start adding files
+    </span>
+  </div>
+)}
+
+{storagePathConfigured === true && !storagePathAccessible && (
+  <div className="flex items-center gap-2 p-3 mb-4 bg-red-50 dark:bg-red-950/20 rounded-md border border-red-200 dark:border-red-800">
+    <AlertCircle className="h-4 w-4 text-red-600 dark:text-red-500" />
+    <span className="text-sm text-red-800 dark:text-red-200">
+      Storage path is not accessible. <button className="underline" onClick={() => {/* open settings */}}>Reconfigure</button>
     </span>
   </div>
 )}
@@ -1430,33 +1471,7 @@ export function FilePicker({ onFilesSelected, disabled }: FilePickerProps) {
 }
 ```
 
-- [ ] **Step 6: Add storage accessibility check on mount**
-
-Update the checkStoragePath function to also check accessibility:
-
-```tsx
-const checkStoragePath = useCallback(async () => {
-  const path = await storageGetPath();
-  if (path && path !== '') {
-    const accessible = await storageCheckAccess();
-    setStoragePathConfigured(accessible);
-    if (!accessible) {
-      // Show reconfigure banner
-      setStoragePathAccessible(false);
-    }
-  } else {
-    setStoragePathConfigured(false);
-  }
-}, []);
-```
-
-Add state for accessibility:
-
-```tsx
-const [storagePathAccessible, setStoragePathAccessible] = useState(true);
-```
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/routes/index.tsx src/components/FilePicker.tsx
