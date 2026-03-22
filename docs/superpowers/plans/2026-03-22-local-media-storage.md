@@ -374,7 +374,7 @@ git commit -m "feat: add settings commands for storage path"
 
 ---
 
-## Task 4: Update TypeScript Types
+## Task 5: Update TypeScript Types
 
 **Files:**
 - Modify: `src/types/index.ts`
@@ -425,7 +425,7 @@ git commit -m "feat: add storage fields to TypeScript types"
 
 ---
 
-## Task 5: Add Frontend Settings API
+## Task 6: Add Frontend Settings API
 
 **Files:**
 - Modify: `src/lib/tauri.ts`
@@ -477,7 +477,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   'SOURCE_FILE_NOT_FOUND': 'The source file could not be found.',
   'FILE_ALREADY_IN_STORAGE': 'This file is already in the managed storage.',
   'FILE_NOT_IN_STORAGE': 'This file is not in managed storage.',
+  'FILE_NOT_FOUND': 'The file was not found.',
   'CATEGORY_HAS_FILES': 'Cannot delete category with files. Move or delete files first.',
+  'CATEGORY_NOT_FOUND': 'The selected category was not found.',
+  'CATEGORY_FOLDER_NOT_SET': 'The category folder is not configured.',
 };
 
 export function translateError(error: string): string {
@@ -494,7 +497,7 @@ git commit -m "feat: add settings and file_move_category API functions"
 
 ---
 
-## Task 6: Implement File Move Logic in Rust
+## Task 7: Implement File Move Logic in Rust
 
 **Files:**
 - Modify: `src-tauri/src/commands/file.rs`
@@ -508,6 +511,16 @@ use std::path::PathBuf;
 use std::fs;
 
 use crate::commands::validation::sanitize_folder_name;
+use tauri::Manager;
+use tauri_plugin_sql::{DbPool, DbInstances};
+
+fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
+    let instances_lock = instances.0.try_read().map_err(|e| e.to_string())?;
+    let db_pool = instances_lock.get(db_url).ok_or("Database not found")?;
+    match db_pool {
+        DbPool::Sqlite(pool) => Ok(pool.clone()),
+    }
+}
 
 const UNCATEGORIZED_FOLDER: &str = "_uncategorized";
 
@@ -890,7 +903,7 @@ git commit -m "feat: implement file move and storage logic"
 
 ---
 
-## Task 7: Update Category Commands
+## Task 8: Update Category Commands
 
 **Files:**
 - Modify: `src-tauri/src/commands/category.rs`
@@ -1137,7 +1150,7 @@ git commit -m "feat: add folder management to category commands"
 
 ---
 
-## Task 8: Create Settings Dialog UI
+## Task 9: Create Settings Dialog UI
 
 **Files:**
 - Create: `src/components/StoragePathSetting.tsx`
@@ -1299,7 +1312,7 @@ git commit -m "feat: add settings dialog with storage path configuration"
 
 ---
 
-## Task 9: Add Storage Path Check to Home Page
+## Task 10: Add Storage Path Check to Home Page
 
 **Files:**
 - Modify: `src/routes/index.tsx`
@@ -1309,7 +1322,7 @@ git commit -m "feat: add settings dialog with storage path configuration"
 Add to the imports at the top:
 
 ```tsx
-import { storageGetPath } from '@/lib/tauri';
+import { storageGetPath, storageCheckAccess } from '@/lib/tauri';
 import { SettingsDialog } from '@/components/SettingsDialog';
 import { AlertCircle } from 'lucide-react';
 ```
@@ -1452,7 +1465,7 @@ git commit -m "feat: add storage path check and warning to home page"
 
 ---
 
-## Task 10: Update DynamicMetadataForm for Category Change
+## Task 11: Update DynamicMetadataForm for Category Change
 
 **Files:**
 - Modify: `src/components/DynamicMetadataForm.tsx`
@@ -1735,7 +1748,7 @@ git commit -m "feat: add category change confirmation dialog"
 
 ---
 
-## Task 11: Wire Up Category Change in FileEditDialog
+## Task 12: Wire Up Category Change in FileEditDialog
 
 **Files:**
 - Modify: `src/components/FileEditDialog.tsx`
@@ -1803,7 +1816,7 @@ git commit -m "feat: wire up category change with file move"
 
 ---
 
-## Task 12: Update SQL Queries for New Fields
+## Task 13: Update SQL Queries for New Fields
 
 **Files:**
 - Modify: `src-tauri/src/commands/file.rs`
@@ -1899,7 +1912,7 @@ git commit -m "feat: update SQL queries for new storage fields"
 
 ---
 
-## Task 13: Final Testing and Polish
+## Task 14: Final Testing and Polish
 
 - [ ] **Step 1: Test complete flow**
 
@@ -1918,10 +1931,13 @@ git commit -m "feat: update SQL queries for new storage fields"
 2. Try to add file from inside storage path
 3. Try to delete category with files
 
-- [ ] **Step 3: Run typecheck**
+- [ ] **Step 3: Run typecheck and tests**
 
 Run: `pnpm typecheck`
 Expected: No errors
+
+Run: `pnpm test:run`
+Expected: All tests pass
 
 - [ ] **Step 4: Final commit**
 
