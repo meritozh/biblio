@@ -14,6 +14,7 @@ pub struct Category {
     pub name: String,
     pub icon: Option<String>,
     pub is_default: bool,
+    pub folder_name: Option<String>,
     pub created_at: String,
 }
 
@@ -24,6 +25,8 @@ pub struct FileEntry {
     pub display_name: String,
     pub category_id: Option<i64>,
     pub file_status: String,
+    pub in_storage: bool,
+    pub original_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -59,6 +62,8 @@ pub struct FileWithDetails {
     pub display_name: String,
     pub category_id: Option<i64>,
     pub file_status: String,
+    pub in_storage: bool,
+    pub original_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub category: Option<Category>,

@@ -28,7 +28,7 @@ pub async fn file_list(
     let offset = offset.unwrap_or(0);
 
     let mut query = String::from(
-        "SELECT id, path, display_name, category_id, file_status, created_at, updated_at FROM files WHERE 1=1"
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, created_at, updated_at FROM files WHERE 1=1"
     );
 
     if let Some(cat_id) = category_id {
@@ -72,7 +72,7 @@ pub async fn file_get(
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
     let file: FileEntry = sqlx::query_as(
-        "SELECT id, path, display_name, category_id, file_status, created_at, updated_at FROM files WHERE id = ?"
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, created_at, updated_at FROM files WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(&pool)
@@ -122,6 +122,8 @@ pub async fn file_get(
         display_name: file.display_name,
         category_id: file.category_id,
         file_status: file.file_status,
+        in_storage: file.in_storage,
+        original_path: file.original_path,
         created_at: file.created_at,
         updated_at: file.updated_at,
         category,
