@@ -1,8 +1,20 @@
+import { useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { CategorySelect } from '@/components/CategorySelect';
 import { TagManager } from '@/components/TagManager';
 import { AuthorManager } from '@/components/AuthorManager';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Button } from '@/components/ui/button';
 import { getFieldsForCategory } from '@/config/categoryFields';
 import type { Category, Tag, Author, MetadataType } from '@/types';
 
@@ -24,6 +36,9 @@ interface DynamicMetadataFormProps {
   onCategoryCreated?: (category: Category) => void;
   onTagCreate?: (name: string) => Promise<Tag>;
   onAuthorCreate?: (name: string) => Promise<Author>;
+  fileId?: number;
+  inStorage?: boolean;
+  onCategoryChange?: (newCategoryId: number | null) => Promise<void>;
 }
 
 export function DynamicMetadataForm({
@@ -35,7 +50,14 @@ export function DynamicMetadataForm({
   onCategoryCreated,
   onTagCreate,
   onAuthorCreate,
+  fileId,
+  inStorage,
+  onCategoryChange,
 }: DynamicMetadataFormProps) {
+  // State for category change confirmation dialog
+  const [pendingCategoryId, setPendingCategoryId] = useState<number | null>(null);
+  const [isMoving, setIsMoving] = useState(false);
+
   // Get the selected category name
   const selectedCategory = categories.find((c) => c.id === values.category_id);
   const categoryName = selectedCategory?.name || null;
@@ -56,7 +78,34 @@ export function DynamicMetadataForm({
 
   // Handle category change
   const handleCategoryChange = (category_id: number | null) => {
-    onChange({ ...values, category_id });
+    // If editing existing file that's in storage, prompt for move
+    if (fileId && inStorage && onCategoryChange && values.category_id !== category_id) {
+      setPendingCategoryId(category_id);
+    } else {
+      onChange({ ...values, category_id });
+    }
+  };
+
+  // Handle confirmation of file move
+  const handleConfirmMove = async () => {
+    if (!onCategoryChange || pendingCategoryId === null) return;
+
+    setIsMoving(true);
+    try {
+      await onCategoryChange(pendingCategoryId);
+      onChange({ ...values, category_id: pendingCategoryId });
+      setPendingCategoryId(null); // Close dialog on success
+    } catch (error) {
+      console.error('Failed to move file:', error);
+      // Don't close dialog or clear pendingCategoryId so user can retry
+    } finally {
+      setIsMoving(false);
+    }
+  };
+
+  // Handle cancel of file move
+  const handleCancelMove = () => {
+    setPendingCategoryId(null);
   };
 
   // Handle tag change
@@ -193,6 +242,26 @@ export function DynamicMetadataForm({
 
       {/* Dynamic Fields */}
       {dynamicFields.map((field) => renderDynamicField(field))}
+
+      {/* Category Change Confirmation Dialog */}
+      <AlertDialog open={pendingCategoryId !== null} onOpenChange={(open) => { if (!open) setPendingCategoryId(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Move file to new category folder?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The file will be moved to the new category's folder. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleCancelMove}>Cancel</AlertDialogCancel>
+            <AlertDialogAction asChild>
+              <Button onClick={handleConfirmMove} disabled={isMoving}>
+                {isMoving ? 'Moving...' : 'Move File'}
+              </Button>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
