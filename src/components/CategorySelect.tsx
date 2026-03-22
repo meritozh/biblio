@@ -53,6 +53,7 @@ export function CategorySelect({
         name: newCategoryName.trim(),
         icon: null,
         is_default: false,
+        folder_name: null,
         created_at: new Date().toISOString(),
       };
       onCategoryCreated?.(newCategory);

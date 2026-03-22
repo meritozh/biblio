@@ -6,6 +6,7 @@ export interface Category {
   name: string;
   icon: string | null;
   is_default: boolean;
+  folder_name: string | null;
   created_at: string;
 }
 
@@ -15,6 +16,8 @@ export interface FileEntry {
   display_name: string;
   category_id: number | null;
   file_status: FileStatus;
+  in_storage: boolean;
+  original_path: string | null;
   created_at: string;
   updated_at: string;
   category?: Category | null;
@@ -50,6 +53,8 @@ export interface FileWithDetails {
   display_name: string;
   category_id: number | null;
   file_status: FileStatus;
+  in_storage: boolean;
+  original_path: string | null;
   created_at: string;
   updated_at: string;
   category: Category | null;
