@@ -165,3 +165,49 @@ export async function coverGet(file_id: number): Promise<{ data: string; mimeTyp
 export async function coverDelete(file_id: number): Promise<{ success: boolean }> {
   return invoke('cover_delete', { fileId: file_id });
 }
+
+// Settings API functions
+export async function settingsGet(key: string): Promise<string | null> {
+  return invoke('settings_get', { key });
+}
+
+export async function settingsSet(key: string, value: string): Promise<void> {
+  return invoke('settings_set', { key, value });
+}
+
+export async function storageGetPath(): Promise<string | null> {
+  return invoke('storage_get_path');
+}
+
+export async function storageCheckAccess(): Promise<boolean> {
+  return invoke('storage_check_access');
+}
+
+// File category move function
+export async function fileMoveCategory(file_id: number, new_category_id: number | null): Promise<{ success: boolean }> {
+  return invoke('file_move_category', { fileId: file_id, newCategoryId: new_category_id });
+}
+
+// Error code translations
+const ERROR_MESSAGES: Record<string, string> = {
+  'STORAGE_PATH_NOT_CONFIGURED': 'Please configure a storage folder in settings first.',
+  'STORAGE_PATH_CHANGE_BLOCKED': 'Cannot change storage path while files are stored. Remove all files first.',
+  'STORAGE_PATH_NOT_FOUND': 'The selected folder does not exist.',
+  'STORAGE_PATH_NOT_WRITABLE': 'Cannot write to the selected folder. Please choose another location.',
+  'STORAGE_PATH_SYSTEM_DIRECTORY': 'Cannot use a system directory. Please choose another location.',
+  'SOURCE_FILE_NOT_FOUND': 'The source file could not be found.',
+  'FILE_ALREADY_IN_STORAGE': 'This file is already in the managed storage.',
+  'FILE_NOT_IN_STORAGE': 'This file is not in managed storage.',
+  'FILE_NOT_FOUND': 'The file was not found.',
+  'CATEGORY_HAS_FILES': 'Cannot delete category with files. Move or delete files first.',
+  'CATEGORY_NOT_FOUND': 'The selected category was not found.',
+  'CATEGORY_FOLDER_NOT_SET': 'The category folder is not configured.',
+  'CANNOT_DELETE_DEFAULT': 'Cannot delete the default category.',
+  'PERMISSION_DENIED': 'Permission denied. Please check folder permissions.',
+  'FILE_LOCKED': 'File is in use by another application.',
+  'DISK_FULL': 'Not enough disk space to complete the operation.',
+};
+
+export function translateError(error: string): string {
+  return ERROR_MESSAGES[error] || error;
+}
