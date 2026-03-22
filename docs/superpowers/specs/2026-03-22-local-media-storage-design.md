@@ -19,9 +19,40 @@ Transform biblio into a local media management desktop application that moves fi
 - Storage path must be configured before importing files
 - Files organized by category folders only (no sub-folders by author/date)
 
+### Edge Cases & Scenarios
+
+**Existing files in database**: Files added before this feature will have `in_storage = false` (default). They remain at their original paths and are not moved. Only newly imported files are moved to storage.
+
+**Storage path change**: If user changes storage_path after files are already stored:
+- Block the change with error: "Cannot change storage path while files are stored. Remove all files first."
+- Alternative: Offer to migrate files (future enhancement)
+
+**Category deletion**: When a category is deleted:
+- If category has files: Block deletion with error "Cannot delete category with files. Move or delete files first."
+- If category has no files: Allow deletion, folder remains (cleanup on app restart or manual deletion)
+
+**Category rename**: When a category name changes:
+- Rename the category folder from old name to new name
+- Update all file paths in database
+- If new folder name conflicts: Auto-rename with suffix
+
+**Category name sanitization**: Folder names derived from category names must be filesystem-safe:
+- Replace invalid characters (`/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`) with underscore `_`
+- Trim leading/trailing whitespace and dots
+- Empty name after sanitization → use "Untitled"
+- Maximum length: 200 characters (leave room for filename)
+
+**Cross-platform path handling**:
+- Use `std::path::canonicalize()` for path comparisons
+- Normalize paths before prefix check (storage_path containment)
+- Use `std::path::PathBuf` for all path operations
+- Handle Windows drive letters and UNC paths explicitly
+
 ## Architecture
 
 ### Database Schema
+
+**Note**: Schema updates are applied in-place to `schema.sql`. No migration files needed during development.
 
 New `app_settings` table:
 ```sql
@@ -69,6 +100,18 @@ INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
   1. Delete file from filesystem
   2. Delete from database (cascades to metadata, tags, authors, cover)
 
+**Updated: `src-tauri/src/commands/category.rs`**
+- `category_update` changes:
+  1. Check if files exist in this category
+  2. If files exist and name changed: rename category folder
+  3. Sanitize new name for filesystem
+  4. Update all file paths in database
+
+- `category_delete` changes:
+  1. Check if any files have this category_id
+  2. If yes: return error, block deletion
+  3. If no: proceed with deletion
+
 ### Frontend Components
 
 **New: `src/components/StoragePathSetting.tsx`**
@@ -94,7 +137,7 @@ INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
 | Source file doesn't exist | Error message, don't register |
 | File already in storage_path | Reject with error message |
 | Destination folder creation fails | Error message, don't register |
-| File exists at destination | Auto-rename with `(1)`, `(2)` suffix |
+| File exists at destination | Auto-rename: `filename (1).ext`, `filename (2).ext`, etc. |
 | Move operation fails | Rollback database, leave file in place |
 | Storage path inaccessible | Error on import, show in UI |
 | Category folder missing | Auto-create when moving files |
