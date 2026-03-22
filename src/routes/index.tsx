@@ -4,8 +4,10 @@ import { FilePicker } from '@/components/FilePicker';
 import { FileList } from '@/components/FileList';
 import { CategorySidebar } from '@/components/CategorySidebar';
 import { fetchFiles, fetchCategories } from '@/stores';
-import { fileCreate, authorList, authorCreate, tagList, tagCreate, coverSet } from '@/lib/tauri';
+import { fileCreate, authorList, authorCreate, tagList, tagCreate, coverSet, storageGetPath, storageCheckAccess } from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
+import { AlertCircle } from 'lucide-react';
+import { SettingsDialog } from '@/components/SettingsDialog';
 import {
   Dialog,
   DialogContent,
@@ -41,6 +43,9 @@ function HomePage() {
     author_ids: [],
     metadata: [],
   });
+  const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
+  const [storagePathAccessible, setStoragePathAccessible] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const loadFiles = useCallback(async (categoryId: number | null) => {
     setLoading(true);
@@ -65,13 +70,26 @@ function HomePage() {
     setTags(result.tags);
   }, []);
 
+  const checkStoragePath = useCallback(async () => {
+    const path = await storageGetPath();
+    if (path && path !== '') {
+      const accessible = await storageCheckAccess();
+      setStoragePathConfigured(true);
+      setStoragePathAccessible(accessible);
+    } else {
+      setStoragePathConfigured(false);
+      setStoragePathAccessible(true);
+    }
+  }, []);
+
   // Initial data fetch on mount
   useEffect(() => {
     void loadCategories();
     void loadTags();
     void loadAuthors();
     void loadFiles(null);
-  }, [loadCategories, loadTags, loadAuthors, loadFiles]);
+    void checkStoragePath();
+  }, [loadCategories, loadTags, loadAuthors, loadFiles, checkStoragePath]);
 
   // Reload files when category changes
   useEffect(() => {
@@ -191,8 +209,43 @@ function HomePage() {
             <h1 className="text-2xl font-bold">Library</h1>
             <p className="text-muted-foreground">{total} files</p>
           </div>
-          <FilePicker onFilesSelected={handleFilesSelected} />
+          <div className="flex items-center gap-2">
+            <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+            <FilePicker onFilesSelected={handleFilesSelected} disabled={storagePathConfigured === false} />
+          </div>
         </div>
+        {storagePathConfigured === false && (
+          <div className="mb-4 p-4 bg-yellow-100 dark:bg-yellow-900/20 border border-yellow-300 dark:border-yellow-700 rounded-lg flex items-center gap-3">
+            <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-yellow-800 dark:text-yellow-200">
+                Storage path not configured
+              </p>
+              <p className="text-sm text-yellow-700 dark:text-yellow-300">
+                Please configure a storage folder before adding files.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
+              Configure
+            </Button>
+          </div>
+        )}
+        {storagePathConfigured === true && !storagePathAccessible && (
+          <div className="mb-4 p-4 bg-red-100 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded-lg flex items-center gap-3">
+            <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-red-800 dark:text-red-200">
+                Storage path inaccessible
+              </p>
+              <p className="text-sm text-red-700 dark:text-red-300">
+                The configured storage folder cannot be accessed. Please check if it exists and you have permission to read/write.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
+              Reconfigure
+            </Button>
+          </div>
+        )}
         {loading ? (
           <div className="flex items-center justify-center h-64">
             <p className="text-muted-foreground">Loading...</p>

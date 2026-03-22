@@ -5,9 +5,10 @@ import { FolderOpen } from 'lucide-react';
 interface FilePickerProps {
   onFilesSelected: (paths: string[]) => void;
   multiple?: boolean;
+  disabled?: boolean;
 }
 
-export function FilePicker({ onFilesSelected, multiple = true }: FilePickerProps) {
+export function FilePicker({ onFilesSelected, multiple = true, disabled = false }: FilePickerProps) {
   const handleOpenDialog = async () => {
     try {
       const selected = await open({
@@ -46,7 +47,7 @@ export function FilePicker({ onFilesSelected, multiple = true }: FilePickerProps
   };
 
   return (
-    <Button onClick={handleOpenDialog} className="gap-2" aria-label="Add files to library">
+    <Button onClick={handleOpenDialog} className="gap-2" disabled={disabled} aria-label="Add files to library">
       <FolderOpen className="h-4 w-4" aria-hidden="true" />
       Add Files
     </Button>
