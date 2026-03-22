@@ -41,20 +41,15 @@ Transform biblio into a local media management desktop application that moves fi
 - Trim leading/trailing whitespace and dots
 - Empty name after sanitization → use "Untitled"
 - Maximum length: 200 characters (leave room for filename)
-
-**Cross-platform path handling**:
-- Use `std::path::canonicalize()` for path comparisons
-- Normalize paths before prefix check (storage_path containment)
-- Use `std::path::PathBuf` for all path operations
-- Handle Windows drive letters and UNC paths explicitly
+- **Collision handling**: If sanitized name conflicts with existing category folder, append suffix: `Category_1`, `Category_2`, etc.
+- Sanitized folder name stored in `categories.folder_name` column (new column) for tracking
 
 **"Uncategorized" folder**:
-- When a file has no category assigned (`category_id = null`), store in folder named "Uncategorized"
+- When a file has no category assigned (`category_id = null`), store in folder named `"_uncategorized"` (underscore prefix prevents collision with user-created "Uncategorized" category)
 - This is NOT a special category in the database - it's just a default folder name
-- Users can create a category named "Uncategorized" - it will work normally
 - Folder name is derived from a constant, not from category data
 
-## Architecture
+**Cross-platform path handling**:
 
 ### Database Schema
 
@@ -73,6 +68,14 @@ New columns on `files` table:
 ALTER TABLE files ADD COLUMN in_storage BOOLEAN DEFAULT 0;
 ALTER TABLE files ADD COLUMN original_path TEXT;
 ```
+
+New column on `categories` table:
+```sql
+ALTER TABLE categories ADD COLUMN folder_name TEXT;
+```
+- Stores the sanitized, unique folder name for the category
+- Set automatically on category creation/update
+- Used for file path construction instead of computing from name
 
 Default setting:
 ```sql
@@ -142,8 +145,16 @@ INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
 - Disable file picker button until configured
 
 **Updated: `src/components/DynamicMetadataForm.tsx`**
-- On category change for existing file, prompt to move file
-- Call `file_move_category` if user confirms
+- Category change detection: Check if `fileId` prop is provided (indicates existing file)
+- If category changes on existing file:
+  - Show confirmation dialog: "Move file to new category folder?"
+  - If user confirms: call `file_move_category(fileId, newCategoryId)`
+  - If user declines: update database only (file stays in old folder, `path` unchanged)
+- Only prompt for files with `in_storage = true` (tracked via file data prop)
+
+**Updated: `src-tauri/src/commands/file.rs`**
+- `file_update` changes: Remove `category_id` from allowed updates
+- Category changes must go through `file_move_category` to ensure file movement
 
 ### Error Handling
 
@@ -154,11 +165,11 @@ INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
 | Storage path not configured | Disable import, show setup prompt |
 | Storage path not writable | Validation error when setting path |
 | Storage path is system directory | Validation error (block common paths: `/`, `/System`, `/Windows`, etc.) |
-| Storage path becomes inaccessible | Show error banner on app, disable import, show "Reconfigure" button |
+| Storage path becomes inaccessible | **Detection**: Check on app startup and before each import. Show error banner, disable import, show "Reconfigure" button |
 | Source file doesn't exist | Error message, don't register |
 | File already in storage_path | Reject with error message |
 | Destination folder creation fails | Error message, don't register |
-| File exists at destination | Auto-rename: `filename (1).ext`, `filename (2).ext`, etc. |
+| File exists at destination | Auto-rename: `filename (1).ext`, `filename (2).ext`, etc. For files without extension: `filename (1)`, `filename (2)` |
 | Move operation fails (any reason) | Rollback transaction, leave file in place, show error |
 | Permission denied during move | Error message with suggestion to check permissions |
 | File locked by another process | Error message: "File is in use by another application" |
@@ -169,18 +180,22 @@ INSERT INTO app_settings (key, value) VALUES ('storage_path', '');
 ## Implementation Order
 
 1. Update `src-tauri/src/database/schema.sql` with new tables/columns
-2. Create `src-tauri/src/commands/settings.rs` with get/set
-3. Export settings module in `mod.rs`, register in `lib.rs`
-4. Add settings functions to `src/lib/tauri.ts`
-5. Update `file_create` in `file.rs` to move files with transaction support
-6. Update `file_delete` to handle `in_storage` flag
-7. Add `file_move_category` command
-8. Update `category_update` to rename folders
-9. Update `category_delete` to block when files exist
-10. Create `StoragePathSetting.tsx` and `SettingsDialog.tsx` components
-11. Add storage path check and warning to `routes/index.tsx`
-12. Update `DynamicMetadataForm.tsx` for category change handling
-13. Add comprehensive error handling throughout
+2. Update `FileEntry` struct in `mod.rs` to include `in_storage`, `original_path` fields
+3. Update `Category` struct in `mod.rs` to include `folder_name` field
+4. Update TypeScript types in `src/types/index.ts` to match
+5. Create `src-tauri/src/commands/settings.rs` with get/set
+6. Export settings module in `mod.rs`, register in `lib.rs`
+7. Add settings functions to `src/lib/tauri.ts`
+8. Update `file_create` in `file.rs` to move files with transaction support
+9. Update `file_delete` to handle `in_storage` flag
+10. Add `file_move_category` command
+11. Remove `category_id` from `file_update` allowed fields
+12. Update `category_update` to rename folders and track `folder_name`
+13. Update `category_delete` to block when files exist
+14. Create `StoragePathSetting.tsx` and `SettingsDialog.tsx` components
+15. Add storage path check and warning to `routes/index.tsx`
+16. Update `DynamicMetadataForm.tsx` for category change handling with confirmation dialog
+17. Add comprehensive error handling throughout
 
 ## Testing
 
