@@ -46,7 +46,7 @@ export function StoragePathSetting() {
   };
 
   if (loading) {
-    return <div className="text-sm text-muted-foreground">Loading...</div>;
+    return <div className="text-sm text-muted-foreground min-h-[100px]">Loading...</div>;
   }
 
   return (
