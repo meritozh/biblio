@@ -21,26 +21,28 @@ export function CategorySidebar({
 }: CategorySidebarProps) {
   return (
     <div
-      className="w-64 border-r bg-muted/10 flex flex-col h-full"
+      className="w-64 border-r border-sidebar-border bg-sidebar flex flex-col h-full"
       role="navigation"
       aria-label="Category navigation"
     >
-      <div className="p-4 border-b">
-        <h2 className="font-semibold text-lg" id="categories-heading">
+      <div className="p-5 border-b border-sidebar-border">
+        <h2 className="text-lg font-semibold text-sidebar-foreground" id="categories-heading">
           Categories
         </h2>
       </div>
       <ScrollArea className="flex-1">
-        <div className="p-2" role="list" aria-labelledby="categories-heading">
+        <div className="p-3" role="list" aria-labelledby="categories-heading">
           <button
             onClick={() => onCategorySelect(null)}
-            className={`w-full text-left px-3 py-2 rounded-md flex items-center justify-between hover:bg-muted/50 transition-colors ${
-              selectedCategoryId === null ? 'bg-muted' : ''
+            className={`w-full text-left px-3 py-2.5 rounded-lg flex items-center justify-between transition-all duration-200 ${
+              selectedCategoryId === null
+                ? 'bg-primary text-primary-foreground'
+                : 'hover:bg-secondary text-sidebar-foreground'
             }`}
             role="listitem"
             aria-current={selectedCategoryId === null ? 'page' : undefined}
           >
-            <span className="flex items-center gap-2">
+            <span className="flex items-center gap-2.5">
               <FolderOpen className="h-4 w-4" aria-hidden="true" />
               All Files
             </span>
@@ -49,19 +51,21 @@ export function CategorySidebar({
             <button
               key={category.id}
               onClick={() => onCategorySelect(category.id)}
-              className={`w-full text-left px-3 py-2 rounded-md flex items-center justify-between hover:bg-muted/50 transition-colors ${
-                selectedCategoryId === category.id ? 'bg-muted' : ''
+              className={`w-full text-left px-3 py-2.5 rounded-lg flex items-center justify-between transition-all duration-200 ${
+                selectedCategoryId === category.id
+                  ? 'bg-primary text-primary-foreground'
+                  : 'hover:bg-secondary text-sidebar-foreground'
               }`}
               role="listitem"
               aria-current={selectedCategoryId === category.id ? 'page' : undefined}
             >
-              <span className="flex items-center gap-2">
+              <span className="flex items-center gap-2.5">
                 {category.icon && <span aria-hidden="true">{category.icon}</span>}
                 {category.name}
               </span>
               {fileCounts[category.id] !== undefined && fileCounts[category.id]! > 0 && (
                 <Badge
-                  variant="secondary"
+                  variant={selectedCategoryId === category.id ? 'outline' : 'secondary'}
                   className="text-xs"
                   aria-label={`${fileCounts[category.id]} files`}
                 >
@@ -73,7 +77,7 @@ export function CategorySidebar({
         </div>
       </ScrollArea>
       {onManageCategories && (
-        <div className="p-4 border-t">
+        <div className="p-4 border-t border-sidebar-border">
           <Button
             variant="outline"
             className="w-full"
