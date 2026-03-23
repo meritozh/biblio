@@ -98,7 +98,6 @@ function HomePage() {
 
   const handleSettingsOpenChange = useCallback((open: boolean) => {
     setSettingsOpen(open);
-    // Re-check storage path when dialog closes
     if (!open) {
       void checkStoragePath();
     }
