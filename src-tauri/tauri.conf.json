@@ -19,7 +19,9 @@
         "minWidth": 800,
         "minHeight": 600,
         "center": true,
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay"
       }
     ],
     "security": {

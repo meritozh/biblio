@@ -205,61 +205,55 @@ function HomePage() {
         categories={categories}
         selectedCategoryId={selectedCategoryId}
         onCategorySelect={setSelectedCategoryId}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
-      <main className="flex-1 p-8 overflow-auto">
-        <div className="max-w-6xl mx-auto">
-          <div className="flex justify-between items-start mb-8">
-            <div>
-              <h1 className="text-3xl font-semibold text-foreground mb-1">Library</h1>
-              <p className="text-muted-foreground text-sm">{total} files</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <SettingsDialog open={settingsOpen} onOpenChange={handleSettingsOpenChange} />
-              <FilePicker onFilesSelected={handleFilesSelected} disabled={storagePathConfigured === false} />
-            </div>
+      <main className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-8 pt-14 pb-4 border-b border-border" data-tauri-drag-region>
+          <div>
+            <h1 className="text-xl font-semibold text-foreground">Library</h1>
+            <p className="text-xs text-muted-foreground mt-0.5">{total} files</p>
           </div>
+          <FilePicker onFilesSelected={handleFilesSelected} disabled={storagePathConfigured === false} />
+        </div>
 
+        <div className="flex-1 overflow-auto px-8 py-6">
           {storagePathConfigured === false && (
-            <div className="mb-6 p-5 bg-secondary/50 border border-border rounded-xl flex items-center gap-4">
-              <div className="p-2 rounded-full bg-secondary">
-                <AlertCircle className="h-5 w-5 text-accent" />
-              </div>
-              <div className="flex-1">
+            <div className="mb-6 p-4 bg-secondary/50 rounded flex items-center gap-3">
+              <AlertCircle className="h-4 w-4 text-muted-foreground shrink-0" />
+              <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-foreground">
                   Storage path not configured
                 </p>
-                <p className="text-sm text-muted-foreground mt-0.5">
-                  Please configure a storage folder before adding files.
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Select a storage folder to start adding files.
                 </p>
               </div>
-              <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
+              <Button variant="secondary" size="sm" onClick={() => setSettingsOpen(true)}>
                 Configure
               </Button>
             </div>
           )}
 
           {storagePathConfigured === true && !storagePathAccessible && (
-            <div className="mb-6 p-5 bg-destructive/5 border border-destructive/20 rounded-xl flex items-center gap-4">
-              <div className="p-2 rounded-full bg-destructive/10">
-                <AlertCircle className="h-5 w-5 text-destructive" />
-              </div>
-              <div className="flex-1">
+            <div className="mb-6 p-4 bg-destructive/5 rounded flex items-center gap-3">
+              <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
+              <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-foreground">
                   Storage path inaccessible
                 </p>
-                <p className="text-sm text-muted-foreground mt-0.5">
-                  The configured storage folder cannot be accessed. Please check if it exists and you have permission to read/write.
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  The storage folder cannot be accessed.
                 </p>
               </div>
-              <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
+              <Button variant="secondary" size="sm" onClick={() => setSettingsOpen(true)}>
                 Reconfigure
               </Button>
             </div>
           )}
 
           {loading ? (
-            <div className="flex items-center justify-center h-64">
-              <p className="text-muted-foreground">Loading...</p>
+            <div className="flex items-center justify-center h-32">
+              <p className="text-sm text-muted-foreground">Loading...</p>
             </div>
           ) : (
             <FileList files={files} onFileClick={handleFileClick} />
@@ -267,10 +261,12 @@ function HomePage() {
         </div>
       </main>
 
+      <SettingsDialog open={settingsOpen} onOpenChange={handleSettingsOpenChange} />
+
       <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
         <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Add Files to Library</DialogTitle>
+            <DialogTitle>Add Files</DialogTitle>
           </DialogHeader>
           {selectedFiles.length === 1 ? (
             <DynamicMetadataForm
@@ -286,10 +282,9 @@ function HomePage() {
           ) : (
             <div className="py-4">
               <p className="text-sm text-muted-foreground">
-                Adding {selectedFiles.length} files. Each file will use its filename as the display name.
+                Adding {selectedFiles.length} files.
               </p>
-              <div className="mt-4 space-y-2">
-                <label className="text-sm font-medium">Category</label>
+              <div className="mt-4">
                 <DynamicMetadataForm
                   values={formValues}
                   onChange={setFormValues}
@@ -308,7 +303,7 @@ function HomePage() {
               Cancel
             </Button>
             <Button onClick={handleAddFile} disabled={saving}>
-              {saving ? 'Adding...' : 'Add to Library'}
+              {saving ? 'Adding...' : 'Add'}
             </Button>
           </DialogFooter>
         </DialogContent>
