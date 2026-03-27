@@ -183,6 +183,11 @@ export async function storageCheckAccess(): Promise<boolean> {
   return invoke('storage_check_access');
 }
 
+// Opener plugin functions
+export async function revealItemInDir(path: string): Promise<void> {
+  return invoke('plugin:opener|reveal_item_in_dir', { path });
+}
+
 // File category move function
 export async function fileMoveCategory(file_id: number, new_category_id: number | null): Promise<{ success: boolean }> {
   return invoke('file_move_category', { fileId: file_id, newCategoryId: new_category_id });
