@@ -12,16 +12,16 @@ import type { FileEntry } from '@/types';
 
 interface FileContextMenuProps {
   file: FileEntry;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   onEdit: (file: FileEntry) => void;
   onDelete: (file: FileEntry) => void;
 }
 
 export function FileContextMenu({
   file,
-  open,
-  onOpenChange,
+  open: externalOpen,
+  onOpenChange: externalOnOpenChange,
   onEdit,
   onDelete,
 }: FileContextMenuProps) {
@@ -32,7 +32,7 @@ export function FileContextMenu({
       // Silently fail - file may be missing
       console.error('Failed to reveal file:', error);
     }
-    onOpenChange(false);
+    externalOnOpenChange?.(false);
   };
 
   const handleCopyPath = async () => {
@@ -41,21 +41,21 @@ export function FileContextMenu({
     } catch (error) {
       console.error('Failed to copy path:', error);
     }
-    onOpenChange(false);
+    externalOnOpenChange?.(false);
   };
 
   const handleEdit = () => {
     onEdit(file);
-    onOpenChange(false);
+    externalOnOpenChange?.(false);
   };
 
   const handleDelete = () => {
     onDelete(file);
-    onOpenChange(false);
+    externalOnOpenChange?.(false);
   };
 
   return (
-    <DropdownMenu open={open} onOpenChange={onOpenChange}>
+    <DropdownMenu open={externalOpen} onOpenChange={externalOnOpenChange}>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"

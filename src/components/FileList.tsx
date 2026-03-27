@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { ChevronLeft, ChevronRight, ArrowUpDown } from 'lucide-react';
+import { FileContextMenu } from '@/components/FileContextMenu';
 import type { FileEntry } from '@/types';
 
 interface FileListProps {
@@ -27,6 +28,7 @@ interface FileListProps {
 
 export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileListProps) {
   const [sorting, setSorting] = useState<{ id: string; desc: boolean }[]>([]);
+  const [contextMenuFileId, setContextMenuFileId] = useState<number | null>(null);
 
   const columns = [
     {
@@ -74,30 +76,22 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
     },
     {
       id: 'actions',
-      cell: ({ row }: { row: { original: FileEntry } }) => (
-        <div className="flex gap-2" role="group" aria-label="File actions">
-          {onFileEdit && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onFileEdit(row.original)}
-              aria-label={`Edit ${row.original.display_name}`}
-            >
-              Edit
-            </Button>
-          )}
-          {onFileDelete && (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => onFileDelete(row.original)}
-              aria-label={`Delete ${row.original.display_name}`}
-            >
-              Delete
-            </Button>
-          )}
-        </div>
-      ),
+      cell: ({ row }: { row: { original: FileEntry } }) => {
+        const file = row.original;
+        return (
+          <div className="flex justify-end" role="group" aria-label="File actions">
+            {onFileEdit && onFileDelete && (
+              <FileContextMenu
+                file={file}
+                open={contextMenuFileId === file.id}
+                onOpenChange={(open) => setContextMenuFileId(open ? file.id : null)}
+                onEdit={onFileEdit}
+                onDelete={onFileDelete}
+              />
+            )}
+          </div>
+        );
+      },
     },
   ];
 
@@ -136,6 +130,12 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
                   data-state={row.getIsSelected() && 'selected'}
                   className={onFileClick ? 'cursor-pointer hover:bg-muted/50' : ''}
                   onClick={() => onFileClick?.(row.original)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    if (onFileEdit && onFileDelete) {
+                      setContextMenuFileId(row.original.id);
+                    }
+                  }}
                   tabIndex={onFileClick ? 0 : undefined}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && onFileClick) {
