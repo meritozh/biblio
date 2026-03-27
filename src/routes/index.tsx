@@ -3,8 +3,19 @@ import { useEffect, useState, useCallback } from 'react';
 import { FilePicker } from '@/components/FilePicker';
 import { FileList } from '@/components/FileList';
 import { CategorySidebar } from '@/components/CategorySidebar';
+import { FileEditDialog } from '@/components/FileEditDialog';
 import { fetchFiles, fetchCategories } from '@/stores';
-import { fileCreate, authorList, authorCreate, tagList, tagCreate, coverSet, storageGetPath, storageCheckAccess } from '@/lib/tauri';
+import {
+  fileCreate,
+  fileDelete,
+  authorList,
+  authorCreate,
+  tagList,
+  tagCreate,
+  coverSet,
+  storageGetPath,
+  storageCheckAccess,
+} from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -15,6 +26,16 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import {
   DynamicMetadataForm,
   type DynamicMetadataFormValues,
@@ -46,6 +67,11 @@ function HomePage() {
   const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
   const [storagePathAccessible, setStoragePathAccessible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [editingFile, setEditingFile] = useState<FileEntry | null>(null);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [deletingFile, setDeletingFile] = useState<FileEntry | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const loadFiles = useCallback(async (categoryId: number | null) => {
     setLoading(true);
@@ -94,12 +120,15 @@ function HomePage() {
     void loadFiles(selectedCategoryId);
   }, [selectedCategoryId, loadFiles]);
 
-  const handleSettingsOpenChange = useCallback((open: boolean) => {
-    setSettingsOpen(open);
-    if (!open) {
-      void checkStoragePath();
-    }
-  }, [checkStoragePath]);
+  const handleSettingsOpenChange = useCallback(
+    (open: boolean) => {
+      setSettingsOpen(open);
+      if (!open) {
+        void checkStoragePath();
+      }
+    },
+    [checkStoragePath]
+  );
 
   const handleFilesSelected = (paths: string[]) => {
     setSelectedFiles(paths);
@@ -172,6 +201,35 @@ function HomePage() {
     console.log('File clicked:', file);
   };
 
+  const handleFileEdit = (file: FileEntry) => {
+    setEditingFile(file);
+    setEditDialogOpen(true);
+  };
+
+  const handleFileDelete = (file: FileEntry) => {
+    setDeletingFile(file);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deletingFile) return;
+    setDeleting(true);
+    try {
+      await fileDelete(deletingFile.id);
+      setDeleteDialogOpen(false);
+      setDeletingFile(null);
+      void loadFiles(selectedCategoryId);
+    } catch (error) {
+      console.error('Failed to delete file:', error);
+      alert(`Failed to delete file: ${error}`);
+    }
+    setDeleting(false);
+  };
+
+  const handleFileUpdated = async () => {
+    void loadFiles(selectedCategoryId);
+  };
+
   const handleCategoryCreated = (newCategory: Category) => {
     setCategories((prev) => [...prev, newCategory]);
   };
@@ -208,12 +266,18 @@ function HomePage() {
         onOpenSettings={() => setSettingsOpen(true)}
       />
       <main className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-8 pt-14 pb-4 border-b border-border" data-tauri-drag-region>
+        <div
+          className="flex items-center justify-between px-8 pt-14 pb-4 border-b border-border"
+          data-tauri-drag-region
+        >
           <div>
             <h1 className="text-xl font-semibold text-foreground">Library</h1>
             <p className="text-xs text-muted-foreground mt-0.5">{total} files</p>
           </div>
-          <FilePicker onFilesSelected={handleFilesSelected} disabled={storagePathConfigured === false} />
+          <FilePicker
+            onFilesSelected={handleFilesSelected}
+            disabled={storagePathConfigured === false}
+          />
         </div>
 
         <div className="flex-1 overflow-auto px-8 py-6">
@@ -221,9 +285,7 @@ function HomePage() {
             <div className="mb-6 p-4 bg-secondary/50 rounded flex items-center gap-3">
               <AlertCircle className="h-4 w-4 text-muted-foreground shrink-0" />
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-foreground">
-                  Storage path not configured
-                </p>
+                <p className="text-sm font-medium text-foreground">Storage path not configured</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   Select a storage folder to start adding files.
                 </p>
@@ -238,9 +300,7 @@ function HomePage() {
             <div className="mb-6 p-4 bg-destructive/5 rounded flex items-center gap-3">
               <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-foreground">
-                  Storage path inaccessible
-                </p>
+                <p className="text-sm font-medium text-foreground">Storage path inaccessible</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   The storage folder cannot be accessed.
                 </p>
@@ -256,12 +316,52 @@ function HomePage() {
               <p className="text-sm text-muted-foreground">Loading...</p>
             </div>
           ) : (
-            <FileList files={files} onFileClick={handleFileClick} />
+            <FileList
+              files={files}
+              onFileClick={handleFileClick}
+              onFileEdit={handleFileEdit}
+              onFileDelete={handleFileDelete}
+            />
           )}
         </div>
       </main>
 
       <SettingsDialog open={settingsOpen} onOpenChange={handleSettingsOpenChange} />
+
+      <FileEditDialog
+        file={editingFile}
+        open={editDialogOpen}
+        onOpenChange={setEditDialogOpen}
+        categories={categories}
+        tags={tags}
+        authors={authors}
+        onFileUpdated={handleFileUpdated}
+        onTagCreate={handleTagCreate}
+        onAuthorCreate={handleAuthorCreate}
+        onCategoryCreated={handleCategoryCreated}
+      />
+
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete File</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{deletingFile?.display_name}"? This will remove the
+              file record from the library but won't delete the actual file from your storage.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmDelete}
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? 'Deleting...' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
         <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
@@ -281,9 +381,7 @@ function HomePage() {
             />
           ) : (
             <div className="py-4">
-              <p className="text-sm text-muted-foreground">
-                Adding {selectedFiles.length} files.
-              </p>
+              <p className="text-sm text-muted-foreground">Adding {selectedFiles.length} files.</p>
               <div className="mt-4">
                 <DynamicMetadataForm
                   values={formValues}
