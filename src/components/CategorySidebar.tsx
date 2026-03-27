@@ -1,8 +1,9 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { Link } from '@tanstack/react-router';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
-import { FolderOpen, Settings, GripVertical } from 'lucide-react';
+import { FolderOpen, Settings, GripVertical, Tag, User } from 'lucide-react';
 import type { Category } from '@/types';
 
 interface CategorySidebarProps {
@@ -35,11 +36,14 @@ export function CategorySidebar({
     setIsResizing(true);
   }, []);
 
-  const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!isResizing) return;
-    const newWidth = e.clientX;
-    setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, newWidth)));
-  }, [isResizing]);
+  const handleMouseMove = useCallback(
+    (e: MouseEvent) => {
+      if (!isResizing) return;
+      const newWidth = e.clientX;
+      setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, newWidth)));
+    },
+    [isResizing]
+  );
 
   const handleMouseUp = useCallback(() => {
     setIsResizing(false);
@@ -70,7 +74,10 @@ export function CategorySidebar({
     >
       {/* Spacer for transparent title bar traffic lights */}
       <div className="h-14 flex items-end px-3 pb-1" data-tauri-drag-region>
-        <h2 className="px-3 text-xs font-medium text-muted-foreground uppercase tracking-wider" id="categories-heading">
+        <h2
+          className="px-3 text-xs font-medium text-muted-foreground uppercase tracking-wider"
+          id="categories-heading"
+        >
           Categories
         </h2>
       </div>
@@ -78,10 +85,11 @@ export function CategorySidebar({
         <div className="px-2 pb-2" role="list" aria-labelledby="categories-heading">
           <button
             onClick={() => onCategorySelect(null)}
-            className={`w-full text-left px-3 py-1.5 rounded flex items-center justify-between transition-colors duration-100 ${selectedCategoryId === null
-              ? 'bg-secondary text-foreground'
-              : 'hover:bg-secondary/60 text-sidebar-foreground'
-              }`}
+            className={`w-full text-left px-3 py-1.5 rounded flex items-center justify-between transition-colors duration-100 ${
+              selectedCategoryId === null
+                ? 'bg-secondary text-foreground'
+                : 'hover:bg-secondary/60 text-sidebar-foreground'
+            }`}
             role="listitem"
             aria-current={selectedCategoryId === null ? 'page' : undefined}
           >
@@ -94,10 +102,11 @@ export function CategorySidebar({
             <button
               key={category.id}
               onClick={() => onCategorySelect(category.id)}
-              className={`w-full text-left px-3 py-1.5 rounded flex items-center justify-between transition-colors duration-100 ${selectedCategoryId === category.id
-                ? 'bg-secondary text-foreground'
-                : 'hover:bg-secondary/60 text-sidebar-foreground'
-                }`}
+              className={`w-full text-left px-3 py-1.5 rounded flex items-center justify-between transition-colors duration-100 ${
+                selectedCategoryId === category.id
+                  ? 'bg-secondary text-foreground'
+                  : 'hover:bg-secondary/60 text-sidebar-foreground'
+              }`}
               role="listitem"
               aria-current={selectedCategoryId === category.id ? 'page' : undefined}
             >
@@ -119,6 +128,23 @@ export function CategorySidebar({
         </div>
       </ScrollArea>
       <div className="border-t border-sidebar-border">
+        <div className="px-1 py-1">
+          <Link
+            to="/tags"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+          >
+            <Tag className="h-4 w-4 shrink-0" />
+            Tags
+          </Link>
+          <Link
+            to="/authors"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+          >
+            <User className="h-4 w-4 shrink-0" />
+            Authors
+          </Link>
+        </div>
+        <div className="border-t border-sidebar-border" />
         {onOpenSettings && (
           <Button
             variant="ghost"
@@ -146,8 +172,9 @@ export function CategorySidebar({
 
       {/* Resize handle */}
       <div
-        className={`absolute top-0 right-0 w-1 h-full cursor-col-resize group ${isResizing ? 'bg-primary/20' : 'hover:bg-primary/10'
-          }`}
+        className={`absolute top-0 right-0 w-1 h-full cursor-col-resize group ${
+          isResizing ? 'bg-primary/20' : 'hover:bg-primary/10'
+        }`}
         onMouseDown={handleMouseDown}
       >
         <div className="absolute top-1/2 right-0 -translate-y-1/2 translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity">

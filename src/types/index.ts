@@ -33,10 +33,18 @@ export interface Tag {
   created_at: string;
 }
 
+export interface TagWithUsage extends Tag {
+  usageCount: number;
+}
+
 export interface Author {
   id: number;
   name: string;
   created_at: string;
+}
+
+export interface AuthorWithUsage extends Author {
+  usageCount: number;
 }
 
 export interface Metadata {
@@ -109,7 +117,15 @@ export interface AuthorCreateRequest extends Record<string, unknown> {
 }
 
 // Dynamic form field types
-export type FieldType = 'text' | 'authors' | 'number' | 'date' | 'boolean' | 'select' | 'tags' | 'image';
+export type FieldType =
+  | 'text'
+  | 'authors'
+  | 'number'
+  | 'date'
+  | 'boolean'
+  | 'select'
+  | 'tags'
+  | 'image';
 
 export interface FieldConfig {
   key: string;
