@@ -4,10 +4,12 @@ import { FilePicker } from '@/components/FilePicker';
 import { FileList } from '@/components/FileList';
 import { CategorySidebar } from '@/components/CategorySidebar';
 import { fetchFiles, fetchCategories } from '@/stores';
-import { fileCreate, authorList, authorCreate, tagList, tagCreate, coverSet, storageGetPath, storageCheckAccess } from '@/lib/tauri';
+import { fileCreate, fileUpdate, fileDelete, authorList, authorCreate, tagList, tagCreate, tagAssign, authorSet, metadataSet, metadataDelete, coverSet, storageGetPath, storageCheckAccess } from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
 import { SettingsDialog } from '@/components/SettingsDialog';
+import { EditFileDialog } from '@/components/EditFileDialog';
+import { ConfirmDeleteDialog } from '@/components/ConfirmDeleteDialog';
 import {
   Dialog,
   DialogContent,
@@ -46,6 +48,10 @@ function HomePage() {
   const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
   const [storagePathAccessible, setStoragePathAccessible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editingFile, setEditingFile] = useState<FileEntry | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletingFile, setDeletingFile] = useState<FileEntry | null>(null);
 
   const loadFiles = useCallback(async (categoryId: number | null) => {
     setLoading(true);
@@ -199,6 +205,55 @@ function HomePage() {
     return newAuthor;
   };
 
+  const handleFileEdit = useCallback((file: FileEntry) => {
+    setEditingFile(file);
+    setEditDialogOpen(true);
+  }, []);
+
+  const handleFileSave = useCallback(async (fileId: number, values: DynamicMetadataFormValues) => {
+    // Update basic fields
+    await fileUpdate(fileId, {
+      display_name: values.display_name,
+      category_id: values.category_id,
+    });
+
+    // Update tags
+    await tagAssign(fileId, values.tag_ids);
+
+    // Update authors
+    await authorSet(fileId, values.author_ids);
+
+    // Update metadata - first clear existing, then set new
+    if (editingFile?.metadata) {
+      for (const m of editingFile.metadata) {
+        await metadataDelete(fileId, m.key);
+      }
+    }
+    for (const m of values.metadata) {
+      await metadataSet(fileId, m.key, m.value, m.data_type);
+    }
+
+    void loadFiles(selectedCategoryId);
+  }, [editingFile, selectedCategoryId, loadFiles]);
+
+  const handleFileDeleteClick = useCallback((file: FileEntry) => {
+    setDeletingFile(file);
+    setDeleteDialogOpen(true);
+  }, []);
+
+  const handleFileDeleteConfirm = useCallback(async () => {
+    if (!deletingFile) return;
+    try {
+      await fileDelete(deletingFile.id);
+      setDeleteDialogOpen(false);
+      setDeletingFile(null);
+      void loadFiles(selectedCategoryId);
+    } catch (error) {
+      console.error('Failed to delete:', error);
+      alert(`Failed to delete: ${error}`);
+    }
+  }, [deletingFile, selectedCategoryId, loadFiles]);
+
   return (
     <div className="flex h-screen bg-background">
       <CategorySidebar
@@ -256,12 +311,32 @@ function HomePage() {
               <p className="text-sm text-muted-foreground">Loading...</p>
             </div>
           ) : (
-            <FileList files={files} onFileClick={handleFileClick} />
+            <FileList files={files} onFileClick={handleFileClick} onFileEdit={handleFileEdit} onFileDelete={handleFileDeleteClick} />
           )}
         </div>
       </main>
 
       <SettingsDialog open={settingsOpen} onOpenChange={handleSettingsOpenChange} />
+
+      <EditFileDialog
+        open={editDialogOpen}
+        onOpenChange={setEditDialogOpen}
+        file={editingFile}
+        categories={categories}
+        tags={tags}
+        authors={authors}
+        onCategoryCreated={handleCategoryCreated}
+        onTagCreate={handleTagCreate}
+        onAuthorCreate={handleAuthorCreate}
+        onSave={handleFileSave}
+      />
+
+      <ConfirmDeleteDialog
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        fileName={deletingFile?.display_name ?? ''}
+        onConfirm={handleFileDeleteConfirm}
+      />
 
       <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
         <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
