@@ -21,6 +21,7 @@ interface EditFileDialogProps {
   onTagCreate: (name: string) => Promise<Tag>;
   onAuthorCreate: (name: string) => Promise<Author>;
   onSave: (fileId: number, values: DynamicMetadataFormValues) => Promise<void>;
+  onCategoryChange?: (newCategoryId: number | null) => Promise<void>;
 }
 
 export function EditFileDialog({
@@ -34,6 +35,7 @@ export function EditFileDialog({
   onTagCreate,
   onAuthorCreate,
   onSave,
+  onCategoryChange,
 }: EditFileDialogProps) {
   const [saving, setSaving] = useState(false);
   const [formValues, setFormValues] = useState<DynamicMetadataFormValues>({
@@ -44,9 +46,9 @@ export function EditFileDialog({
     metadata: [],
   });
 
-  // Populate form when file changes
+  // Populate form when file changes or dialog opens
   useEffect(() => {
-    if (file) {
+    if (file && open) {
       setFormValues({
         display_name: file.display_name,
         category_id: file.category_id,
@@ -59,7 +61,7 @@ export function EditFileDialog({
         })) ?? [],
       });
     }
-  }, [file]);
+  }, [file, open]);
 
   const handleSave = async () => {
     if (!file || saving) return;
@@ -91,6 +93,7 @@ export function EditFileDialog({
           onAuthorCreate={onAuthorCreate}
           fileId={file?.id}
           inStorage={file?.in_storage}
+          onCategoryChange={onCategoryChange}
         />
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
