@@ -362,18 +362,46 @@ pub async fn file_update(
     app: AppHandle,
     id: i64,
     display_name: Option<String>,
+    category_id: Option<i64>,
 ) -> Result<FileUpdateResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    if let Some(name) = display_name {
-        let validated_name = validate_display_name(&name)?;
-        sqlx::query("UPDATE files SET display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    match (display_name, category_id) {
+        (Some(name), Some(cat_id)) => {
+            let validated_name = validate_display_name(&name)?;
+            sqlx::query(
+                "UPDATE files SET display_name = ?, category_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            )
+            .bind(&validated_name)
+            .bind(cat_id)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        (Some(name), None) => {
+            let validated_name = validate_display_name(&name)?;
+            sqlx::query(
+                "UPDATE files SET display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            )
             .bind(&validated_name)
             .bind(id)
             .execute(&pool)
             .await
             .map_err(|e| e.to_string())?;
+        }
+        (None, Some(cat_id)) => {
+            sqlx::query(
+                "UPDATE files SET category_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            )
+            .bind(cat_id)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        (None, None) => {}
     }
 
     Ok(FileUpdateResponse { success: true })

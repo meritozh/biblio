@@ -11,7 +11,15 @@ import {
   DynamicMetadataForm,
   type DynamicMetadataFormValues,
 } from '@/components/DynamicMetadataForm';
-import { fileUpdate, authorSet, tagAssign, fileMoveCategory, translateError } from '@/lib/tauri';
+import {
+  fileUpdate,
+  authorSet,
+  tagAssign,
+  fileMoveCategory,
+  translateError,
+  metadataSet,
+  metadataDelete,
+} from '@/lib/tauri';
 import type { FileEntry, Category, Tag, Author } from '@/types';
 
 interface FileEditDialogProps {
@@ -72,17 +80,29 @@ export function FileEditDialog({
 
     setSaving(true);
     try {
-      // Update basic file info
       await fileUpdate(file.id, {
         display_name: formValues.display_name,
         category_id: formValues.category_id,
       });
 
-      // Update tags
       await tagAssign(file.id, formValues.tag_ids);
 
-      // Update authors
       await authorSet(file.id, formValues.author_ids);
+
+      const originalKeys = new Set(file.metadata?.map((m) => m.key) || []);
+      const newKeys = new Set(formValues.metadata.map((m) => m.key));
+
+      for (const key of originalKeys) {
+        if (!newKeys.has(key)) {
+          await metadataDelete(file.id, key);
+        }
+      }
+
+      for (const meta of formValues.metadata) {
+        if (meta.value) {
+          await metadataSet(file.id, meta.key, meta.value, meta.data_type);
+        }
+      }
 
       await onFileUpdated();
       onOpenChange(false);
