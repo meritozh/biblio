@@ -17,6 +17,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { ChevronLeft, ChevronRight, ArrowUpDown } from 'lucide-react';
 import type { FileEntry } from '@/types';
+import { FileContextMenu } from '@/components/FileContextMenu';
 
 interface FileListProps {
   files: FileEntry[];
@@ -131,26 +132,32 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
           <TableBody>
             {table.getRowModel().rows?.length ? (
               table.getRowModel().rows.map((row) => (
-                <TableRow
+                <FileContextMenu
                   key={row.id}
-                  data-state={row.getIsSelected() && 'selected'}
-                  className={onFileClick ? 'cursor-pointer hover:bg-muted/50' : ''}
-                  onClick={() => onFileClick?.(row.original)}
-                  tabIndex={onFileClick ? 0 : undefined}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && onFileClick) {
-                      onFileClick(row.original);
-                    }
-                  }}
-                  role={onFileClick ? 'button' : undefined}
-                  aria-label={onFileClick ? `View ${row.original.display_name}` : undefined}
+                  file={row.original}
+                  onEdit={onFileEdit}
+                  onDelete={onFileDelete}
                 >
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </TableCell>
-                  ))}
-                </TableRow>
+                  <TableRow
+                    data-state={row.getIsSelected() && 'selected'}
+                    className={onFileClick ? 'cursor-pointer hover:bg-muted/50' : ''}
+                    onClick={() => onFileClick?.(row.original)}
+                    tabIndex={onFileClick ? 0 : undefined}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && onFileClick) {
+                        onFileClick(row.original);
+                      }
+                    }}
+                    role={onFileClick ? 'button' : undefined}
+                    aria-label={onFileClick ? `View ${row.original.display_name}` : undefined}
+                  >
+                    {row.getVisibleCells().map((cell) => (
+                      <TableCell key={cell.id}>
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                </FileContextMenu>
               ))
             ) : (
               <TableRow>
