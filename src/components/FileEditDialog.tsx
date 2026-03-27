@@ -20,10 +20,10 @@ import {
   metadataSet,
   metadataDelete,
 } from '@/lib/tauri';
-import type { FileEntry, Category, Tag, Author } from '@/types';
+import type { FileEntry, FileWithDetails, Category, Tag, Author } from '@/types';
 
 interface FileEditDialogProps {
-  file: FileEntry | null;
+  file: FileWithDetails | FileEntry | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   categories: Category[];

@@ -8,6 +8,7 @@ import { fetchFiles, fetchCategories } from '@/stores';
 import {
   fileCreate,
   fileDelete,
+  fileGet,
   authorList,
   authorCreate,
   tagList,
@@ -40,7 +41,7 @@ import {
   DynamicMetadataForm,
   type DynamicMetadataFormValues,
 } from '@/components/DynamicMetadataForm';
-import type { FileEntry, Category, Tag, Author } from '@/types';
+import type { FileEntry, FileWithDetails, Category, Tag, Author } from '@/types';
 
 export const Route = createFileRoute('/')({
   component: HomePage,
@@ -67,7 +68,7 @@ function HomePage() {
   const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
   const [storagePathAccessible, setStoragePathAccessible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [editingFile, setEditingFile] = useState<FileEntry | null>(null);
+  const [editingFile, setEditingFile] = useState<FileWithDetails | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [deletingFile, setDeletingFile] = useState<FileEntry | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -201,9 +202,15 @@ function HomePage() {
     console.log('File clicked:', file);
   };
 
-  const handleFileEdit = (file: FileEntry) => {
-    setEditingFile(file);
-    setEditDialogOpen(true);
+  const handleFileEdit = async (file: FileEntry) => {
+    try {
+      const fullFile = await fileGet(file.id);
+      setEditingFile(fullFile);
+      setEditDialogOpen(true);
+    } catch (error) {
+      console.error('Failed to load file details:', error);
+      alert(`Failed to load file details: ${error}`);
+    }
   };
 
   const handleFileDelete = (file: FileEntry) => {
