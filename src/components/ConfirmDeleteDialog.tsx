@@ -1,6 +1,6 @@
+import { useState } from 'react';
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -23,6 +23,22 @@ export function ConfirmDeleteDialog({
   fileName,
   onConfirm,
 }: ConfirmDeleteDialogProps) {
+  const [deleting, setDeleting] = useState(false);
+
+  const handleConfirm = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    try {
+      await onConfirm();
+      onOpenChange(false);
+    } catch (error) {
+      console.error('Failed to delete:', error);
+      alert(`Failed to delete: ${error}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
@@ -33,12 +49,10 @@ export function ConfirmDeleteDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction asChild>
-            <Button variant="destructive" onClick={onConfirm}>
-              Delete
-            </Button>
-          </AlertDialogAction>
+          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+          <Button variant="destructive" onClick={handleConfirm} disabled={deleting}>
+            {deleting ? 'Deleting...' : 'Delete'}
+          </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
