@@ -65,7 +65,7 @@ export function TagInput({
         placeholder={placeholder}
       />
       {showSuggestions && filteredTags.length > 0 && (
-        <div className="absolute z-10 w-full mt-1 bg-popover border rounded-md shadow-md">
+        <div className="absolute z-10 w-full mt-1 bg-popover border rounded-xl shadow-md">
           {filteredTags.slice(0, 5).map((tag) => (
             <button
               key={tag.id}
@@ -75,7 +75,11 @@ export function TagInput({
             >
               <Badge
                 variant="secondary"
-                style={tag.color ? { backgroundColor: tag.color, color: '#fff' } : undefined}
+                style={
+                  tag.color
+                    ? { backgroundColor: tag.color, color: 'var(--color-primary-foreground)' }
+                    : undefined
+                }
               >
                 {tag.name}
               </Badge>

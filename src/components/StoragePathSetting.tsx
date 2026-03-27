@@ -58,12 +58,7 @@ export function StoragePathSetting() {
             Files will be organized in category folders
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleSelectFolder}
-          disabled={saving}
-        >
+        <Button variant="outline" size="sm" onClick={handleSelectFolder} disabled={saving}>
           <FolderOpen className="h-4 w-4 mr-2" />
           {storagePath ? 'Change' : 'Select Folder'}
         </Button>
@@ -71,27 +66,19 @@ export function StoragePathSetting() {
 
       {storagePath ? (
         <div className="flex items-center gap-2">
-          <Input
-            value={storagePath}
-            readOnly
-            className="text-sm bg-muted"
-          />
-          {success && (
-            <Check className="h-4 w-4 text-green-500" />
-          )}
+          <Input value={storagePath} readOnly className="text-sm bg-muted" />
+          {success && <Check className="h-4 w-4 text-success" />}
         </div>
       ) : (
-        <div className="flex items-center gap-2 p-3 bg-yellow-50 dark:bg-yellow-950/20 rounded-md border border-yellow-200 dark:border-yellow-800">
-          <AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-500" />
-          <span className="text-sm text-yellow-800 dark:text-yellow-200">
+        <div className="flex items-center gap-2 p-3 bg-warning-muted dark:bg-warning/10 rounded-xl border border-warning/30">
+          <AlertCircle className="h-4 w-4 text-warning" />
+          <span className="text-sm text-warning">
             Select a storage folder to start adding files
           </span>
         </div>
       )}
 
-      {error && (
-        <p className="text-sm text-red-500">{error}</p>
-      )}
+      {error && <p className="text-sm text-destructive">{error}</p>}
     </div>
   );
 }

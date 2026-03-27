@@ -7,7 +7,10 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { DynamicMetadataForm, type DynamicMetadataFormValues } from '@/components/DynamicMetadataForm';
+import {
+  DynamicMetadataForm,
+  type DynamicMetadataFormValues,
+} from '@/components/DynamicMetadataForm';
 import { fileUpdate, authorSet, tagAssign, fileMoveCategory, translateError } from '@/lib/tauri';
 import type { FileEntry, Category, Tag, Author } from '@/types';
 
@@ -124,9 +127,7 @@ export function FileEditDialog({
             inStorage={file?.in_storage}
             onCategoryChange={handleCategoryChange}
           />
-          {moveError && (
-            <p className="text-sm text-red-500 mt-2">{moveError}</p>
-          )}
+          {moveError && <p className="text-sm text-destructive mt-2">{moveError}</p>}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>

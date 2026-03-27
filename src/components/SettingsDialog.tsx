@@ -1,10 +1,7 @@
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { StoragePathSetting } from './StoragePathSetting';
+import { ThemeSetting } from './ThemeSetting';
+import { Separator } from '@/components/ui/separator';
 
 interface SettingsDialogProps {
   open?: boolean;
@@ -18,7 +15,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
-        <div className="py-4">
+        <div className="py-4 space-y-6">
+          <ThemeSetting />
+          <Separator />
           <StoragePathSetting />
         </div>
       </DialogContent>

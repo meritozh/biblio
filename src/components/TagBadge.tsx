@@ -20,7 +20,11 @@ export function TagBadge({ tag, onRemove, clickable = false, onClick }: TagBadge
     <Badge
       variant="secondary"
       className={`gap-1 ${clickable ? 'cursor-pointer hover:bg-secondary/80' : ''}`}
-      style={tag.color ? { backgroundColor: tag.color, color: '#fff' } : undefined}
+      style={
+        tag.color
+          ? { backgroundColor: tag.color, color: 'var(--color-primary-foreground)' }
+          : undefined
+      }
       onClick={handleClick}
       role={clickable ? 'button' : undefined}
       tabIndex={clickable ? 0 : undefined}

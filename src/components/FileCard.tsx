@@ -13,9 +13,9 @@ interface FileCardProps {
 
 export function FileCard({ file, onEdit, onDelete }: FileCardProps) {
   const statusColor = {
-    available: 'bg-green-500',
+    available: 'bg-success',
     missing: 'bg-destructive',
-    moved: 'bg-yellow-500',
+    moved: 'bg-warning',
   };
 
   const statusLabel = {
@@ -73,7 +73,11 @@ export function FileCard({ file, onEdit, onDelete }: FileCardProps) {
               )}
             </div>
           </div>
-          <div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" role="group" aria-label="File actions">
+          <div
+            className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+            role="group"
+            aria-label="File actions"
+          >
             <TooltipProvider>
               {onEdit && (
                 <Tooltip>

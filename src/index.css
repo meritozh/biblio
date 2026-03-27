@@ -4,105 +4,73 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/*
- * Biblio Design System: Notion-Inspired Clean Aesthetic
- * Soft, friendly, content-focused with playful gradients
- */
-
-@theme {
+:root {
   --radius: 0.75rem;
-
-  /* Light theme - Clean white with warm accents */
-  --color-background: #FFFFFF;
-  --color-foreground: #37352F;
-  --color-card: #FFFFFF;
-  --color-card-foreground: #37352F;
-  --color-popover: #FFFFFF;
-  --color-popover-foreground: #37352F;
-  --color-primary: #37352F;
-  --color-primary-foreground: #FFFFFF;
-  --color-secondary: #F7F6F3;
-  --color-secondary-foreground: #37352F;
-  --color-muted: #F7F6F3;
-  --color-muted-foreground: #787774;
-  --color-accent: #9B9A97;
-  --color-accent-foreground: #37352F;
-  --color-destructive: #EB5757;
-  --color-destructive-foreground: #FFFFFF;
-  --color-border: #E9E9E7;
-  --color-input: #E9E9E7;
-  --color-ring: #9B9A97;
-  --color-sidebar: #FBFBFA;
-  --color-sidebar-foreground: #37352F;
-  --color-sidebar-border: #E9E9E7;
-
-  /* Notion-style accent colors */
-  --color-notion-blue: #5383EC;
-  --color-notion-purple: #9065B0;
-  --color-notion-pink: #E255A1;
-  --color-notion-red: #EB5757;
-  --color-notion-orange: #D9730D;
-  --color-notion-yellow: #DFAB01;
-  --color-notion-green: #4DAB9A;
-  --color-notion-gray: #9B9A97;
+  --background: #ffffff;
+  --foreground: #37352f;
+  --card: #ffffff;
+  --card-foreground: #37352f;
+  --popover: #ffffff;
+  --popover-foreground: #37352f;
+  --primary: #37352f;
+  --primary-foreground: #ffffff;
+  --secondary: #f7f6f3;
+  --secondary-foreground: #37352f;
+  --muted: #f7f6f3;
+  --muted-foreground: #787774;
+  --accent: #9b9a97;
+  --accent-foreground: #37352f;
+  --destructive: #eb5757;
+  --destructive-foreground: #ffffff;
+  --border: #e9e9e7;
+  --input: #e9e9e7;
+  --ring: #9b9a97;
+  --sidebar: #fbfbfa;
+  --sidebar-foreground: #37352f;
+  --sidebar-border: #e9e9e7;
+  --success: #4dab9a;
+  --success-foreground: #ffffff;
+  --success-muted: #dbeddb;
+  --warning: #d9730d;
+  --warning-foreground: #ffffff;
+  --warning-muted: #fae9d9;
+  --info: #5383ec;
+  --info-foreground: #ffffff;
+  --info-muted: #e8f0fe;
 }
 
-@layer base {
-  * {
-    @apply border-border;
-  }
-
-  html {
-    overscroll-behavior: none;
-  }
-
-  body {
-    @apply bg-background text-foreground;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
-    font-weight: 400;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    line-height: 1.5;
-  }
-
-  h1, h2, h3, h4, h5, h6 {
-    font-weight: 600;
-    letter-spacing: -0.02em;
-    line-height: 1.3;
-  }
-
-  ::selection {
-    background-color: rgba(83, 131, 236, 0.2);
-    color: inherit;
-  }
-}
-
-/* Dark theme */
-@media (prefers-color-scheme: dark) {
-  @theme {
-    --color-background: #191919;
-    --color-foreground: #E6E6E5;
-    --color-card: #252525;
-    --color-card-foreground: #E6E6E5;
-    --color-popover: #252525;
-    --color-popover-foreground: #E6E6E5;
-    --color-primary: #FFFFFF;
-    --color-primary-foreground: #191919;
-    --color-secondary: #2F2F2F;
-    --color-secondary-foreground: #E6E6E5;
-    --color-muted: #2F2F2F;
-    --color-muted-foreground: #9B9A97;
-    --color-accent: #9B9A97;
-    --color-accent-foreground: #E6E6E5;
-    --color-destructive: #EB5757;
-    --color-destructive-foreground: #FFFFFF;
-    --color-border: #373737;
-    --color-input: #373737;
-    --color-ring: #9B9A97;
-    --color-sidebar: #202020;
-    --color-sidebar-foreground: #E6E6E5;
-    --color-sidebar-border: #2F2F2F;
-  }
+.dark {
+  --background: #191919;
+  --foreground: #e6e6e5;
+  --card: #252525;
+  --card-foreground: #e6e6e5;
+  --popover: #252525;
+  --popover-foreground: #e6e6e5;
+  --primary: #ffffff;
+  --primary-foreground: #191919;
+  --secondary: #2f2f2f;
+  --secondary-foreground: #e6e6e5;
+  --muted: #2f2f2f;
+  --muted-foreground: #9b9a97;
+  --accent: #9b9a97;
+  --accent-foreground: #e6e6e5;
+  --destructive: #eb5757;
+  --destructive-foreground: #ffffff;
+  --border: #373737;
+  --input: #373737;
+  --ring: #9b9a97;
+  --sidebar: #202020;
+  --sidebar-foreground: #e6e6e5;
+  --sidebar-border: #2f2f2f;
+  --success: #4dab9a;
+  --success-foreground: #ffffff;
+  --success-muted: rgba(77, 171, 154, 0.2);
+  --warning: #d9730d;
+  --warning-foreground: #ffffff;
+  --warning-muted: rgba(217, 115, 13, 0.2);
+  --info: #5383ec;
+  --info-foreground: #ffffff;
+  --info-muted: rgba(83, 131, 236, 0.2);
 }
 
 @theme inline {
@@ -135,60 +103,68 @@
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-border: var(--sidebar-border);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-muted: var(--success-muted);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-muted: var(--warning-muted);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-muted: var(--info-muted);
+  --color-notion-blue: #5383ec;
+  --color-notion-purple: #9065b0;
+  --color-notion-pink: #e255a1;
+  --color-notion-red: #eb5757;
+  --color-notion-orange: #d9730d;
+  --color-notion-yellow: #dfab01;
+  --color-notion-green: #4dab9a;
+  --color-notion-gray: #9b9a97;
 }
 
-:root {
-  --radius: 0.5rem;
-  --background: #FFFFFF;
-  --foreground: #37352F;
-  --card: #FFFFFF;
-  --card-foreground: #37352F;
-  --popover: #FFFFFF;
-  --popover-foreground: #37352F;
-  --primary: #37352F;
-  --primary-foreground: #FFFFFF;
-  --secondary: #F7F6F3;
-  --secondary-foreground: #37352F;
-  --muted: #F7F6F3;
-  --muted-foreground: #787774;
-  --accent: #9B9A97;
-  --accent-foreground: #37352F;
-  --destructive: #EB5757;
-  --destructive-foreground: #FFFFFF;
-  --border: #E9E9E7;
-  --input: #E9E9E7;
-  --ring: #9B9A97;
-  --sidebar: #FBFBFA;
-  --sidebar-foreground: #37352F;
-  --sidebar-border: #E9E9E7;
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    overscroll-behavior: none;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family:
+      'Nunito Sans',
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      Helvetica,
+      Arial,
+      sans-serif;
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    line-height: 1.5;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: 'Cormorant Garamond', 'Nunito Sans', serif;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.3;
+  }
+
+  ::selection {
+    background-color: rgba(83, 131, 236, 0.2);
+    color: inherit;
+  }
 }
 
-.dark {
-  --background: #191919;
-  --foreground: #E6E6E5;
-  --card: #252525;
-  --card-foreground: #E6E6E5;
-  --popover: #252525;
-  --popover-foreground: #E6E6E5;
-  --primary: #FFFFFF;
-  --primary-foreground: #191919;
-  --secondary: #2F2F2F;
-  --secondary-foreground: #E6E6E5;
-  --muted: #2F2F2F;
-  --muted-foreground: #9B9A97;
-  --accent: #9B9A97;
-  --accent-foreground: #E6E6E5;
-  --destructive: #EB5757;
-  --destructive-foreground: #FFFFFF;
-  --border: #373737;
-  --input: #373737;
-  --ring: #9B9A97;
-  --sidebar: #202020;
-  --sidebar-foreground: #E6E6E5;
-  --sidebar-border: #2F2F2F;
-}
-
-/* Custom scrollbar - Notion style */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -199,49 +175,44 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #D3D3D3;
+  background: var(--muted-foreground);
+  opacity: 0.5;
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #B3B3B3;
+  background: var(--accent);
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 
-.dark ::-webkit-scrollbar-thumb {
-  background: #4A4A4A;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: #5A5A5A;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-
-/* Notion-style gradient text utility */
 .notion-gradient-text {
-  background: linear-gradient(90deg, #5383EC 0%, #9065B0 50%, #E255A1 100%);
+  background: linear-gradient(
+    90deg,
+    var(--color-notion-blue) 0%,
+    var(--color-notion-purple) 50%,
+    var(--color-notion-pink) 100%
+  );
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
-/* Notion-style card hover effect */
 .notion-card-hover {
-  transition: box-shadow 200ms ease 0s, transform 200ms ease 0s;
+  transition:
+    box-shadow 200ms ease 0s,
+    transform 200ms ease 0s;
 }
 
 .notion-card-hover:hover {
-  box-shadow: rgba(15, 15, 15, 0.1) 0px 0px 0px 1px, rgba(15, 15, 15, 0.1) 0px 2px 4px;
+  box-shadow:
+    rgba(15, 15, 15, 0.1) 0px 0px 0px 1px,
+    rgba(15, 15, 15, 0.1) 0px 2px 4px;
   transform: translateY(-1px);
 }
 
-/* Notion-style button */
 .notion-button {
   transition: background 20ms ease-in 0s;
 }

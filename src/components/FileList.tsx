@@ -59,9 +59,9 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
       cell: ({ row }: { row: { original: FileEntry } }) => {
         const status = row.original.file_status;
         const colors = {
-          available: 'text-green-600',
-          missing: 'text-red-600',
-          moved: 'text-yellow-600',
+          available: 'text-success',
+          missing: 'text-destructive',
+          moved: 'text-warning',
         };
         return <span className={colors[status as keyof typeof colors] || ''}>{status}</span>;
       },
