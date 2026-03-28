@@ -16,6 +16,8 @@ import {
 } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { ChevronLeft, ChevronRight, ArrowUpDown } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { FileContextMenu } from '@/components/FileContextMenu';
 import type { FileEntry } from '@/types';
 
@@ -49,30 +51,92 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
       ),
     },
     {
-      accessorKey: 'path',
-      header: 'Path',
-      cell: ({ row }: { row: { original: FileEntry } }) => (
-        <span className="text-muted-foreground truncate max-w-md block">{row.original.path}</span>
-      ),
-    },
-    {
-      accessorKey: 'file_status',
-      header: 'Status',
-      cell: ({ row }: { row: { original: FileEntry } }) => {
-        const status = row.original.file_status;
-        const colors = {
-          available: 'text-success',
-          missing: 'text-destructive',
-          moved: 'text-warning',
-        };
-        return <span className={colors[status as keyof typeof colors] || ''}>{status}</span>;
-      },
-    },
-    {
       accessorKey: 'created_at',
       header: 'Added',
       cell: ({ row }: { row: { original: FileEntry } }) =>
         new Date(row.original.created_at).toLocaleDateString(),
+    },
+    {
+      id: 'tags',
+      header: 'Tags',
+      cell: ({ row }: { row: { original: FileEntry } }) => {
+        const tags = row.original.tags;
+        if (!tags || tags.length === 0) {
+          return <span className="text-muted-foreground text-sm">—</span>;
+        }
+        const MAX_VISIBLE = 2;
+        const visibleTags = tags.slice(0, MAX_VISIBLE);
+        const overflowCount = tags.length - MAX_VISIBLE;
+        return (
+          <div className="flex items-center gap-1 max-w-[180px] flex-wrap">
+            {visibleTags.map((tag) => (
+              <Badge key={tag.id} variant="gray" className="text-xs font-normal shrink-0">
+                {tag.name}
+              </Badge>
+            ))}
+            {overflowCount > 0 && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge variant="gray" className="text-xs font-normal cursor-default">
+                      +{overflowCount}
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-[200px]">
+                    <div className="flex flex-wrap gap-1">
+                      {tags.slice(MAX_VISIBLE).map((tag) => (
+                        <Badge key={tag.id} variant="gray" className="text-xs font-normal">
+                          {tag.name}
+                        </Badge>
+                      ))}
+                    </div>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      id: 'authors',
+      header: 'Authors',
+      cell: ({ row }: { row: { original: FileEntry } }) => {
+        const authors = row.original.authors;
+        if (!authors || authors.length === 0) {
+          return <span className="text-muted-foreground text-sm">—</span>;
+        }
+        const MAX_VISIBLE = 2;
+        const visibleAuthors = authors.slice(0, MAX_VISIBLE);
+        const overflowCount = authors.length - MAX_VISIBLE;
+        return (
+          <div className="max-w-[160px]">
+            <span className="text-sm truncate block">
+              {visibleAuthors.map((a) => a.name).join(', ')}
+              {overflowCount > 0 && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="text-muted-foreground cursor-default">
+                        {' '}
+                        +{overflowCount} more
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      <p>
+                        {authors
+                          .slice(MAX_VISIBLE)
+                          .map((a) => a.name)
+                          .join(', ')}
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+            </span>
+          </div>
+        );
+      },
     },
     {
       id: 'actions',

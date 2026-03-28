@@ -100,12 +100,15 @@ function HomePage() {
     void loadFiles(selectedCategoryId);
   }, [selectedCategoryId, loadFiles]);
 
-  const handleSettingsOpenChange = useCallback((open: boolean) => {
-    setSettingsOpen(open);
-    if (!open) {
-      void checkStoragePath();
-    }
-  }, [checkStoragePath]);
+  const handleSettingsOpenChange = useCallback(
+    (open: boolean) => {
+      setSettingsOpen(open);
+      if (!open) {
+        void checkStoragePath();
+      }
+    },
+    [checkStoragePath]
+  );
 
   const handleFilesSelected = (paths: string[]) => {
     setSelectedFiles(paths);
@@ -263,12 +266,18 @@ function HomePage() {
         onOpenSettings={() => setSettingsOpen(true)}
       />
       <main className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-8 pt-14 pb-4 border-b border-border" data-tauri-drag-region>
+        <div
+          className="flex items-center justify-between px-8 pt-14 pb-4 border-b border-border"
+          data-tauri-drag-region
+        >
           <div>
             <h1 className="text-xl font-semibold text-foreground">Library</h1>
             <p className="text-xs text-muted-foreground mt-0.5">{total} files</p>
           </div>
-          <FilePicker onFilesSelected={handleFilesSelected} disabled={storagePathConfigured === false} />
+          <FilePicker
+            onFilesSelected={handleFilesSelected}
+            disabled={storagePathConfigured === false}
+          />
         </div>
 
         <div className="flex-1 overflow-auto px-8 py-6">
@@ -276,9 +285,7 @@ function HomePage() {
             <div className="mb-6 p-4 bg-secondary/50 rounded flex items-center gap-3">
               <AlertCircle className="h-4 w-4 text-muted-foreground shrink-0" />
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-foreground">
-                  Storage path not configured
-                </p>
+                <p className="text-sm font-medium text-foreground">Storage path not configured</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   Select a storage folder to start adding files.
                 </p>
@@ -293,9 +300,7 @@ function HomePage() {
             <div className="mb-6 p-4 bg-destructive/5 rounded flex items-center gap-3">
               <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-foreground">
-                  Storage path inaccessible
-                </p>
+                <p className="text-sm font-medium text-foreground">Storage path inaccessible</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   The storage folder cannot be accessed.
                 </p>
@@ -356,9 +361,7 @@ function HomePage() {
             />
           ) : (
             <div className="py-4">
-              <p className="text-sm text-muted-foreground">
-                Adding {selectedFiles.length} files.
-              </p>
+              <p className="text-sm text-muted-foreground">Adding {selectedFiles.length} files.</p>
               <div className="mt-4">
                 <DynamicMetadataForm
                   values={formValues}

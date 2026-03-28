@@ -73,6 +73,21 @@ pub struct FileWithDetails {
     pub metadata: Vec<Metadata>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct FileListItem {
+    pub id: i64,
+    pub path: String,
+    pub display_name: String,
+    pub category_id: Option<i64>,
+    pub file_status: String,
+    pub in_storage: bool,
+    pub original_path: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub tags: Vec<Tag>,
+    pub authors: Vec<Author>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct MetadataInput {
     pub key: String,
