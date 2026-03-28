@@ -237,12 +237,6 @@ export async function fileMoveCategory(
   return invoke('file_move_category', { fileId: file_id, newCategoryId: new_category_id });
 }
 
-// Reveal file in file manager
-export async function revealItemInDir(path: string): Promise<void> {
-  const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
-  return revealItemInDir(path);
-}
-
 // Error code translations
 const ERROR_MESSAGES: Record<string, string> = {
   STORAGE_PATH_NOT_CONFIGURED: 'Please configure a storage folder in settings first.',

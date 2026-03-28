@@ -2,7 +2,6 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { FileContextMenu } from '@/components/FileContextMenu';
 import { FileText, Edit, Trash2 } from 'lucide-react';
 import type { FileEntry, Tag } from '@/types';
 
@@ -26,8 +25,7 @@ export function FileCard({ file, onEdit, onDelete }: FileCardProps) {
   };
 
   return (
-    <FileContextMenu file={file} onEdit={onEdit} onDelete={onDelete}>
-      <Card className="group">
+    <Card className="group">
         <CardContent className="p-0">
           <div className="flex items-start justify-between gap-4 p-4">
             <div className="flex items-start gap-3 min-w-0 flex-1">
@@ -120,6 +118,5 @@ export function FileCard({ file, onEdit, onDelete }: FileCardProps) {
           </div>
         </CardContent>
       </Card>
-    </FileContextMenu>
   );
 }

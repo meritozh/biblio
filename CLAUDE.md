@@ -52,3 +52,8 @@ TypeScript 5.x (frontend), Rust 1.75+ (Tauri backend): Follow standard conventio
 - **New Tauri Commands**: Must be (1) created in `src-tauri/src/commands/`, (2) exported in `mod.rs`, (3) registered in `lib.rs` invoke_handler.
 
 - **Tailwind 4.x**: Uses `@plugin 'tailwindcss-animate'` syntax in CSS, not postcss.config.js.
+
+## Agent Principles
+
+- **Think before acting**: Don't mechanically execute user input. Follow the loop: think → explore → plan → execute → validate. Understand the problem space before writing code.
+- **Ask when uncertain**: If anything is unclear or ambiguous, ask the user for clarification rather than guessing.
