@@ -117,15 +117,50 @@ pub async fn file_list(
         .await
         .map_err(|e| e.to_string())?;
 
+    let mut file_items = Vec::with_capacity(files.len());
+    for file in files {
+        let tags: Vec<Tag> = sqlx::query_as(
+            "SELECT t.id, t.name, t.color, t.created_at FROM tags t
+             INNER JOIN file_tags ft ON t.id = ft.tag_id WHERE ft.file_id = ?"
+        )
+        .bind(file.id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let authors: Vec<Author> = sqlx::query_as(
+            "SELECT a.id, a.name, a.created_at FROM authors a
+             INNER JOIN file_authors fa ON a.id = fa.author_id WHERE fa.file_id = ?"
+        )
+        .bind(file.id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        file_items.push(FileListItem {
+            id: file.id,
+            path: file.path,
+            display_name: file.display_name,
+            category_id: file.category_id,
+            file_status: file.file_status,
+            in_storage: file.in_storage,
+            original_path: file.original_path,
+            created_at: file.created_at,
+            updated_at: file.updated_at,
+            tags,
+            authors,
+        });
+    }
+
     Ok(FileListResponse {
-        files,
+        files: file_items,
         total: total.0,
     })
 }
 
 #[derive(Serialize)]
 pub struct FileListResponse {
-    pub files: Vec<FileEntry>,
+    pub files: Vec<FileListItem>,
     pub total: i64,
 }
 
@@ -620,8 +655,43 @@ pub async fn file_search(
         .await
         .map_err(|e| e.to_string())?;
 
+    let mut file_items = Vec::with_capacity(files.len());
+    for file in files {
+        let tags: Vec<Tag> = sqlx::query_as(
+            "SELECT t.id, t.name, t.color, t.created_at FROM tags t
+             INNER JOIN file_tags ft ON t.id = ft.tag_id WHERE ft.file_id = ?"
+        )
+        .bind(file.id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let authors: Vec<Author> = sqlx::query_as(
+            "SELECT a.id, a.name, a.created_at FROM authors a
+             INNER JOIN file_authors fa ON a.id = fa.author_id WHERE fa.file_id = ?"
+        )
+        .bind(file.id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        file_items.push(FileListItem {
+            id: file.id,
+            path: file.path,
+            display_name: file.display_name,
+            category_id: file.category_id,
+            file_status: file.file_status,
+            in_storage: file.in_storage,
+            original_path: file.original_path,
+            created_at: file.created_at,
+            updated_at: file.updated_at,
+            tags,
+            authors,
+        });
+    }
+
     Ok(FileListResponse {
-        files,
+        files: file_items,
         total: total.0,
     })
 }
