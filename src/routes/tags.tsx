@@ -41,11 +41,9 @@ function TagsPage() {
   const [loading, setLoading] = useState(true);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newTagName, setNewTagName] = useState('');
-  const [newTagColor, setNewTagColor] = useState('');
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
-  const [editColor, setEditColor] = useState('');
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingTag, setDeletingTag] = useState<TagWithUsage | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -65,10 +63,9 @@ function TagsPage() {
     if (!newTagName.trim()) return;
     setSaving(true);
     try {
-      await tagCreate(newTagName.trim(), newTagColor || undefined);
+      await tagCreate(newTagName.trim(), undefined);
       setCreateDialogOpen(false);
       setNewTagName('');
-      setNewTagColor('');
       void loadTags();
     } catch (error) {
       console.error('Failed to create tag:', error);
@@ -80,16 +77,14 @@ function TagsPage() {
   const handleStartEdit = (tag: TagWithUsage) => {
     setEditingId(tag.id);
     setEditName(tag.name);
-    setEditColor(tag.color || '');
   };
 
   const handleSaveEdit = async () => {
     if (!editingId || !editName.trim()) return;
     try {
-      await tagUpdate(editingId, editName.trim(), editColor || undefined);
+      await tagUpdate(editingId, editName.trim(), undefined);
       setEditingId(null);
       setEditName('');
-      setEditColor('');
       void loadTags();
     } catch (error) {
       console.error('Failed to update tag:', error);
@@ -100,7 +95,6 @@ function TagsPage() {
   const handleCancelEdit = () => {
     setEditingId(null);
     setEditName('');
-    setEditColor('');
   };
 
   const handleDeleteClick = (tag: TagWithUsage) => {
@@ -162,16 +156,13 @@ function TagsPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Name</TableHead>
-                    <TableHead>Color</TableHead>
-                    <TableHead>Files</TableHead>
-                    <TableHead>Created</TableHead>
                     <TableHead className="w-[100px]">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {tags.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={5} className="h-24 text-center">
+                      <TableCell colSpan={2} className="h-24 text-center">
                         No tags yet. Click "Add Tag" to create one.
                       </TableCell>
                     </TableRow>
@@ -190,28 +181,6 @@ function TagsPage() {
                             tag.name
                           )}
                         </TableCell>
-                        <TableCell>
-                          {editingId === tag.id ? (
-                            <Input
-                              value={editColor}
-                              onChange={(e) => setEditColor(e.target.value)}
-                              placeholder="#hex"
-                              className="h-8 w-24"
-                            />
-                          ) : tag.color ? (
-                            <div className="flex items-center gap-2">
-                              <div
-                                className="w-4 h-4 rounded-full"
-                                style={{ backgroundColor: tag.color }}
-                              />
-                              <span className="text-muted-foreground">{tag.color}</span>
-                            </div>
-                          ) : (
-                            <span className="text-muted-foreground">—</span>
-                          )}
-                        </TableCell>
-                        <TableCell>{tag.usageCount}</TableCell>
-                        <TableCell>{new Date(tag.created_at).toLocaleDateString()}</TableCell>
                         <TableCell>
                           {editingId === tag.id ? (
                             <div className="flex gap-1">
@@ -264,11 +233,6 @@ function TagsPage() {
               onChange={(e) => setNewTagName(e.target.value)}
               placeholder="Tag name"
               onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-            />
-            <Input
-              value={newTagColor}
-              onChange={(e) => setNewTagColor(e.target.value)}
-              placeholder="Color (optional, e.g. #FF5733)"
             />
           </div>
           <DialogFooter>

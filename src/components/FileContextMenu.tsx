@@ -12,16 +12,12 @@ import type { FileEntry } from '@/types';
 
 interface FileContextMenuProps {
   file: FileEntry;
-  open?: boolean;
-  onOpenChange?: (open: boolean) => void;
   onEdit: (file: FileEntry) => void;
   onDelete: (file: FileEntry) => void;
 }
 
 export function FileContextMenu({
   file,
-  open: externalOpen,
-  onOpenChange: externalOnOpenChange,
   onEdit,
   onDelete,
 }: FileContextMenuProps) {
@@ -29,10 +25,8 @@ export function FileContextMenu({
     try {
       await revealItemInDir(file.path);
     } catch (error) {
-      // Silently fail - file may be missing
       console.error('Failed to reveal file:', error);
     }
-    externalOnOpenChange?.(false);
   };
 
   const handleCopyPath = async () => {
@@ -41,21 +35,10 @@ export function FileContextMenu({
     } catch (error) {
       console.error('Failed to copy path:', error);
     }
-    externalOnOpenChange?.(false);
-  };
-
-  const handleEdit = () => {
-    onEdit(file);
-    externalOnOpenChange?.(false);
-  };
-
-  const handleDelete = () => {
-    onDelete(file);
-    externalOnOpenChange?.(false);
   };
 
   return (
-    <DropdownMenu open={externalOpen} onOpenChange={externalOnOpenChange}>
+    <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
@@ -70,11 +53,11 @@ export function FileContextMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem onClick={handleEdit}>
+        <DropdownMenuItem onClick={() => onEdit(file)}>
           <Pencil className="h-4 w-4 mr-2" />
           Edit
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={handleDelete} className="text-destructive focus:text-destructive">
+        <DropdownMenuItem onClick={() => onDelete(file)} className="text-destructive focus:text-destructive">
           <Trash2 className="h-4 w-4 mr-2" />
           Delete
         </DropdownMenuItem>

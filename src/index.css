@@ -12,7 +12,7 @@
   --card-foreground: #37352f;
   --popover: #ffffff;
   --popover-foreground: #37352f;
-  --primary: #37352f;
+  --primary: #8b7355;
   --primary-foreground: #ffffff;
   --secondary: #f7f6f3;
   --secondary-foreground: #37352f;
@@ -24,7 +24,7 @@
   --destructive-foreground: #ffffff;
   --border: #e9e9e7;
   --input: #e9e9e7;
-  --ring: #9b9a97;
+  --ring: #8b7355;
   --sidebar: #fbfbfa;
   --sidebar-foreground: #37352f;
   --sidebar-border: #e9e9e7;
@@ -37,6 +37,13 @@
   --info: #5383ec;
   --info-foreground: #ffffff;
   --info-muted: #e8f0fe;
+  --notion-blue-muted: #e8f0fe;
+  --notion-purple-muted: #f3e8fc;
+  --notion-pink-muted: #fde8f0;
+  --notion-green-muted: #dbeddb;
+  --notion-orange-muted: #fae9d9;
+  --notion-yellow-muted: #fbf3db;
+  --notion-gray-muted: #ebecea;
 }
 
 .dark {
@@ -46,8 +53,8 @@
   --card-foreground: #e6e6e5;
   --popover: #252525;
   --popover-foreground: #e6e6e5;
-  --primary: #ffffff;
-  --primary-foreground: #191919;
+  --primary: #a9936f;
+  --primary-foreground: #ffffff;
   --secondary: #2f2f2f;
   --secondary-foreground: #e6e6e5;
   --muted: #2f2f2f;
@@ -58,7 +65,7 @@
   --destructive-foreground: #ffffff;
   --border: #373737;
   --input: #373737;
-  --ring: #9b9a97;
+  --ring: #a9936f;
   --sidebar: #202020;
   --sidebar-foreground: #e6e6e5;
   --sidebar-border: #2f2f2f;
@@ -71,6 +78,13 @@
   --info: #5383ec;
   --info-foreground: #ffffff;
   --info-muted: rgba(83, 131, 236, 0.2);
+  --notion-blue-muted: rgba(83, 131, 236, 0.2);
+  --notion-purple-muted: rgba(144, 101, 176, 0.2);
+  --notion-pink-muted: rgba(226, 85, 161, 0.2);
+  --notion-green-muted: rgba(77, 171, 154, 0.2);
+  --notion-orange-muted: rgba(217, 115, 13, 0.2);
+  --notion-yellow-muted: rgba(223, 171, 1, 0.2);
+  --notion-gray-muted: rgba(155, 154, 151, 0.2);
 }
 
 @theme inline {
@@ -120,6 +134,13 @@
   --color-notion-yellow: #dfab01;
   --color-notion-green: #4dab9a;
   --color-notion-gray: #9b9a97;
+  --color-notion-blue-muted: var(--notion-blue-muted);
+  --color-notion-purple-muted: var(--notion-purple-muted);
+  --color-notion-pink-muted: var(--notion-pink-muted);
+  --color-notion-green-muted: var(--notion-green-muted);
+  --color-notion-orange-muted: var(--notion-orange-muted);
+  --color-notion-yellow-muted: var(--notion-yellow-muted);
+  --color-notion-gray-muted: var(--notion-gray-muted);
 }
 
 @layer base {
@@ -186,33 +207,4 @@
   background: var(--accent);
   border: 2px solid transparent;
   background-clip: padding-box;
-}
-
-.notion-gradient-text {
-  background: linear-gradient(
-    90deg,
-    var(--color-notion-blue) 0%,
-    var(--color-notion-purple) 50%,
-    var(--color-notion-pink) 100%
-  );
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-.notion-card-hover {
-  transition:
-    box-shadow 200ms ease 0s,
-    transform 200ms ease 0s;
-}
-
-.notion-card-hover:hover {
-  box-shadow:
-    rgba(15, 15, 15, 0.1) 0px 0px 0px 1px,
-    rgba(15, 15, 15, 0.1) 0px 2px 4px;
-  transform: translateY(-1px);
-}
-
-.notion-button {
-  transition: background 20ms ease-in 0s;
 }

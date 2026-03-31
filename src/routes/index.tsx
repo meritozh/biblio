@@ -4,7 +4,7 @@ import { FilePicker } from '@/components/FilePicker';
 import { FileList } from '@/components/FileList';
 import { CategorySidebar } from '@/components/CategorySidebar';
 import { fetchFiles, fetchCategories } from '@/stores';
-import { fileCreate, fileUpdate, fileDelete, authorList, authorCreate, tagList, tagCreate, tagAssign, authorSet, metadataSet, metadataDelete, coverSet, storageGetPath, storageCheckAccess } from '@/lib/tauri';
+import { fileCreate, fileUpdate, fileDelete, authorList, authorCreate, tagList, tagCreate, tagAssign, tagUnassign, authorSet, metadataSet, metadataDelete, coverSet, storageGetPath, storageCheckAccess } from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -23,6 +23,14 @@ import {
 } from '@/components/DynamicMetadataForm';
 import type { FileEntry, Category, Tag, Author } from '@/types';
 
+const EMPTY_FORM_VALUES: DynamicMetadataFormValues = {
+  display_name: '',
+  category_id: null,
+  tag_ids: [],
+  author_ids: [],
+  metadata: [],
+};
+
 export const Route = createFileRoute('/')({
   component: HomePage,
 });
@@ -38,13 +46,7 @@ function HomePage() {
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-  const [formValues, setFormValues] = useState<DynamicMetadataFormValues>({
-    display_name: '',
-    category_id: null,
-    tag_ids: [],
-    author_ids: [],
-    metadata: [],
-  });
+  const [formValues, setFormValues] = useState<DynamicMetadataFormValues>(EMPTY_FORM_VALUES);
   const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
   const [storagePathAccessible, setStoragePathAccessible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -115,21 +117,9 @@ function HomePage() {
     if (paths.length === 1 && paths[0]) {
       const path = paths[0];
       const fileName = path.substring(Math.max(0, path.lastIndexOf('/') + 1)) || path;
-      setFormValues({
-        display_name: fileName,
-        category_id: null,
-        tag_ids: [],
-        author_ids: [],
-        metadata: [],
-      });
+      setFormValues({ ...EMPTY_FORM_VALUES, display_name: fileName });
     } else {
-      setFormValues({
-        display_name: '',
-        category_id: null,
-        tag_ids: [],
-        author_ids: [],
-        metadata: [],
-      });
+      setFormValues(EMPTY_FORM_VALUES);
     }
     setAddDialogOpen(true);
   };
@@ -162,13 +152,7 @@ function HomePage() {
       }
       setAddDialogOpen(false);
       setSelectedFiles([]);
-      setFormValues({
-        display_name: '',
-        category_id: null,
-        tag_ids: [],
-        author_ids: [],
-        metadata: [],
-      });
+      setFormValues(EMPTY_FORM_VALUES);
       void loadFiles(selectedCategoryId);
     } catch (error) {
       console.error('Failed to add file:', error);
@@ -214,19 +198,20 @@ function HomePage() {
   }, []);
 
   const handleFileSave = useCallback(async (fileId: number, values: DynamicMetadataFormValues) => {
-    // Update basic fields
     await fileUpdate(fileId, {
       display_name: values.display_name,
       category_id: values.category_id,
     });
 
-    // Update tags
+    const currentTagIds = editingFile?.tags?.map((t) => t.id) ?? [];
+    const removedTagIds = currentTagIds.filter((id) => !values.tag_ids.includes(id));
+    if (removedTagIds.length > 0) {
+      await tagUnassign(fileId, removedTagIds);
+    }
     await tagAssign(fileId, values.tag_ids);
 
-    // Update authors
     await authorSet(fileId, values.author_ids);
 
-    // Update metadata - first clear existing, then set new
     if (editingFile?.metadata) {
       for (const m of editingFile.metadata) {
         await metadataDelete(fileId, m.key);

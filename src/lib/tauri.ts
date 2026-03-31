@@ -148,7 +148,6 @@ export async function metadataDelete(file_id: number, key: string): Promise<{ su
   return invoke('metadata_delete', { fileId: file_id, key });
 }
 
-// Author API functions
 export async function authorList(
   includeUsage?: boolean
 ): Promise<{ authors: (Author & { usageCount: number })[] }> {
@@ -190,7 +189,6 @@ export async function authorSet(
   return invoke('author_set', { fileId: file_id, authorIds: author_ids });
 }
 
-// Cover API functions
 export async function coverSet(
   file_id: number,
   data: number[],
@@ -207,7 +205,6 @@ export async function coverDelete(file_id: number): Promise<{ success: boolean }
   return invoke('cover_delete', { fileId: file_id });
 }
 
-// Settings API functions
 export async function settingsGet(key: string): Promise<string | null> {
   return invoke('settings_get', { key });
 }
@@ -224,12 +221,11 @@ export async function storageCheckAccess(): Promise<boolean> {
   return invoke('storage_check_access');
 }
 
-// Opener plugin functions
 export async function revealItemInDir(path: string): Promise<void> {
-  return invoke('plugin:opener|reveal_item_in_dir', { path });
+  const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+  return revealItemInDir(path);
 }
 
-// File category move function
 export async function fileMoveCategory(
   file_id: number,
   new_category_id: number | null

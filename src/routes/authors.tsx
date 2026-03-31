@@ -156,15 +156,13 @@ function AuthorsPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Name</TableHead>
-                    <TableHead>Files</TableHead>
-                    <TableHead>Created</TableHead>
                     <TableHead className="w-[100px]">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {authors.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={4} className="h-24 text-center">
+                      <TableCell colSpan={2} className="h-24 text-center">
                         No authors yet. Click "Add Author" to create one.
                       </TableCell>
                     </TableRow>
@@ -183,8 +181,6 @@ function AuthorsPage() {
                             author.name
                           )}
                         </TableCell>
-                        <TableCell>{author.usageCount}</TableCell>
-                        <TableCell>{new Date(author.created_at).toLocaleDateString()}</TableCell>
                         <TableCell>
                           {editingId === author.id ? (
                             <div className="flex gap-1">
