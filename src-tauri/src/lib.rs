@@ -54,6 +54,8 @@ pub fn run() {
             database::recovery::db_create_backup,
             database::recovery::db_optimize,
             database::recovery::db_get_stats,
+            commands::processing::file_analyze,
+            commands::processing::file_prepare_import,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

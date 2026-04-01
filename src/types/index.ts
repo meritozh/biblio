@@ -136,3 +136,27 @@ export interface FieldConfig {
   options?: string[];
   defaultValue?: string;
 }
+
+export interface ExtractedField {
+  key: string;
+  value: string;
+  data_type: string;
+}
+
+export interface FilePreparedImport {
+  path: string;
+  file_name: string;
+  display_name: string;
+  category_id: number | null;
+  tag_ids: number[];
+  author_ids: number[];
+  metadata: ExtractedField[];
+  unresolved_author_names: string[];
+}
+
+export interface ProcessingProgress {
+  current: number;
+  total: number;
+  current_file: string;
+  status: string;
+}

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   FileEntry,
   FileWithDetails,
@@ -9,6 +10,8 @@ import type {
   Tag,
   Author,
   Metadata,
+  FilePreparedImport,
+  ProcessingProgress,
 } from '@/types';
 
 export async function fileList(
@@ -256,4 +259,16 @@ const ERROR_MESSAGES: Record<string, string> = {
 
 export function translateError(error: string): string {
   return ERROR_MESSAGES[error] || error;
+}
+
+export async function filePrepareImport(paths: string[]): Promise<FilePreparedImport[]> {
+  return invoke('file_prepare_import', { paths });
+}
+
+export function listenProcessingProgress(
+  callback: (progress: ProcessingProgress) => void
+): Promise<UnlistenFn> {
+  return listen<ProcessingProgress>('processing-progress', (event) => {
+    callback(event.payload);
+  });
 }

@@ -1,0 +1,719 @@
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::path::Path;
+use tauri::Emitter;
+use tauri::Manager;
+use tauri_plugin_sql::{DbInstances, DbPool};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedMetadata {
+    pub display_name: Option<String>,
+    pub suggested_authors: Vec<String>,
+    pub metadata: Vec<ExtractedField>,
+    pub category_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedField {
+    pub key: String,
+    pub value: String,
+    pub data_type: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessorResult {
+    pub processor_name: String,
+    pub status: ProcessorStatus,
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum ProcessorStatus {
+    Success,
+    Skipped,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FileAnalysisResult {
+    pub path: String,
+    pub file_name: String,
+    pub display_name: String,
+    pub suggested_authors: Vec<String>,
+    pub metadata: Vec<ExtractedField>,
+    pub category_hint: Option<String>,
+    pub processor_results: Vec<ProcessorResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessingProgress {
+    pub current: usize,
+    pub total: usize,
+    pub current_file: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FilePreparedImport {
+    pub path: String,
+    pub file_name: String,
+    pub display_name: String,
+    pub category_id: Option<i64>,
+    pub tag_ids: Vec<i64>,
+    pub author_ids: Vec<i64>,
+    pub metadata: Vec<ExtractedField>,
+    pub unresolved_author_names: Vec<String>,
+}
+
+fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
+    let instances_lock = instances.0.try_read().map_err(|e| e.to_string())?;
+    let db_pool = instances_lock.get(db_url).ok_or("Database not found")?;
+    match db_pool {
+        DbPool::Sqlite(pool) => Ok(pool.clone()),
+    }
+}
+
+pub trait FileProcessor: Send + Sync {
+    fn name(&self) -> &str;
+    fn supported_types(&self) -> &[&str];
+    fn process(&self, file_path: &Path) -> Result<ExtractedMetadata, String>;
+}
+
+pub fn get_processors() -> Vec<Box<dyn FileProcessor>> {
+    vec![
+        Box::new(FilenameProcessor),
+        Box::new(FileTypeDetector),
+        Box::new(PdfMetadataProcessor),
+        Box::new(ExifProcessor),
+    ]
+}
+
+pub struct FilenameProcessor;
+
+pub struct FileTypeDetector;
+
+pub struct PdfMetadataProcessor;
+
+pub struct ExifProcessor;
+
+impl FileProcessor for FilenameProcessor {
+    fn name(&self) -> &str {
+        "filename"
+    }
+
+    fn supported_types(&self) -> &[&str] {
+        &["*"]
+    }
+
+    fn process(&self, file_path: &Path) -> Result<ExtractedMetadata, String> {
+        let stem = file_path
+            .file_stem()
+            .ok_or_else(|| "Cannot extract file stem".to_string())?
+            .to_string_lossy()
+            .to_string();
+
+        let author_title_re = Regex::new(r"^(.+?)\s*-\s*(.+)$").map_err(|e| e.to_string())?;
+        let year_re = Regex::new(r"^(.+?)\s*\((\d{4})\)\s*$").map_err(|e| e.to_string())?;
+
+        let clean = |s: &str| -> String {
+            s.replace(['_', '-', '.'], " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+
+        if let Some(caps) = author_title_re.captures(&stem) {
+            let author = clean(caps[1].trim());
+            let title = clean(caps[2].trim());
+            return Ok(ExtractedMetadata {
+                display_name: Some(title),
+                suggested_authors: vec![author],
+                metadata: vec![],
+                category_hint: None,
+            });
+        }
+
+        if let Some(caps) = year_re.captures(&stem) {
+            let title = clean(caps[1].trim());
+            let year = caps[2].trim().to_string();
+            return Ok(ExtractedMetadata {
+                display_name: Some(title),
+                suggested_authors: vec![],
+                metadata: vec![ExtractedField {
+                    key: "year".to_string(),
+                    value: year,
+                    data_type: "text".to_string(),
+                }],
+                category_hint: None,
+            });
+        }
+
+        Ok(ExtractedMetadata {
+            display_name: Some(clean(&stem)),
+            suggested_authors: vec![],
+            metadata: vec![],
+            category_hint: None,
+        })
+    }
+}
+
+impl FileProcessor for FileTypeDetector {
+    fn name(&self) -> &str {
+        "file_type"
+    }
+
+    fn supported_types(&self) -> &[&str] {
+        &["*"]
+    }
+
+    fn process(&self, file_path: &Path) -> Result<ExtractedMetadata, String> {
+        let bytes = std::fs::read(file_path).map_err(|e| format!("Failed to read file: {e}"))?;
+
+        let sample = &bytes[..bytes.len().min(8192)];
+
+        let mime_type = match infer::get(sample) {
+            Some(t) => t.mime_type().to_string(),
+            None => file_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| match ext.to_lowercase().as_str() {
+                    "pdf" => "application/pdf",
+                    "jpg" | "jpeg" => "image/jpeg",
+                    "png" => "image/png",
+                    "gif" => "image/gif",
+                    "txt" => "text/plain",
+                    "html" | "htm" => "text/html",
+                    "epub" => "application/epub+zip",
+                    _ => "application/octet-stream",
+                })
+                .unwrap_or("application/octet-stream")
+                .to_string(),
+        };
+
+        let category_hint = if mime_type == "application/pdf" {
+            Some("Novels".to_string())
+        } else if mime_type.starts_with("image/") {
+            Some("Comics".to_string())
+        } else if mime_type.starts_with("text/") {
+            Some("Documents".to_string())
+        } else {
+            None
+        };
+
+        Ok(ExtractedMetadata {
+            display_name: None,
+            suggested_authors: vec![],
+            metadata: vec![ExtractedField {
+                key: "mime_type".to_string(),
+                value: mime_type,
+                data_type: "text".to_string(),
+            }],
+            category_hint,
+        })
+    }
+}
+
+fn extract_pdf_info(dict: &lopdf::Dictionary, metadata: &mut Vec<ExtractedField>, display_name: &mut Option<String>, suggested_authors: &mut Vec<String>) {
+    let get_str = |key: &[u8]| -> Option<String> {
+        dict.get(key).ok().and_then(|v| v.as_str().ok()).map(|s| String::from_utf8_lossy(s).to_string())
+    };
+
+    if let Some(title) = get_str(b"Title") {
+        if !title.is_empty() {
+            *display_name = Some(title);
+        }
+    }
+    if let Some(author) = get_str(b"Author") {
+        if !author.is_empty() {
+            suggested_authors.push(author);
+        }
+    }
+    let fields: &[(&[u8], &str)] = &[
+        (b"Subject", "subject"),
+        (b"Keywords", "keywords"),
+        (b"Creator", "creator"),
+        (b"Producer", "producer"),
+    ];
+    for &(key, label) in fields {
+        if let Some(val) = get_str(key) {
+            if !val.is_empty() {
+                metadata.push(ExtractedField {
+                    key: label.to_string(),
+                    value: val,
+                    data_type: "text".to_string(),
+                });
+            }
+        }
+    }
+}
+
+impl FileProcessor for PdfMetadataProcessor {
+    fn name(&self) -> &str {
+        "pdf_metadata"
+    }
+
+    fn supported_types(&self) -> &[&str] {
+        &["application/pdf"]
+    }
+
+    fn process(&self, file_path: &Path) -> Result<ExtractedMetadata, String> {
+        let doc = lopdf::Document::load(file_path).map_err(|e| format!("Failed to load PDF: {e}"))?;
+
+        let page_count = doc.get_pages().len();
+
+        let mut display_name = None::<String>;
+        let mut suggested_authors = Vec::new();
+        let mut metadata = vec![ExtractedField {
+            key: "page_count".to_string(),
+            value: page_count.to_string(),
+            data_type: "text".to_string(),
+        }];
+
+        let info_ref = match doc.trailer.get(b"Info") {
+            Ok(obj) => obj,
+            Err(_) => {
+                return Ok(ExtractedMetadata {
+                    display_name,
+                    suggested_authors,
+                    metadata,
+                    category_hint: None,
+                });
+            }
+        };
+
+        match info_ref {
+            lopdf::Object::Reference(id) => {
+                if let Some(info_obj) = doc.objects.get(id) {
+                    if let Ok(info_dict) = info_obj.as_dict() {
+                        extract_pdf_info(info_dict, &mut metadata, &mut display_name, &mut suggested_authors);
+                    }
+                }
+            }
+            lopdf::Object::Dictionary(dict) => {
+                extract_pdf_info(dict, &mut metadata, &mut display_name, &mut suggested_authors);
+            }
+            _ => {}
+        }
+
+        Ok(ExtractedMetadata {
+            display_name,
+            suggested_authors,
+            metadata,
+            category_hint: None,
+        })
+    }
+}
+
+impl FileProcessor for ExifProcessor {
+    fn name(&self) -> &str {
+        "exif"
+    }
+
+    fn supported_types(&self) -> &[&str] {
+        &["image/jpeg", "image/png", "image/tiff", "image/webp"]
+    }
+
+    fn process(&self, file_path: &Path) -> Result<ExtractedMetadata, String> {
+        let file = std::fs::File::open(file_path).map_err(|e| format!("Failed to open file: {e}"))?;
+        let mut buf_reader = std::io::BufReader::new(file);
+
+        let exif_reader = exif::Reader::new();
+        let exif_data = match exif_reader.read_from_container(&mut buf_reader) {
+            Ok(data) => data,
+            Err(_) => {
+                return Ok(ExtractedMetadata {
+                    display_name: None,
+                    suggested_authors: vec![],
+                    metadata: vec![],
+                    category_hint: None,
+                });
+            }
+        };
+
+        let mut display_name = None::<String>;
+        let mut metadata = Vec::new();
+
+        if let Some(field) = exif_data.get_field(exif::Tag::ImageDescription, exif::In::PRIMARY) {
+            let val = field.display_value().to_string();
+            if !val.is_empty() {
+                display_name = Some(val);
+            }
+        }
+
+        if let Some(field) = exif_data.get_field(exif::Tag::Model, exif::In::PRIMARY) {
+            metadata.push(ExtractedField {
+                key: "camera".to_string(),
+                value: field.display_value().to_string(),
+                data_type: "text".to_string(),
+            });
+        }
+
+        if let Some(field) = exif_data.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY) {
+            metadata.push(ExtractedField {
+                key: "date_taken".to_string(),
+                value: field.display_value().to_string(),
+                data_type: "date".to_string(),
+            });
+        }
+
+        let w = exif_data.get_field(exif::Tag::PixelXDimension, exif::In::PRIMARY);
+        let h = exif_data.get_field(exif::Tag::PixelYDimension, exif::In::PRIMARY);
+        if let (Some(wf), Some(hf)) = (w, h) {
+            metadata.push(ExtractedField {
+                key: "dimensions".to_string(),
+                value: format!("{}x{}", wf.display_value(), hf.display_value()),
+                data_type: "text".to_string(),
+            });
+        }
+
+        Ok(ExtractedMetadata {
+            display_name,
+            suggested_authors: vec![],
+            metadata,
+            category_hint: None,
+        })
+    }
+}
+
+fn type_matches(processor_types: &[&str], known_mime: Option<&str>) -> bool {
+    if processor_types.contains(&"*") {
+        return true;
+    }
+    match known_mime {
+        Some(mime) => processor_types.iter().any(|t| {
+            if t.ends_with("/*") {
+                let prefix = &t[..t.len() - 2];
+                mime.starts_with(prefix)
+            } else {
+                *t == mime
+            }
+        }),
+        None => false,
+    }
+}
+
+#[tauri::command]
+pub async fn file_analyze(
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+) -> Result<Vec<FileAnalysisResult>, String> {
+    let total = paths.len();
+    let app_clone = app.clone();
+
+    let results = tauri::async_runtime::spawn_blocking(move || {
+        let processors = get_processors();
+        let mut results = Vec::new();
+
+        for (idx, path_str) in paths.iter().enumerate() {
+            let file_path = Path::new(path_str);
+            let file_name = file_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            let progress = ProcessingProgress {
+                current: idx + 1,
+                total,
+                current_file: file_name.clone(),
+                status: "processing".to_string(),
+            };
+            let _ = app_clone.emit("processing-progress", &progress);
+
+            let mut merged_display_name = None::<String>;
+            let mut merged_authors = Vec::new();
+            let mut seen_authors = HashSet::new();
+            let mut merged_metadata: Vec<ExtractedField> = Vec::new();
+            let mut merged_category_hint = None::<String>;
+            let mut processor_results = Vec::new();
+
+            let mut known_mime: Option<String> = None;
+
+            for processor in &processors {
+                let supported = type_matches(
+                    processor.supported_types(),
+                    known_mime.as_deref(),
+                );
+
+                if !supported {
+                    processor_results.push(ProcessorResult {
+                        processor_name: processor.name().to_string(),
+                        status: ProcessorStatus::Skipped,
+                        fields: vec![],
+                    });
+                    continue;
+                }
+
+                match processor.process(file_path) {
+                    Ok(extracted) => {
+                        let field_keys: Vec<String> =
+                            extracted.metadata.iter().map(|f| f.key.clone()).collect();
+
+                        if merged_display_name.is_none() && extracted.display_name.is_some() {
+                            merged_display_name = extracted.display_name;
+                        }
+
+                        for author in extracted.suggested_authors {
+                            if seen_authors.insert(author.clone()) {
+                                merged_authors.push(author);
+                            }
+                        }
+
+                        for field in extracted.metadata {
+                            if field.key == "mime_type" {
+                                known_mime = Some(field.value.clone());
+                            }
+                            if let Some(existing) = merged_metadata.iter_mut().find(|f| f.key == field.key) {
+                                *existing = field;
+                            } else {
+                                merged_metadata.push(field);
+                            }
+                        }
+
+                        if merged_category_hint.is_none() && extracted.category_hint.is_some() {
+                            merged_category_hint = extracted.category_hint;
+                        }
+
+                        processor_results.push(ProcessorResult {
+                            processor_name: processor.name().to_string(),
+                            status: ProcessorStatus::Success,
+                            fields: field_keys,
+                        });
+                    }
+                    Err(e) => {
+                        processor_results.push(ProcessorResult {
+                            processor_name: processor.name().to_string(),
+                            status: ProcessorStatus::Failed(e),
+                            fields: vec![],
+                        });
+                    }
+                }
+            }
+
+            results.push(FileAnalysisResult {
+                path: path_str.clone(),
+                file_name: file_name.clone(),
+                display_name: merged_display_name.unwrap_or(file_name),
+                suggested_authors: merged_authors,
+                metadata: merged_metadata,
+                category_hint: merged_category_hint,
+                processor_results,
+            });
+        }
+
+        results
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))?;
+
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn file_prepare_import(
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+) -> Result<Vec<FilePreparedImport>, String> {
+    use crate::commands::{Author, Category};
+
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    let categories: Vec<Category> = sqlx::query_as(
+        "SELECT id, name, icon, is_default, folder_name, created_at FROM categories",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| format!("Failed to load categories: {e}"))?;
+
+    let authors: Vec<Author> = sqlx::query_as(
+        "SELECT id, name, created_at FROM authors",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| format!("Failed to load authors: {e}"))?;
+
+    let category_map: std::collections::HashMap<String, i64> = categories
+        .iter()
+        .map(|c| (c.name.to_lowercase(), c.id))
+        .collect();
+
+    let author_map: std::collections::HashMap<String, i64> = authors
+        .iter()
+        .map(|a| (a.name.to_lowercase(), a.id))
+        .collect();
+
+    let total = paths.len();
+    let app_clone = app.clone();
+
+    let results = tauri::async_runtime::spawn_blocking(move || {
+        let processors = get_processors();
+        let mut results = Vec::new();
+
+        for (idx, path_str) in paths.iter().enumerate() {
+            let file_path = Path::new(path_str);
+            let file_name = file_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            let progress = ProcessingProgress {
+                current: idx + 1,
+                total,
+                current_file: file_name.clone(),
+                status: "processing".to_string(),
+            };
+            let _ = app_clone.emit("processing-progress", &progress);
+
+            let mut merged_display_name = None::<String>;
+            let mut merged_authors = Vec::new();
+            let mut seen_authors = HashSet::new();
+            let mut merged_metadata: Vec<ExtractedField> = Vec::new();
+            let mut merged_category_hint = None::<String>;
+            let mut known_mime: Option<String> = None;
+
+            for processor in &processors {
+                let supported = type_matches(
+                    processor.supported_types(),
+                    known_mime.as_deref(),
+                );
+
+                if !supported {
+                    continue;
+                }
+
+                match processor.process(file_path) {
+                    Ok(extracted) => {
+                        if merged_display_name.is_none() && extracted.display_name.is_some() {
+                            merged_display_name = extracted.display_name;
+                        }
+
+                        for author in extracted.suggested_authors {
+                            if seen_authors.insert(author.clone()) {
+                                merged_authors.push(author);
+                            }
+                        }
+
+                        for field in extracted.metadata {
+                            if field.key == "mime_type" {
+                                known_mime = Some(field.value.clone());
+                            }
+                            if let Some(existing) = merged_metadata.iter_mut().find(|f| f.key == field.key) {
+                                *existing = field;
+                            } else {
+                                merged_metadata.push(field);
+                            }
+                        }
+
+                        if merged_category_hint.is_none() && extracted.category_hint.is_some() {
+                            merged_category_hint = extracted.category_hint;
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            let category_id = merged_category_hint
+                .as_ref()
+                .and_then(|hint| category_map.get(&hint.to_lowercase()).copied());
+
+            let mut author_ids = Vec::new();
+            let mut unresolved_author_names = Vec::new();
+            for author_name in &merged_authors {
+                if let Some(&id) = author_map.get(&author_name.to_lowercase()) {
+                    author_ids.push(id);
+                } else {
+                    unresolved_author_names.push(author_name.clone());
+                }
+            }
+
+            results.push(FilePreparedImport {
+                path: path_str.clone(),
+                file_name: file_name.clone(),
+                display_name: merged_display_name.unwrap_or(file_name),
+                category_id,
+                tag_ids: vec![],
+                author_ids,
+                metadata: merged_metadata,
+                unresolved_author_names,
+            });
+        }
+
+        results
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))?;
+
+    Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_filename_basic() {
+        let processor = FilenameProcessor;
+        let path = PathBuf::from("/some/path/My Document.pdf");
+        let result = processor.process(&path).unwrap();
+        assert_eq!(result.display_name.unwrap(), "My Document");
+    }
+
+    #[test]
+    fn test_filename_author_title() {
+        let processor = FilenameProcessor;
+        let path = PathBuf::from("/some/John Doe - Great Book.epub");
+        let result = processor.process(&path).unwrap();
+        assert_eq!(result.display_name.unwrap(), "Great Book");
+        assert!(result.suggested_authors.contains(&"John Doe".to_string()));
+    }
+
+    #[test]
+    fn test_filename_with_year() {
+        let processor = FilenameProcessor;
+        let path = PathBuf::from("/some/Amazing Story (2024).pdf");
+        let result = processor.process(&path).unwrap();
+        assert_eq!(result.display_name.unwrap(), "Amazing Story");
+        let year_meta = result.metadata.iter().find(|m| m.key == "year");
+        assert!(year_meta.is_some());
+        assert_eq!(year_meta.unwrap().value, "2024");
+    }
+
+    #[test]
+    fn test_filename_underscores() {
+        let processor = FilenameProcessor;
+        let path = PathBuf::from("/some/my_awesome_file.txt");
+        let result = processor.process(&path).unwrap();
+        assert_eq!(result.display_name.unwrap(), "my awesome file");
+    }
+
+    #[test]
+    fn test_processor_names() {
+        assert_eq!(FilenameProcessor.name(), "filename");
+        assert_eq!(FileTypeDetector.name(), "file_type");
+        assert_eq!(PdfMetadataProcessor.name(), "pdf_metadata");
+        assert_eq!(ExifProcessor.name(), "exif");
+    }
+
+    #[test]
+    fn test_processor_supported_types() {
+        assert_eq!(FilenameProcessor.supported_types(), &["*"]);
+        assert_eq!(FileTypeDetector.supported_types(), &["*"]);
+        assert_eq!(PdfMetadataProcessor.supported_types(), &["application/pdf"]);
+        assert!(ExifProcessor.supported_types().contains(&"image/jpeg"));
+    }
+
+    #[test]
+    fn test_type_matches_wildcard() {
+        assert!(type_matches(&["*"], None));
+        assert!(type_matches(&["*"], Some("application/pdf")));
+    }
+
+    #[test]
+    fn test_type_matches_specific() {
+        assert!(type_matches(&["application/pdf"], Some("application/pdf")));
+        assert!(!type_matches(&["application/pdf"], Some("image/jpeg")));
+        assert!(!type_matches(&["application/pdf"], None));
+    }
+}

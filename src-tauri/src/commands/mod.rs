@@ -6,6 +6,7 @@ pub mod validation;
 pub mod author;
 pub mod cover;
 pub mod settings;
+pub mod processing;
 
 use serde::{Deserialize, Serialize};
 

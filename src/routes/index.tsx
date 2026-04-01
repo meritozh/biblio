@@ -3,8 +3,25 @@ import { useEffect, useState, useCallback } from 'react';
 import { FilePicker } from '@/components/FilePicker';
 import { FileList } from '@/components/FileList';
 import { CategorySidebar } from '@/components/CategorySidebar';
+import { ProcessingPipeline } from '@/components/ProcessingPipeline';
 import { fetchFiles, fetchCategories } from '@/stores';
-import { fileCreate, fileUpdate, fileDelete, authorList, authorCreate, tagList, tagCreate, tagAssign, tagUnassign, authorSet, metadataSet, metadataDelete, coverSet, storageGetPath, storageCheckAccess } from '@/lib/tauri';
+import {
+  fileCreate,
+  fileUpdate,
+  fileDelete,
+  authorList,
+  authorCreate,
+  tagList,
+  tagCreate,
+  tagAssign,
+  tagUnassign,
+  authorSet,
+  metadataSet,
+  metadataDelete,
+  coverSet,
+  storageGetPath,
+  storageCheckAccess,
+} from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -54,6 +71,7 @@ function HomePage() {
   const [editingFile, setEditingFile] = useState<FileEntry | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingFile, setDeletingFile] = useState<FileEntry | null>(null);
+  const [pipelineOpen, setPipelineOpen] = useState(false);
 
   const loadFiles = useCallback(async (categoryId: number | null) => {
     setLoading(true);
@@ -112,16 +130,18 @@ function HomePage() {
     [checkStoragePath]
   );
 
-  const handleFilesSelected = (paths: string[]) => {
+  const handleFilesSelected = async (paths: string[]) => {
     setSelectedFiles(paths);
     if (paths.length === 1 && paths[0]) {
       const path = paths[0];
       const fileName = path.substring(Math.max(0, path.lastIndexOf('/') + 1)) || path;
       setFormValues({ ...EMPTY_FORM_VALUES, display_name: fileName });
+      setAddDialogOpen(true);
     } else {
       setFormValues(EMPTY_FORM_VALUES);
+      setAddDialogOpen(false);
+      setPipelineOpen(true);
     }
-    setAddDialogOpen(true);
   };
 
   const handleAddFile = async () => {
@@ -197,32 +217,35 @@ function HomePage() {
     setEditDialogOpen(true);
   }, []);
 
-  const handleFileSave = useCallback(async (fileId: number, values: DynamicMetadataFormValues) => {
-    await fileUpdate(fileId, {
-      display_name: values.display_name,
-      category_id: values.category_id,
-    });
+  const handleFileSave = useCallback(
+    async (fileId: number, values: DynamicMetadataFormValues) => {
+      await fileUpdate(fileId, {
+        display_name: values.display_name,
+        category_id: values.category_id,
+      });
 
-    const currentTagIds = editingFile?.tags?.map((t) => t.id) ?? [];
-    const removedTagIds = currentTagIds.filter((id) => !values.tag_ids.includes(id));
-    if (removedTagIds.length > 0) {
-      await tagUnassign(fileId, removedTagIds);
-    }
-    await tagAssign(fileId, values.tag_ids);
-
-    await authorSet(fileId, values.author_ids);
-
-    if (editingFile?.metadata) {
-      for (const m of editingFile.metadata) {
-        await metadataDelete(fileId, m.key);
+      const currentTagIds = editingFile?.tags?.map((t) => t.id) ?? [];
+      const removedTagIds = currentTagIds.filter((id) => !values.tag_ids.includes(id));
+      if (removedTagIds.length > 0) {
+        await tagUnassign(fileId, removedTagIds);
       }
-    }
-    for (const m of values.metadata) {
-      await metadataSet(fileId, m.key, m.value, m.data_type);
-    }
+      await tagAssign(fileId, values.tag_ids);
 
-    void loadFiles(selectedCategoryId);
-  }, [editingFile, selectedCategoryId, loadFiles]);
+      await authorSet(fileId, values.author_ids);
+
+      if (editingFile?.metadata) {
+        for (const m of editingFile.metadata) {
+          await metadataDelete(fileId, m.key);
+        }
+      }
+      for (const m of values.metadata) {
+        await metadataSet(fileId, m.key, m.value, m.data_type);
+      }
+
+      void loadFiles(selectedCategoryId);
+    },
+    [editingFile, selectedCategoryId, loadFiles]
+  );
 
   const handleFileDeleteClick = useCallback((file: FileEntry) => {
     setDeletingFile(file);
@@ -301,7 +324,12 @@ function HomePage() {
               <p className="text-sm text-muted-foreground">Loading...</p>
             </div>
           ) : (
-            <FileList files={files} onFileClick={handleFileClick} onFileEdit={handleFileEdit} onFileDelete={handleFileDeleteClick} />
+            <FileList
+              files={files}
+              onFileClick={handleFileClick}
+              onFileEdit={handleFileEdit}
+              onFileDelete={handleFileDeleteClick}
+            />
           )}
         </div>
       </main>
@@ -326,6 +354,23 @@ function HomePage() {
         onOpenChange={setDeleteDialogOpen}
         fileName={deletingFile?.display_name ?? ''}
         onConfirm={handleFileDeleteConfirm}
+      />
+
+      <ProcessingPipeline
+        open={pipelineOpen}
+        onOpenChange={setPipelineOpen}
+        paths={selectedFiles}
+        categories={categories}
+        tags={tags}
+        authors={authors}
+        onCategoryCreated={handleCategoryCreated}
+        onTagCreate={handleTagCreate}
+        onAuthorCreate={handleAuthorCreate}
+        onImportComplete={() => {
+          setPipelineOpen(false);
+          setSelectedFiles([]);
+          void loadFiles(selectedCategoryId);
+        }}
       />
 
       <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
