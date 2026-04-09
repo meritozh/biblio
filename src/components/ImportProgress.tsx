@@ -16,7 +16,7 @@ export function ImportProgress({ current, total, currentFile, onCancel }: Import
     <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center">
       <div className="bg-card border rounded-lg shadow-lg p-6 w-full max-w-md mx-4">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold">Importing Files</h3>
+          <h3 className="text-lg font-bold">Importing Files</h3>
           {onCancel && (
             <Button variant="ghost" size="icon" onClick={onCancel}>
               <X className="h-4 w-4" />

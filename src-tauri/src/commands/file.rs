@@ -94,7 +94,7 @@ pub async fn file_list(
     let offset = offset.unwrap_or(0);
 
     let mut query = String::from(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, created_at, updated_at FROM files WHERE 1=1"
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files WHERE 1=1"
     );
 
     if let Some(cat_id) = category_id {
@@ -145,6 +145,7 @@ pub async fn file_list(
             file_status: file.file_status,
             in_storage: file.in_storage,
             original_path: file.original_path,
+            progress: file.progress,
             created_at: file.created_at,
             updated_at: file.updated_at,
             tags,
@@ -173,7 +174,7 @@ pub async fn file_get(
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
     let file: FileEntry = sqlx::query_as(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, created_at, updated_at FROM files WHERE id = ?"
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(&pool)
@@ -225,6 +226,7 @@ pub async fn file_get(
         file_status: file.file_status,
         in_storage: file.in_storage,
         original_path: file.original_path,
+        progress: file.progress,
         created_at: file.created_at,
         updated_at: file.updated_at,
         category,
@@ -243,6 +245,7 @@ pub async fn file_create(
     tag_ids: Option<Vec<i64>>,
     author_ids: Option<Vec<i64>>,
     metadata: Option<Vec<MetadataInput>>,
+    progress: Option<String>,
 ) -> Result<FileCreateResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
@@ -334,12 +337,13 @@ pub async fn file_create(
 
     // Insert into database with in_storage=true
     let result = sqlx::query(
-        "INSERT INTO files (path, display_name, category_id, in_storage, original_path, file_status) VALUES (?, ?, ?, 1, ?, 'available')"
+        "INSERT INTO files (path, display_name, category_id, in_storage, original_path, file_status, progress) VALUES (?, ?, ?, 1, ?, 'available', ?)"
     )
     .bind(&final_path_str)
     .bind(&validated_name)
     .bind(category_id)
     .bind(&path)  // original_path is the source path
+    .bind(&progress)
     .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -398,12 +402,26 @@ pub async fn file_update(
     id: i64,
     display_name: Option<String>,
     category_id: Option<i64>,
+    progress: Option<String>,
 ) -> Result<FileUpdateResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    match (display_name, category_id) {
-        (Some(name), Some(cat_id)) => {
+    match (display_name, category_id, progress) {
+        (Some(name), Some(cat_id), Some(prog)) => {
+            let validated_name = validate_display_name(&name)?;
+            sqlx::query(
+                "UPDATE files SET display_name = ?, category_id = ?, progress = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            )
+            .bind(&validated_name)
+            .bind(cat_id)
+            .bind(&prog)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        (Some(name), Some(cat_id), None) => {
             let validated_name = validate_display_name(&name)?;
             sqlx::query(
                 "UPDATE files SET display_name = ?, category_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
@@ -415,7 +433,19 @@ pub async fn file_update(
             .await
             .map_err(|e| e.to_string())?;
         }
-        (Some(name), None) => {
+        (Some(name), None, Some(prog)) => {
+            let validated_name = validate_display_name(&name)?;
+            sqlx::query(
+                "UPDATE files SET display_name = ?, progress = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            )
+            .bind(&validated_name)
+            .bind(&prog)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        (Some(name), None, None) => {
             let validated_name = validate_display_name(&name)?;
             sqlx::query(
                 "UPDATE files SET display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
@@ -426,7 +456,18 @@ pub async fn file_update(
             .await
             .map_err(|e| e.to_string())?;
         }
-        (None, Some(cat_id)) => {
+        (None, Some(cat_id), Some(prog)) => {
+            sqlx::query(
+                "UPDATE files SET category_id = ?, progress = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            )
+            .bind(cat_id)
+            .bind(&prog)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        (None, Some(cat_id), None) => {
             sqlx::query(
                 "UPDATE files SET category_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
             )
@@ -436,7 +477,17 @@ pub async fn file_update(
             .await
             .map_err(|e| e.to_string())?;
         }
-        (None, None) => {}
+        (None, None, Some(prog)) => {
+            sqlx::query(
+                "UPDATE files SET progress = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            )
+            .bind(&prog)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        (None, None, None) => {}
     }
 
     Ok(FileUpdateResponse { success: true })
@@ -621,9 +672,9 @@ pub async fn file_search(
     let offset = offset.unwrap_or(0);
 
     let sql = if query.is_empty() {
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, created_at, updated_at FROM files WHERE 1=1"
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files WHERE 1=1"
     } else {
-        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.created_at, f.updated_at
+        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.created_at, f.updated_at
          FROM files f
          JOIN files_fts ON files_fts.rowid = f.id
          WHERE files_fts MATCH ?"
@@ -683,6 +734,7 @@ pub async fn file_search(
             file_status: file.file_status,
             in_storage: file.in_storage,
             original_path: file.original_path,
+            progress: file.progress,
             created_at: file.created_at,
             updated_at: file.updated_at,
             tags,
@@ -708,7 +760,7 @@ pub async fn file_check_status(
         Some(ids) => {
             let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let query = format!(
-                "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, created_at, updated_at FROM files WHERE id IN ({})",
+                "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files WHERE id IN ({})",
                 placeholders
             );
             sqlx::query_as(&query)
@@ -717,7 +769,7 @@ pub async fn file_check_status(
                 .map_err(|e| e.to_string())?
         }
         None => {
-            sqlx::query_as("SELECT id, path, display_name, category_id, file_status, in_storage, original_path, created_at, updated_at FROM files")
+            sqlx::query_as("SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files")
                 .fetch_all(&pool)
                 .await
                 .map_err(|e| e.to_string())?

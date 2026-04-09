@@ -13,7 +13,7 @@ export function ThemeSetting() {
   return (
     <div className="space-y-3">
       <div>
-        <h3 className="text-sm font-medium">Appearance</h3>
+        <h3 className="text-sm font-semibold">Appearance</h3>
         <p className="text-xs text-muted-foreground">Choose your preferred theme</p>
       </div>
       <div className="flex gap-2">

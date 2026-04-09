@@ -132,7 +132,7 @@ function AuthorsPage() {
               </Button>
             </Link>
             <div>
-              <h1 className="text-xl font-semibold text-foreground flex items-center gap-2">
+              <h1 className="text-xl font-bold text-foreground flex items-center gap-2">
                 <User className="h-5 w-5" />
                 Authors
               </h1>

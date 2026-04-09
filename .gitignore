@@ -48,3 +48,10 @@ src-tauri/target/
 
 # Vite
 .vite/
+
+# Coding Agent
+.omc/
+.sisyphus/
+.superset/
+docs/superpowers/
+.claude/

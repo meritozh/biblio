@@ -25,6 +25,7 @@ export interface DynamicMetadataFormValues {
   author_ids: number[];
   metadata: Array<{ key: string; value: string; data_type: MetadataType }>;
   cover_data?: string;
+  progress?: string;
 }
 
 interface DynamicMetadataFormProps {
@@ -118,8 +119,17 @@ export function DynamicMetadataForm({
     onChange({ ...values, author_ids });
   };
 
+  // Handle progress change
+  const handleProgressChange = (progress: string) => {
+    onChange({ ...values, progress });
+  };
+
   // Handle metadata field change
-  const handleMetadataFieldChange = (key: string, value: string | number | boolean, dataType: MetadataType) => {
+  const handleMetadataFieldChange = (
+    key: string,
+    value: string | number | boolean,
+    dataType: MetadataType
+  ) => {
     const newMetadata = values.metadata.filter((m) => m.key !== key);
     if (value !== '' && value !== null && value !== undefined) {
       newMetadata.push({
@@ -132,7 +142,13 @@ export function DynamicMetadataForm({
   };
 
   // Render dynamic field based on type
-  const renderDynamicField = (field: { key: string; label: string; type: string; placeholder?: string; options?: string[] }) => {
+  const renderDynamicField = (field: {
+    key: string;
+    label: string;
+    type: string;
+    placeholder?: string;
+    options?: string[];
+  }) => {
     switch (field.type) {
       case 'authors':
         return (
@@ -240,11 +256,30 @@ export function DynamicMetadataForm({
         />
       </div>
 
+      {/* Progress */}
+      <div className="space-y-2">
+        <Label htmlFor="progress" className="text-sm font-medium">
+          Progress
+        </Label>
+        <Input
+          id="progress"
+          value={values.progress ?? ''}
+          onChange={(e) => handleProgressChange(e.target.value)}
+          placeholder="e.g. 50%, Chapter 5, Reading..."
+          className="text-sm"
+        />
+      </div>
+
       {/* Dynamic Fields */}
       {dynamicFields.map((field) => renderDynamicField(field))}
 
       {/* Category Change Confirmation Dialog */}
-      <AlertDialog open={pendingCategoryId !== null} onOpenChange={(open) => { if (!open) setPendingCategoryId(null); }}>
+      <AlertDialog
+        open={pendingCategoryId !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingCategoryId(null);
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Move file to new category folder?</AlertDialogTitle>

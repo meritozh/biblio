@@ -3,7 +3,7 @@ import { Link } from '@tanstack/react-router';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
-import { FolderOpen, Settings, GripVertical, Tag, User } from 'lucide-react';
+import { FolderOpen, Settings, GripVertical, Tag, User, MessageSquare } from 'lucide-react';
 import type { Category } from '@/types';
 
 interface CategorySidebarProps {
@@ -142,6 +142,13 @@ export function CategorySidebar({
           >
             <User className="h-4 w-4 shrink-0" />
             Authors
+          </Link>
+          <Link
+            to="/prompts"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+          >
+            <MessageSquare className="h-4 w-4 shrink-0" />
+            Prompts
           </Link>
         </div>
         <div className="border-t border-sidebar-border" />

@@ -12,6 +12,9 @@ import type {
   Metadata,
   FilePreparedImport,
   ProcessingProgress,
+  LlmConfig,
+  Prompt,
+  PromptCreatePayload,
 } from '@/types';
 
 export async function fileList(
@@ -271,4 +274,36 @@ export function listenProcessingProgress(
   return listen<ProcessingProgress>('processing-progress', (event) => {
     callback(event.payload);
   });
+}
+
+export async function llmConfigGet(): Promise<LlmConfig> {
+  return invoke('llm_config_get');
+}
+
+export async function llmConfigSet(config: LlmConfig): Promise<void> {
+  return invoke('llm_config_set', { config });
+}
+
+export async function llmTestConnection(): Promise<string> {
+  return invoke('llm_test_connection');
+}
+
+export async function promptList(): Promise<Prompt[]> {
+  return invoke('prompt_list');
+}
+
+export async function promptCreate(payload: PromptCreatePayload): Promise<Prompt> {
+  return invoke('prompt_create', { payload });
+}
+
+export async function promptUpdate(id: number, payload: PromptCreatePayload): Promise<Prompt> {
+  return invoke('prompt_update', { id, payload });
+}
+
+export async function promptDelete(id: number): Promise<void> {
+  return invoke('prompt_delete', { id });
+}
+
+export async function promptSetDefault(id: number): Promise<Prompt> {
+  return invoke('prompt_set_default', { id });
 }

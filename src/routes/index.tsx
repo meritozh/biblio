@@ -279,7 +279,7 @@ function HomePage() {
           data-tauri-drag-region
         >
           <div>
-            <h1 className="text-xl font-semibold text-foreground">Library</h1>
+            <h1 className="text-xl font-bold text-foreground">Library</h1>
             <p className="text-xs text-muted-foreground mt-0.5">{total} files</p>
           </div>
           <FilePicker

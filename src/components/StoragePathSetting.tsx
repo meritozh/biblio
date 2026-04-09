@@ -53,7 +53,7 @@ export function StoragePathSetting() {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-sm font-medium">Storage Path</h3>
+          <h3 className="text-sm font-semibold">Storage Path</h3>
           <p className="text-xs text-muted-foreground">
             Files will be organized in category folders
           </p>

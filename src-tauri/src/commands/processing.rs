@@ -393,6 +393,67 @@ fn type_matches(processor_types: &[&str], known_mime: Option<&str>) -> bool {
     }
 }
 
+fn extract_pdf_text(file_path: &Path, max_chars: usize) -> Option<String> {
+    let doc = lopdf::Document::load(file_path).ok()?;
+    let mut text = String::new();
+    let pages = doc.get_pages();
+
+    for (_, page_id) in pages {
+        let page_obj = match doc.objects.get(&page_id) {
+            Some(obj) => obj,
+            None => continue,
+        };
+
+        let page_dict = match page_obj.as_dict() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        let contents_ref = match page_dict.get(b"Contents") {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let content_ids: Vec<lopdf::ObjectId> = match contents_ref {
+            lopdf::Object::Reference(id) => vec![*id],
+            lopdf::Object::Array(arr) => arr
+                .iter()
+                .filter_map(|o| {
+                    if let lopdf::Object::Reference(id) = o { Some(*id) } else { None }
+                })
+                .collect(),
+            _ => vec![],
+        };
+
+        for cid in content_ids {
+            if let Some(obj) = doc.objects.get(&cid) {
+                if let Ok(stream) = obj.as_stream() {
+                    if let Ok(content_bytes) = stream.decompressed_content() {
+                        let content_str = String::from_utf8_lossy(&content_bytes);
+                        for token in content_str.split_whitespace() {
+                            if token.starts_with('(') && token.ends_with(')') {
+                                let inner = &token[1..token.len() - 1];
+                                text.push_str(inner);
+                                text.push(' ');
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if text.len() >= max_chars {
+            break;
+        }
+    }
+
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.chars().take(max_chars).collect())
+    }
+}
+
 #[tauri::command]
 pub async fn file_analyze(
     app: tauri::AppHandle,
@@ -643,6 +704,112 @@ pub async fn file_prepare_import(
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))?;
+
+    let llm_enabled: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM app_settings WHERE key = 'llm_enabled'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let llm_enabled = llm_enabled
+        .and_then(|(v,)| v.parse::<bool>().ok())
+        .unwrap_or(false);
+
+    let mut results = results;
+
+    if llm_enabled {
+        let config = super::llm::load_config(&pool).await?;
+
+        let categories: Vec<Category> = sqlx::query_as(
+            "SELECT id, name, icon, is_default, folder_name, created_at FROM categories",
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("Failed to load categories: {e}"))?;
+
+        let authors: Vec<Author> = sqlx::query_as(
+            "SELECT id, name, created_at FROM authors",
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("Failed to load authors: {e}"))?;
+
+        let llm_category_map: std::collections::HashMap<String, i64> = categories
+            .iter()
+            .map(|c| (c.name.to_lowercase(), c.id))
+            .collect();
+
+        let llm_author_map: std::collections::HashMap<String, i64> = authors
+            .iter()
+            .map(|a| (a.name.to_lowercase(), a.id))
+            .collect();
+
+        for result in &mut results {
+            let content = if config.mode == "with_content" {
+                let path = Path::new(&result.path);
+                let mime = result
+                    .metadata
+                    .iter()
+                    .find(|m| m.key == "mime_type")
+                    .map(|m| m.value.as_str());
+                match mime {
+                    Some("application/pdf") => extract_pdf_text(path, 4000),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            match super::llm::extract_metadata_with_llm(
+                &config,
+                &pool,
+                &result.display_name,
+                &result.metadata,
+                content.as_deref(),
+            )
+            .await
+            {
+                Ok(llm_result) => {
+                    if let Some(name) = llm_result.display_name {
+                        result.display_name = name;
+                    }
+                    if let Some(category) = &llm_result.category {
+                        result.category_id = llm_category_map.get(&category.to_lowercase()).copied();
+                    }
+                    for author in &llm_result.authors {
+                        if let Some(&id) = llm_author_map.get(&author.to_lowercase()) {
+                            if !result.author_ids.contains(&id) {
+                                result.author_ids.push(id);
+                            }
+                        } else if !result.unresolved_author_names.contains(author) {
+                            result.unresolved_author_names.push(author.clone());
+                        }
+                    }
+                    for tag in &llm_result.tags {
+                        result.metadata.push(ExtractedField {
+                            key: "suggested_tag".to_string(),
+                            value: tag.clone(),
+                            data_type: "text".to_string(),
+                        });
+                    }
+                    if let Some(desc) = llm_result.description {
+                        result.metadata.push(ExtractedField {
+                            key: "description".to_string(),
+                            value: desc,
+                            data_type: "text".to_string(),
+                        });
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "LLM enhancement failed for {}: {}",
+                        result.file_name, e
+                    );
+                }
+            }
+        }
+    }
 
     Ok(results)
 }

@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS files (
     file_status TEXT DEFAULT 'available' CHECK (file_status IN ('available', 'missing', 'moved')),
     in_storage BOOLEAN DEFAULT 0,
     original_path TEXT,
+    progress TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -55,6 +56,51 @@ CREATE TABLE IF NOT EXISTS metadata (
     UNIQUE(file_id, key)
 );
 
+-- Authors table
+CREATE TABLE IF NOT EXISTS authors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- File-Author junction table
+CREATE TABLE IF NOT EXISTS file_authors (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    author_id INTEGER NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+    PRIMARY KEY (file_id, author_id)
+);
+
+-- Covers table (stores cover images as BLOB)
+CREATE TABLE IF NOT EXISTS covers (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    data BLOB NOT NULL,
+    mime_type TEXT DEFAULT 'image/png',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Prompts table (LLM prompt management)
+CREATE TABLE IF NOT EXISTS prompts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Seed default prompt
+INSERT INTO prompts (name, content, is_default) VALUES (
+    'Default Metadata Extraction',
+    'You are a file metadata extraction assistant. Given a file name, existing metadata, and optionally some file content, extract structured metadata. Return a JSON object with these fields:
+- display_name: a clean, human-readable title for the file
+- category: the most appropriate category (e.g. Novels, Comics, Documents, Academic, Music, Video, Other)
+- authors: a list of author names found
+- tags: a list of relevant tags/keywords
+- description: a brief description of the file content
+Only fill in fields you can determine from the provided information. Use null for fields you cannot determine.',
+    1
+);
+
 -- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_files_category ON files(category_id);
 CREATE INDEX IF NOT EXISTS idx_files_status ON files(file_status);
@@ -62,6 +108,7 @@ CREATE INDEX IF NOT EXISTS idx_files_name ON files(display_name);
 CREATE INDEX IF NOT EXISTS idx_file_tags_tag ON file_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_metadata_file ON metadata(file_id);
 CREATE INDEX IF NOT EXISTS idx_metadata_key ON metadata(key);
+CREATE INDEX IF NOT EXISTS idx_file_authors_author ON file_authors(author_id);
 
 -- Full-text search virtual table
 CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(

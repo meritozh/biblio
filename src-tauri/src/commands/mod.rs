@@ -7,6 +7,8 @@ pub mod author;
 pub mod cover;
 pub mod settings;
 pub mod processing;
+pub mod llm;
+pub mod prompts;
 
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +31,7 @@ pub struct FileEntry {
     pub file_status: String,
     pub in_storage: bool,
     pub original_path: Option<String>,
+    pub progress: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -66,6 +69,7 @@ pub struct FileWithDetails {
     pub file_status: String,
     pub in_storage: bool,
     pub original_path: Option<String>,
+    pub progress: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub category: Option<Category>,
@@ -83,6 +87,7 @@ pub struct FileListItem {
     pub file_status: String,
     pub in_storage: bool,
     pub original_path: Option<String>,
+    pub progress: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub tags: Vec<Tag>,

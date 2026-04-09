@@ -56,6 +56,14 @@ pub fn run() {
             database::recovery::db_get_stats,
             commands::processing::file_analyze,
             commands::processing::file_prepare_import,
+            commands::llm::llm_config_get,
+            commands::llm::llm_config_set,
+            commands::llm::llm_test_connection,
+            commands::prompts::prompt_list,
+            commands::prompts::prompt_create,
+            commands::prompts::prompt_update,
+            commands::prompts::prompt_delete,
+            commands::prompts::prompt_set_default,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

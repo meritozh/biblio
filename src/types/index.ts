@@ -18,6 +18,7 @@ export interface FileEntry {
   file_status: FileStatus;
   in_storage: boolean;
   original_path: string | null;
+  progress?: string | null;
   created_at: string;
   updated_at: string;
   category?: Category | null;
@@ -63,6 +64,7 @@ export interface FileWithDetails {
   file_status: FileStatus;
   in_storage: boolean;
   original_path: string | null;
+  progress?: string | null;
   created_at: string;
   updated_at: string;
   category: Category | null;
@@ -91,6 +93,7 @@ export interface FileCreateRequest extends Record<string, unknown> {
   tag_ids?: number[];
   author_ids?: number[];
   metadata?: Array<{ key: string; value: string; data_type: MetadataType }>;
+  progress?: string;
 }
 
 export interface FileSearchRequest extends Record<string, unknown> {
@@ -159,4 +162,26 @@ export interface ProcessingProgress {
   total: number;
   current_file: string;
   status: string;
+}
+
+export interface LlmConfig {
+  enabled: boolean;
+  base_url: string;
+  api_key: string;
+  model: string;
+  mode: 'metadata_only' | 'with_content';
+}
+
+export interface Prompt {
+  id: number;
+  name: string;
+  content: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PromptCreatePayload {
+  name: string;
+  content: string;
 }

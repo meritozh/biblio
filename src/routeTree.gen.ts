@@ -10,12 +10,18 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TagsRouteImport } from './routes/tags'
+import { Route as PromptsRouteImport } from './routes/prompts'
 import { Route as AuthorsRouteImport } from './routes/authors'
 import { Route as IndexRouteImport } from './routes/index'
 
 const TagsRoute = TagsRouteImport.update({
   id: '/tags',
   path: '/tags',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PromptsRoute = PromptsRouteImport.update({
+  id: '/prompts',
+  path: '/prompts',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthorsRoute = AuthorsRouteImport.update({
@@ -32,30 +38,34 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/authors': typeof AuthorsRoute
+  '/prompts': typeof PromptsRoute
   '/tags': typeof TagsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/authors': typeof AuthorsRoute
+  '/prompts': typeof PromptsRoute
   '/tags': typeof TagsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/authors': typeof AuthorsRoute
+  '/prompts': typeof PromptsRoute
   '/tags': typeof TagsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/authors' | '/tags'
+  fullPaths: '/' | '/authors' | '/prompts' | '/tags'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/authors' | '/tags'
-  id: '__root__' | '/' | '/authors' | '/tags'
+  to: '/' | '/authors' | '/prompts' | '/tags'
+  id: '__root__' | '/' | '/authors' | '/prompts' | '/tags'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthorsRoute: typeof AuthorsRoute
+  PromptsRoute: typeof PromptsRoute
   TagsRoute: typeof TagsRoute
 }
 
@@ -66,6 +76,13 @@ declare module '@tanstack/react-router' {
       path: '/tags'
       fullPath: '/tags'
       preLoaderRoute: typeof TagsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/prompts': {
+      id: '/prompts'
+      path: '/prompts'
+      fullPath: '/prompts'
+      preLoaderRoute: typeof PromptsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/authors': {
@@ -88,6 +105,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthorsRoute: AuthorsRoute,
+  PromptsRoute: PromptsRoute,
   TagsRoute: TagsRoute,
 }
 export const routeTree = rootRouteImport

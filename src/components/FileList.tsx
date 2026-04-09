@@ -83,11 +83,18 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
         }
         return (
           <div className="max-w-[200px]">
-            <span className="text-sm truncate block">
-              {authors.map((a) => a.name).join(', ')}
-            </span>
+            <span className="text-sm truncate block">{authors.map((a) => a.name).join(', ')}</span>
           </div>
         );
+      },
+    },
+    {
+      id: 'progress',
+      header: 'Progress',
+      cell: ({ row }: { row: { original: FileEntry } }) => {
+        const progress = row.original.progress;
+        if (!progress) return <span className="text-muted-foreground text-sm">—</span>;
+        return <span className="text-sm">{progress}</span>;
       },
     },
     {
@@ -97,11 +104,7 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
         return (
           <div className="flex justify-end" role="group" aria-label="File actions">
             {onFileEdit && onFileDelete && (
-              <FileContextMenu
-                file={file}
-                onEdit={onFileEdit}
-                onDelete={onFileDelete}
-              />
+              <FileContextMenu file={file} onEdit={onFileEdit} onDelete={onFileDelete} />
             )}
           </div>
         );

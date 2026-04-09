@@ -65,6 +65,7 @@ const EMPTY_FORM_VALUES: DynamicMetadataFormValues = {
   tag_ids: [],
   author_ids: [],
   metadata: [],
+  progress: '',
 };
 
 function StatusBadge({ status }: { status: FileStatus }) {
@@ -268,6 +269,7 @@ export function ProcessingPipeline({
             tag_ids: item.formValues.tag_ids,
             author_ids: item.formValues.author_ids,
             metadata: item.formValues.metadata,
+            progress: item.formValues.progress,
           });
 
           if (item.formValues.cover_data && result.id) {
@@ -371,7 +373,8 @@ export function ProcessingPipeline({
                       {item.preparedImport?.unresolved_author_names &&
                         item.preparedImport.unresolved_author_names.length > 0 && (
                           <p className="text-xs text-muted-foreground truncate">
-                            Unresolved authors: {item.preparedImport.unresolved_author_names.join(', ')}
+                            Unresolved authors:{' '}
+                            {item.preparedImport.unresolved_author_names.join(', ')}
                           </p>
                         )}
                     </div>

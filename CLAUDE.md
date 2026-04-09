@@ -19,17 +19,17 @@ src/
 src-tauri/
   src/
     commands/     # Rust Tauri command handlers
-    database/     # SQLite schema and migrations
+    database/     # SQLite schema
 tests/
 ```
 
 ## Commands
 
-pnpm typecheck         # TypeScript check
-pnpm test:run          # Run unit tests
-pnpm lint              # ESLint
-pnpm tauri:dev         # Start dev server
-pnpm tauri:build       # Build production app
+pnpm typecheck # TypeScript check
+pnpm test:run # Run unit tests
+pnpm lint # ESLint
+pnpm tauri:dev # Start dev server
+pnpm tauri:build # Build production app
 
 ## Code Style
 
@@ -41,9 +41,9 @@ TypeScript 5.x (frontend), Rust 1.75+ (Tauri backend): Follow standard conventio
 
 ## Gotchas
 
-- **Database Migrations**: Never modify existing migration files after they've been applied. Create new migration files (e.g., `migration_2.sql`) and add them to `get_migrations()` in `src-tauri/src/database/mod.rs`.
+- **Database Schema**: Project is in active development. Update `schema.sql` directly when schema changes. Do NOT create migration files. After modifying schema, delete the dev database to reset (`~/Library/Application Support/com.biblio.app/biblio.db`).
 
-- **Database Location**: Dev database is at `~/Library/Application Support/com.biblio.app/biblio.db`. Delete to reset.
+- **Database Location**: Dev database is at `~/Library/Application Support/io.augite.biblio/biblio.db`. Delete to reset.
 
 - **Storage System**: Files are moved to `{storage_path}/{category}/` folders. Check storage path state when dialogs close.
 
