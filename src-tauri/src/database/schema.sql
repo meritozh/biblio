@@ -83,13 +83,14 @@ CREATE TABLE IF NOT EXISTS prompts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     content TEXT NOT NULL,
+    category TEXT,
     is_default INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Seed default prompt
-INSERT INTO prompts (name, content, is_default) VALUES (
+-- Generic default prompt (no category)
+INSERT INTO prompts (name, content, category, is_default) VALUES (
     'Default Metadata Extraction',
     'You are a file metadata extraction assistant. Given a file name, existing metadata, and optionally some file content, extract structured metadata. Return a JSON object with these fields:
 - display_name: a clean, human-readable title for the file
@@ -98,7 +99,42 @@ INSERT INTO prompts (name, content, is_default) VALUES (
 - tags: a list of relevant tags/keywords
 - description: a brief description of the file content
 Only fill in fields you can determine from the provided information. Use null for fields you cannot determine.',
+    NULL,
     1
+);
+
+-- Novel-specific prompt
+INSERT INTO prompts (name, content, category, is_default) VALUES (
+    'Novel Metadata Extraction',
+    'You are a novel metadata extraction assistant. Given a file name, existing metadata, and optionally some file content (first pages of a book), extract structured metadata about this novel. Return a JSON object with these fields:
+- display_name: the clean, full title of the novel
+- authors: list of author names
+- tags: relevant genre/theme tags (e.g. Fantasy, Romance, Sci-Fi)
+- description: a brief plot summary or description of the content
+- isbn: ISBN number if found in the text
+- publisher: publisher name if found
+- year: year of publication
+- language: the language the novel is written in (e.g. English, Chinese, Japanese)
+- series: series name if part of a series
+Only fill in fields you can determine from the provided information. Use null for fields you cannot determine.',
+    'Novels',
+    0
+);
+
+-- Comic-specific prompt
+INSERT INTO prompts (name, content, category, is_default) VALUES (
+    'Comic Metadata Extraction',
+    'You are a comic/manga metadata extraction assistant. Given a file name and existing metadata, extract structured metadata about this comic. Return a JSON object with these fields:
+- display_name: the clean, full title of the comic
+- authors: list of author/artist/mangaka names
+- tags: relevant genre/theme tags (e.g. Action, Shounen, Slice of Life)
+- description: a brief description of the comic
+- volume: volume number if applicable
+- series: series/franchise name
+- issue_number: issue or chapter number
+Only fill in fields you can determine from the provided information. Use null for fields you cannot determine.',
+    'Comics',
+    0
 );
 
 -- Performance indexes

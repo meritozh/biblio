@@ -25,6 +25,7 @@ export interface DynamicMetadataFormValues {
   author_ids: number[];
   metadata: Array<{ key: string; value: string; data_type: MetadataType }>;
   cover_data?: string;
+  cover_mime_type?: string;
   progress?: string;
 }
 

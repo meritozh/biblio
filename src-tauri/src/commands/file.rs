@@ -246,6 +246,8 @@ pub async fn file_create(
     author_ids: Option<Vec<i64>>,
     metadata: Option<Vec<MetadataInput>>,
     progress: Option<String>,
+    cover_data: Option<Vec<u8>>,
+    cover_mime_type: Option<String>,
 ) -> Result<FileCreateResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
@@ -386,6 +388,19 @@ pub async fn file_create(
                 .await
                 .map_err(|e| e.to_string())?;
         }
+    }
+
+    if let Some(data) = cover_data {
+        let mime = cover_mime_type.unwrap_or_else(|| "image/png".to_string());
+        sqlx::query(
+            "INSERT OR REPLACE INTO covers (file_id, data, mime_type) VALUES (?, ?, ?)"
+        )
+        .bind(file_id)
+        .bind(&data)
+        .bind(&mime)
+        .execute(&pool)
+        .await
+        .map_err(|e| format!("Failed to save cover: {}", e))?;
     }
 
     Ok(FileCreateResponse { id: file_id })

@@ -94,6 +94,8 @@ export interface FileCreateRequest extends Record<string, unknown> {
   author_ids?: number[];
   metadata?: Array<{ key: string; value: string; data_type: MetadataType }>;
   progress?: string;
+  cover_data?: string;
+  cover_mime_type?: string;
 }
 
 export interface FileSearchRequest extends Record<string, unknown> {
@@ -155,6 +157,8 @@ export interface FilePreparedImport {
   author_ids: number[];
   metadata: ExtractedField[];
   unresolved_author_names: string[];
+  cover_data?: string;
+  cover_mime_type?: string;
 }
 
 export interface ProcessingProgress {
@@ -176,6 +180,7 @@ export interface Prompt {
   id: number;
   name: string;
   content: string;
+  category: string | null;
   is_default: boolean;
   created_at: string;
   updated_at: string;
@@ -184,4 +189,5 @@ export interface Prompt {
 export interface PromptCreatePayload {
   name: string;
   content: string;
+  category?: string | null;
 }

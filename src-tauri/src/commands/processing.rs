@@ -64,6 +64,8 @@ pub struct FilePreparedImport {
     pub author_ids: Vec<i64>,
     pub metadata: Vec<ExtractedField>,
     pub unresolved_author_names: Vec<String>,
+    pub cover_data: Option<Vec<u8>>,
+    pub cover_mime_type: Option<String>,
 }
 
 fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
@@ -454,6 +456,70 @@ fn extract_pdf_text(file_path: &Path, max_chars: usize) -> Option<String> {
     }
 }
 
+fn extract_cover_from_archive(file_path: &Path) -> Result<(Vec<u8>, String), String> {
+    use std::io::Read;
+    use zip::ZipArchive;
+
+    let file = std::fs::File::open(file_path)
+        .map_err(|e| format!("Failed to open archive: {e}"))?;
+    let mut archive = ZipArchive::new(file)
+        .map_err(|e| format!("Failed to read ZIP archive: {e}"))?;
+
+    // Collect all image entries with their names
+    let mut image_entries: Vec<(String, usize)> = Vec::new();
+    for i in 0..archive.len() {
+        let file = archive.by_index(i).map_err(|e| format!("ZIP entry error: {e}"))?;
+        let name = file.name().to_string();
+        let lower = name.to_lowercase();
+        if lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".png")
+            || lower.ends_with(".webp")
+            || lower.ends_with(".gif")
+        {
+            image_entries.push((name, i));
+        }
+    }
+
+    if image_entries.is_empty() {
+        return Err("No images found in archive".to_string());
+    }
+
+    // Sort by filename to find cover (alphabetical)
+    image_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Prefer files named "cover" or starting with "cover" or "000"/"001"
+    let cover_idx = image_entries
+        .iter()
+        .find(|(name, _)| {
+            let lower = name.to_lowercase();
+            lower.contains("cover") || lower.starts_with("000") || lower.starts_with("001")
+        })
+        .map(|&(_, idx)| idx)
+        .unwrap_or(image_entries[0].1);
+
+    let mut file = archive
+        .by_index(cover_idx)
+        .map_err(|e| format!("Failed to read cover entry: {e}"))?;
+    let name = file.name().to_string();
+
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)
+        .map_err(|e| format!("Failed to read cover data: {e}"))?;
+
+    let mime_type = if name.to_lowercase().ends_with(".png") {
+        "image/png".to_string()
+    } else if name.to_lowercase().ends_with(".webp") {
+        "image/webp".to_string()
+    } else if name.to_lowercase().ends_with(".gif") {
+        "image/gif".to_string()
+    } else {
+        "image/jpeg".to_string()
+    };
+
+    Ok((data, mime_type))
+}
+
 #[tauri::command]
 pub async fn file_analyze(
     app: tauri::AppHandle,
@@ -688,6 +754,37 @@ pub async fn file_prepare_import(
                 }
             }
 
+            let mime_type_field = merged_metadata.iter().find(|m| m.key == "mime_type");
+            let is_archive = mime_type_field.as_ref().map_or(false, |m| {
+                let mt = m.value.to_lowercase();
+                mt.contains("zip") || mt.contains("cbz")
+            });
+            let is_comic_image = mime_type_field
+                .as_ref()
+                .map_or(false, |m| m.value.starts_with("image/"));
+
+            let (cover_data, cover_mime_type) = if is_archive {
+                match extract_cover_from_archive(file_path) {
+                    Ok((data, mime)) => (Some(data), Some(mime)),
+                    Err(e) => {
+                        eprintln!("Cover extraction failed for {}: {}", file_name, e);
+                        (None, None)
+                    }
+                }
+            } else if is_comic_image {
+                match std::fs::read(file_path) {
+                    Ok(data) => {
+                        let mime = mime_type_field
+                            .map(|m| m.value.clone())
+                            .unwrap_or("image/jpeg".to_string());
+                        (Some(data), Some(mime))
+                    }
+                    Err(_) => (None, None),
+                }
+            } else {
+                (None, None)
+            };
+
             results.push(FilePreparedImport {
                 path: path_str.clone(),
                 file_name: file_name.clone(),
@@ -697,6 +794,8 @@ pub async fn file_prepare_import(
                 author_ids,
                 metadata: merged_metadata,
                 unresolved_author_names,
+                cover_data,
+                cover_mime_type,
             });
         }
 
@@ -761,12 +860,16 @@ pub async fn file_prepare_import(
                 None
             };
 
+            let category_name = result.category_id
+                .and_then(|id| categories.iter().find(|c| c.id == id).map(|c| c.name.as_str()));
+
             match super::llm::extract_metadata_with_llm(
                 &config,
                 &pool,
                 &result.display_name,
                 &result.metadata,
                 content.as_deref(),
+                category_name,
             )
             .await
             {
@@ -797,6 +900,55 @@ pub async fn file_prepare_import(
                         result.metadata.push(ExtractedField {
                             key: "description".to_string(),
                             value: desc,
+                            data_type: "text".to_string(),
+                        });
+                    }
+                    if let Some(val) = llm_result.isbn {
+                        result.metadata.push(ExtractedField {
+                            key: "isbn".to_string(),
+                            value: val,
+                            data_type: "text".to_string(),
+                        });
+                    }
+                    if let Some(val) = llm_result.publisher {
+                        result.metadata.push(ExtractedField {
+                            key: "publisher".to_string(),
+                            value: val,
+                            data_type: "text".to_string(),
+                        });
+                    }
+                    if let Some(val) = llm_result.year {
+                        result.metadata.push(ExtractedField {
+                            key: "year".to_string(),
+                            value: val,
+                            data_type: "text".to_string(),
+                        });
+                    }
+                    if let Some(val) = llm_result.language {
+                        result.metadata.push(ExtractedField {
+                            key: "language".to_string(),
+                            value: val,
+                            data_type: "text".to_string(),
+                        });
+                    }
+                    if let Some(val) = llm_result.series {
+                        result.metadata.push(ExtractedField {
+                            key: "series".to_string(),
+                            value: val,
+                            data_type: "text".to_string(),
+                        });
+                    }
+                    if let Some(val) = llm_result.volume {
+                        result.metadata.push(ExtractedField {
+                            key: "volume".to_string(),
+                            value: val,
+                            data_type: "text".to_string(),
+                        });
+                    }
+                    if let Some(val) = llm_result.issue_number {
+                        result.metadata.push(ExtractedField {
+                            key: "issue_number".to_string(),
+                            value: val,
                             data_type: "text".to_string(),
                         });
                     }

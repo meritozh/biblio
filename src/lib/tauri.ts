@@ -41,6 +41,11 @@ export async function fileCreate(params: FileCreateRequest): Promise<{ id: numbe
     tagIds: params.tag_ids,
     authorIds: params.author_ids,
     metadata: params.metadata,
+    progress: params.progress,
+    coverData: params.cover_data
+      ? Array.from(atob(params.cover_data), (c) => c.charCodeAt(0))
+      : null,
+    coverMimeType: params.cover_mime_type || null,
   });
 }
 
@@ -288,8 +293,8 @@ export async function llmTestConnection(): Promise<string> {
   return invoke('llm_test_connection');
 }
 
-export async function promptList(): Promise<Prompt[]> {
-  return invoke('prompt_list');
+export async function promptList(category?: string): Promise<Prompt[]> {
+  return invoke('prompt_list', { category: category ?? null });
 }
 
 export async function promptCreate(payload: PromptCreatePayload): Promise<Prompt> {

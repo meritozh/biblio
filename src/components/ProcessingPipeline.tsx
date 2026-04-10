@@ -16,7 +16,7 @@ import {
   DynamicMetadataForm,
   type DynamicMetadataFormValues,
 } from '@/components/DynamicMetadataForm';
-import { filePrepareImport, fileCreate, coverSet, listenProcessingProgress } from '@/lib/tauri';
+import { filePrepareImport, fileCreate, listenProcessingProgress } from '@/lib/tauri';
 import {
   ChevronDown,
   ChevronRight,
@@ -183,6 +183,8 @@ export function ProcessingPipeline({
                       value: m.value,
                       data_type: m.data_type as MetadataType,
                     })),
+                    cover_data: result.cover_data,
+                    cover_mime_type: result.cover_mime_type,
                   };
               return {
                 ...item,
@@ -262,7 +264,7 @@ export function ProcessingPipeline({
     try {
       for (const item of readyFiles) {
         try {
-          const result = await fileCreate({
+          await fileCreate({
             path: item.path,
             display_name: item.formValues.display_name,
             category_id: item.formValues.category_id,
@@ -270,16 +272,9 @@ export function ProcessingPipeline({
             author_ids: item.formValues.author_ids,
             metadata: item.formValues.metadata,
             progress: item.formValues.progress,
+            cover_data: item.formValues.cover_data,
+            cover_mime_type: item.formValues.cover_mime_type,
           });
-
-          if (item.formValues.cover_data && result.id) {
-            const binaryString = atob(item.formValues.cover_data);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-              bytes[i] = binaryString.charCodeAt(i);
-            }
-            await coverSet(result.id, Array.from(bytes));
-          }
         } catch (error) {
           console.error(`Failed to import ${item.fileName}:`, error);
           errors.push(`${item.fileName}: ${String(error)}`);
