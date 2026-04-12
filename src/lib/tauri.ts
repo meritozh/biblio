@@ -49,6 +49,26 @@ export async function fileCreate(params: FileCreateRequest): Promise<{ id: numbe
   });
 }
 
+export async function fileReplace(
+  existingFileId: number,
+  params: FileCreateRequest
+): Promise<{ id: number }> {
+  return invoke('file_replace', {
+    existingFileId,
+    path: params.path,
+    displayName: params.display_name,
+    categoryId: params.category_id,
+    tagIds: params.tag_ids,
+    authorIds: params.author_ids,
+    metadata: params.metadata,
+    progress: params.progress,
+    coverData: params.cover_data
+      ? Array.from(atob(params.cover_data), (c) => c.charCodeAt(0))
+      : null,
+    coverMimeType: params.cover_mime_type || null,
+  });
+}
+
 export async function fileUpdate(
   id: number,
   params: { display_name?: string; category_id?: number | null }

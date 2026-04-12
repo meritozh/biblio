@@ -148,6 +148,15 @@ export interface ExtractedField {
   data_type: string;
 }
 
+export type DuplicateAction = 'Replace' | 'Skip' | 'ImportAnyway';
+
+export interface DuplicateInfo {
+  existing_file_id: number;
+  existing_display_name: string;
+  existing_progress: string | null;
+  recommendation: DuplicateAction;
+}
+
 export interface FilePreparedImport {
   path: string;
   file_name: string;
@@ -159,6 +168,10 @@ export interface FilePreparedImport {
   unresolved_author_names: string[];
   cover_data?: string;
   cover_mime_type?: string;
+  progress: string | null;
+  suggested_tags: string[];
+  duplicate_of: DuplicateInfo | null;
+  batch_duplicate_group: string | null;
 }
 
 export interface ProcessingProgress {

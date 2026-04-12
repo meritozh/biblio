@@ -6,10 +6,8 @@ export const DEFAULT_FIELDS: FieldConfig[] = [
 ];
 
 // Category-specific fields (merge with DEFAULT_FIELDS when category matches)
+// Category-specific fields (merge with DEFAULT_FIELDS when category matches)
 export const CATEGORY_FIELDS: Record<string, FieldConfig[]> = {
-  'Novels': [
-    { key: 'progress', label: 'Progress', type: 'text', placeholder: 'e.g., 16/100, 连载中, 完结' },
-  ],
   'Comics': [
     { key: 'volume', label: 'Volume', type: 'number' },
     { key: 'cover', label: 'Cover Image', type: 'image' },
