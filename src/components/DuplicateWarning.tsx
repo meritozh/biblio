@@ -1,0 +1,84 @@
+import { AlertTriangle } from 'lucide-react';
+import { Label } from '@/components/ui/label';
+import type { DuplicateInfo, DuplicateAction } from '@/types';
+
+interface DuplicateWarningProps {
+  duplicateInfo: DuplicateInfo;
+  newProgress: string | null;
+  selectedAction: DuplicateAction;
+  onActionChange: (action: DuplicateAction) => void;
+}
+
+const ACTION_LABELS: Record<DuplicateAction, { label: string; description: string }> = {
+  Replace: {
+    label: 'Replace existing',
+    description: 'Delete the existing file and import this one',
+  },
+  Skip: {
+    label: 'Skip',
+    description: 'Do not import this file',
+  },
+  ImportAnyway: {
+    label: 'Import anyway',
+    description: 'Keep both files',
+  },
+};
+
+export function DuplicateWarning({
+  duplicateInfo,
+  newProgress,
+  selectedAction,
+  onActionChange,
+}: DuplicateWarningProps) {
+  return (
+    <div
+      className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 space-y-3"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-center gap-2 text-amber-700">
+        <AlertTriangle className="h-4 w-4 shrink-0" />
+        <span className="text-sm font-medium">
+          Duplicate of &ldquo;{duplicateInfo.existing_display_name}&rdquo;
+        </span>
+      </div>
+
+      {/* Progress comparison */}
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <div className="space-y-1">
+          <span className="text-muted-foreground">Existing progress</span>
+          <p className="font-medium">{duplicateInfo.existing_progress || 'None'}</p>
+        </div>
+        <div className="space-y-1">
+          <span className="text-muted-foreground">New file progress</span>
+          <p className="font-medium">{newProgress || 'None'}</p>
+        </div>
+      </div>
+
+      {/* Action selection */}
+      <div className="space-y-2">
+        {(Object.keys(ACTION_LABELS) as DuplicateAction[]).map((action) => (
+          <label
+            key={action}
+            className="flex items-start gap-2 cursor-pointer"
+          >
+            <input
+              type="radio"
+              name="duplicate-action"
+              checked={selectedAction === action}
+              onChange={() => onActionChange(action)}
+              className="mt-0.5 accent-primary"
+            />
+            <div>
+              <Label className="text-sm font-medium cursor-pointer">
+                {ACTION_LABELS[action].label}
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {ACTION_LABELS[action].description}
+              </p>
+            </div>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
