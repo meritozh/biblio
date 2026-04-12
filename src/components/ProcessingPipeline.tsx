@@ -16,7 +16,9 @@ import {
   DynamicMetadataForm,
   type DynamicMetadataFormValues,
 } from '@/components/DynamicMetadataForm';
-import { filePrepareImport, fileCreate, listenProcessingProgress } from '@/lib/tauri';
+import { SuggestedTagChip } from '@/components/SuggestedTagChip';
+import { DuplicateWarning } from '@/components/DuplicateWarning';
+import { filePrepareImport, fileCreate, fileReplace, listenProcessingProgress } from '@/lib/tauri';
 import {
   ChevronDown,
   ChevronRight,
@@ -32,6 +34,7 @@ import type {
   FilePreparedImport,
   ProcessingProgress,
   MetadataType,
+  DuplicateAction,
 } from '@/types';
 
 type FileStatus = 'pending' | 'analyzing' | 'done' | 'error';
@@ -44,6 +47,8 @@ interface FileItemState {
   formValues: DynamicMetadataFormValues;
   error?: string;
   userEdited: boolean;
+  suggestedTags: string[];
+  duplicateAction: DuplicateAction | null;
 }
 
 interface ProcessingPipelineProps {
@@ -127,6 +132,8 @@ export function ProcessingPipeline({
           status: 'pending',
           formValues: { ...EMPTY_FORM_VALUES, display_name: fileName },
           userEdited: false,
+          suggestedTags: [],
+          duplicateAction: null,
         };
       });
       setFileItems(initialItems);
@@ -183,6 +190,7 @@ export function ProcessingPipeline({
                       value: m.value,
                       data_type: m.data_type as MetadataType,
                     })),
+                    progress: result.progress ?? '',
                     cover_data: result.cover_data,
                     cover_mime_type: result.cover_mime_type,
                   };
@@ -191,6 +199,8 @@ export function ProcessingPipeline({
                 status: 'done' as FileStatus,
                 preparedImport: result,
                 formValues,
+                suggestedTags: result.suggested_tags ?? [],
+                duplicateAction: result.duplicate_of?.recommendation ?? null,
               };
             }
             return { ...item, status: 'error' as FileStatus, error: 'Analysis failed' };
@@ -251,6 +261,48 @@ export function ProcessingPipeline({
     );
   }, []);
 
+  const handleApproveSuggestedTag = useCallback(
+    async (path: string, tagName: string) => {
+      try {
+        const newTag = await onTagCreate(tagName);
+        setFileItems((prev) =>
+          prev.map((item) => {
+            if (item.path !== path) return item;
+            return {
+              ...item,
+              suggestedTags: item.suggestedTags.filter((t) => t !== tagName),
+              formValues: {
+                ...item.formValues,
+                tag_ids: [...item.formValues.tag_ids, newTag.id],
+              },
+            };
+          })
+        );
+      } catch (error) {
+        console.error('Failed to create tag:', error);
+      }
+    },
+    [onTagCreate]
+  );
+
+  const handleDismissSuggestedTag = useCallback((path: string, tagName: string) => {
+    setFileItems((prev) =>
+      prev.map((item) =>
+        item.path === path
+          ? { ...item, suggestedTags: item.suggestedTags.filter((t) => t !== tagName) }
+          : item
+      )
+    );
+  }, []);
+
+  const handleDuplicateAction = useCallback((path: string, action: DuplicateAction) => {
+    setFileItems((prev) =>
+      prev.map((item) =>
+        item.path === path ? { ...item, duplicateAction: action } : item
+      )
+    );
+  }, []);
+
   const handleImportAll = useCallback(async () => {
     if (importing) return;
 
@@ -263,8 +315,10 @@ export function ProcessingPipeline({
 
     try {
       for (const item of readyFiles) {
+        if (item.duplicateAction === 'Skip') continue;
+
         try {
-          await fileCreate({
+          const createParams = {
             path: item.path,
             display_name: item.formValues.display_name,
             category_id: item.formValues.category_id,
@@ -274,7 +328,19 @@ export function ProcessingPipeline({
             progress: item.formValues.progress,
             cover_data: item.formValues.cover_data,
             cover_mime_type: item.formValues.cover_mime_type,
-          });
+          };
+
+          if (
+            item.duplicateAction === 'Replace' &&
+            item.preparedImport?.duplicate_of
+          ) {
+            await fileReplace(
+              item.preparedImport.duplicate_of.existing_file_id,
+              createParams
+            );
+          } else {
+            await fileCreate(createParams);
+          }
         } catch (error) {
           console.error(`Failed to import ${item.fileName}:`, error);
           errors.push(`${item.fileName}: ${String(error)}`);
@@ -302,6 +368,9 @@ export function ProcessingPipeline({
   const doneCount = fileItems.filter((item) => item.status === 'done').length;
   const errorCount = fileItems.filter((item) => item.status === 'error').length;
   const totalFiles = fileItems.length;
+  const skipCount = fileItems.filter(
+    (item) => item.duplicateAction === 'Skip'
+  ).length;
 
   const progressPercent = progress
     ? Math.round((progress.current / progress.total) * 100)
@@ -380,7 +449,34 @@ export function ProcessingPipeline({
 
                   {/* Expandable form */}
                   {expandedIds.has(item.path) && item.status === 'done' && (
-                    <div className="mt-4 pt-4 border-t border-border">
+                    <div className="mt-4 pt-4 border-t border-border space-y-4">
+                      {/* Duplicate warning */}
+                      {item.preparedImport?.duplicate_of && (
+                        <DuplicateWarning
+                          duplicateInfo={item.preparedImport.duplicate_of}
+                          newProgress={item.formValues.progress ?? null}
+                          selectedAction={item.duplicateAction ?? item.preparedImport.duplicate_of.recommendation}
+                          onActionChange={(action) => handleDuplicateAction(item.path, action)}
+                        />
+                      )}
+
+                      {/* Suggested new tags */}
+                      {item.suggestedTags.length > 0 && (
+                        <div className="space-y-2">
+                          <p className="text-xs text-muted-foreground">Suggested new tags:</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {item.suggestedTags.map((tag) => (
+                              <SuggestedTagChip
+                                key={tag}
+                                name={tag}
+                                onApprove={(name) => handleApproveSuggestedTag(item.path, name)}
+                                onDismiss={(name) => handleDismissSuggestedTag(item.path, name)}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       <DynamicMetadataForm
                         values={item.formValues}
                         onChange={(values) => handleFormChange(item.path, values)}
@@ -427,7 +523,7 @@ export function ProcessingPipeline({
                   Importing...
                 </>
               ) : (
-                `Import All (${doneCount})`
+                `Import ${doneCount - skipCount} File${doneCount - skipCount !== 1 ? 's' : ''}${skipCount > 0 ? ` (${skipCount} skipped)` : ''}`
               )}
             </Button>
           </div>
