@@ -13,7 +13,6 @@ const defaultConfig: LlmConfig = {
   base_url: 'http://localhost:11434/v1',
   api_key: '',
   model: 'llama3.2',
-  mode: 'metadata_only',
 };
 
 export function AiSetting() {
@@ -154,43 +153,6 @@ export function AiSetting() {
             placeholder="llama3.2"
             className="text-sm"
           />
-        </div>
-
-        <div className="space-y-1.5">
-          <Label className="text-xs">Mode</Label>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => updateField('mode', 'metadata_only')}
-              disabled={disabled}
-              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium transition-colors duration-200 ${
-                config.mode === 'metadata_only'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
-              } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-              aria-pressed={config.mode === 'metadata_only'}
-            >
-              Metadata only
-            </button>
-            <button
-              type="button"
-              onClick={() => updateField('mode', 'with_content')}
-              disabled={disabled}
-              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium transition-colors duration-200 ${
-                config.mode === 'with_content'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
-              } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-              aria-pressed={config.mode === 'with_content'}
-            >
-              With content
-            </button>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {config.mode === 'metadata_only'
-              ? 'Sends only filename + extracted metadata (fast, cheap)'
-              : 'Also extracts text from PDFs (more accurate)'}
-          </p>
         </div>
 
         <div className="flex items-center gap-3 pt-2">

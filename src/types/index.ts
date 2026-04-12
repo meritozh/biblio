@@ -186,7 +186,6 @@ export interface LlmConfig {
   base_url: string;
   api_key: string;
   model: string;
-  mode: 'metadata_only' | 'with_content';
 }
 
 export interface Prompt {

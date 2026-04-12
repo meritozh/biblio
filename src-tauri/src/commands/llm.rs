@@ -22,7 +22,6 @@ pub struct LlmConfig {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
-    pub mode: String,
 }
 
 impl Default for LlmConfig {
@@ -32,7 +31,6 @@ impl Default for LlmConfig {
             base_url: "http://localhost:11434/v1".to_string(),
             api_key: String::new(),
             model: "llama3.2".to_string(),
-            mode: "metadata_only".to_string(),
         }
     }
 }
@@ -89,16 +87,11 @@ pub async fn load_config(pool: &sqlx::SqlitePool) -> Result<LlmConfig, String> {
         .await
         .unwrap_or_else(|| "llama3.2".to_string());
 
-    let mode = read_setting(pool, "llm_mode")
-        .await
-        .unwrap_or_else(|| "metadata_only".to_string());
-
     Ok(LlmConfig {
         enabled,
         base_url,
         api_key,
         model,
-        mode,
     })
 }
 
@@ -118,7 +111,6 @@ pub async fn llm_config_set(app: tauri::AppHandle, config: LlmConfig) -> Result<
     write_setting(&pool, "llm_base_url", &config.base_url).await?;
     write_setting(&pool, "llm_api_key", &config.api_key).await?;
     write_setting(&pool, "llm_model", &config.model).await?;
-    write_setting(&pool, "llm_mode", &config.mode).await?;
 
     Ok(())
 }
