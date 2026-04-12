@@ -38,107 +38,18 @@ impl Default for LlmConfig {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct LlmFileMetadata {
+pub struct LlmUnifiedMetadata {
     pub display_name: Option<String>,
     pub category: Option<String>,
     pub authors: Vec<String>,
     pub tags: Vec<String>,
     pub description: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct LlmNovelMetadata {
-    pub display_name: Option<String>,
-    pub authors: Vec<String>,
-    pub tags: Vec<String>,
-    pub description: Option<String>,
-    pub isbn: Option<String>,
-    pub publisher: Option<String>,
-    pub year: Option<String>,
-    pub language: Option<String>,
+    pub progress: Option<String>,
     pub series: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct LlmComicMetadata {
-    pub display_name: Option<String>,
-    pub authors: Vec<String>,
-    pub tags: Vec<String>,
-    pub description: Option<String>,
-    pub volume: Option<String>,
-    pub series: Option<String>,
-    pub issue_number: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmExtractedMetadata {
-    pub display_name: Option<String>,
-    pub category: Option<String>,
-    pub authors: Vec<String>,
-    pub tags: Vec<String>,
-    pub description: Option<String>,
-    // Novel-specific
-    pub isbn: Option<String>,
-    pub publisher: Option<String>,
-    pub year: Option<String>,
-    pub language: Option<String>,
-    pub series: Option<String>,
-    // Comic-specific
     pub volume: Option<String>,
     pub issue_number: Option<String>,
-}
-
-impl LlmExtractedMetadata {
-    fn from_generic(m: LlmFileMetadata) -> Self {
-        Self {
-            display_name: m.display_name,
-            category: m.category,
-            authors: m.authors,
-            tags: m.tags,
-            description: m.description,
-            isbn: None,
-            publisher: None,
-            year: None,
-            language: None,
-            series: None,
-            volume: None,
-            issue_number: None,
-        }
-    }
-
-    fn from_novel(m: LlmNovelMetadata) -> Self {
-        Self {
-            display_name: m.display_name,
-            category: None,
-            authors: m.authors,
-            tags: m.tags,
-            description: m.description,
-            isbn: m.isbn,
-            publisher: m.publisher,
-            year: m.year,
-            language: m.language,
-            series: m.series,
-            volume: None,
-            issue_number: None,
-        }
-    }
-
-    fn from_comic(m: LlmComicMetadata) -> Self {
-        Self {
-            display_name: m.display_name,
-            category: None,
-            authors: m.authors,
-            tags: m.tags,
-            description: m.description,
-            isbn: None,
-            publisher: None,
-            year: None,
-            language: None,
-            series: m.series,
-            volume: m.volume,
-            issue_number: m.issue_number,
-        }
-    }
+    pub year: Option<String>,
+    pub language: Option<String>,
 }
 
 async fn read_setting(pool: &sqlx::SqlitePool, key: &str) -> Option<String> {
@@ -247,8 +158,10 @@ pub async fn extract_metadata_with_llm(
     file_name: &str,
     existing_metadata: &[ExtractedField],
     file_content: Option<&str>,
-    category: Option<&str>,
-) -> Result<LlmExtractedMetadata, String> {
+    categories: &[String],
+    tags: &[String],
+    authors: &[String],
+) -> Result<LlmUnifiedMetadata, String> {
     let api_key = if config.api_key.is_empty() {
         "dummy".to_string()
     } else {
@@ -261,7 +174,7 @@ pub async fn extract_metadata_with_llm(
         .build()
         .map_err(|e| format!("Failed to create LLM client: {e}"))?;
 
-    let preamble = resolve_preamble(pool, category).await?;
+    let preamble = resolve_preamble(pool, categories, tags, authors).await?;
 
     let mut input = format!("File name: {}\n", file_name);
 
@@ -273,107 +186,68 @@ pub async fn extract_metadata_with_llm(
     }
 
     if let Some(content) = file_content {
-        input.push_str(&format!("\nFile content preview:\n{}\n", content));
+        input.push_str(&format!("\nFile content samples:\n{}\n", content));
     }
 
-    match category {
-        Some("Novels") => {
-            let extractor = client
-                .extractor::<LlmNovelMetadata>(&config.model)
-                .preamble(&preamble)
-                .build();
-            let result = extractor
-                .extract(&input)
-                .await
-                .map_err(|e| format!("LLM extraction failed: {e}"))?;
-            Ok(LlmExtractedMetadata::from_novel(result))
-        }
-        Some("Comics") => {
-            let extractor = client
-                .extractor::<LlmComicMetadata>(&config.model)
-                .preamble(&preamble)
-                .build();
-            let result = extractor
-                .extract(&input)
-                .await
-                .map_err(|e| format!("LLM extraction failed: {e}"))?;
-            Ok(LlmExtractedMetadata::from_comic(result))
-        }
-        _ => {
-            let extractor = client
-                .extractor::<LlmFileMetadata>(&config.model)
-                .preamble(&preamble)
-                .build();
-            let result = extractor
-                .extract(&input)
-                .await
-                .map_err(|e| format!("LLM extraction failed: {e}"))?;
-            Ok(LlmExtractedMetadata::from_generic(result))
-        }
-    }
+    let extractor = client
+        .extractor::<LlmUnifiedMetadata>(&config.model)
+        .preamble(&preamble)
+        .build();
+
+    extractor
+        .extract(&input)
+        .await
+        .map_err(|e| format!("LLM extraction failed: {e}"))
 }
 
 async fn resolve_preamble(
     pool: &sqlx::SqlitePool,
-    category: Option<&str>,
+    categories: &[String],
+    tags: &[String],
+    authors: &[String],
 ) -> Result<String, String> {
-    if let Some(cat) = category {
-        let db_prompt: Option<(String,)> = sqlx::query_as(
-            "SELECT content FROM prompts WHERE category = ? AND is_default = 1 LIMIT 1",
-        )
-        .bind(cat)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        if let Some(prompt) = db_prompt {
-            return Ok(prompt.0);
-        }
-    }
-
     let db_prompt: Option<(String,)> = sqlx::query_as(
-        "SELECT content FROM prompts WHERE category IS NULL AND is_default = 1 LIMIT 1",
+        "SELECT content FROM prompts WHERE is_default = 1 AND category IS NULL LIMIT 1",
     )
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;
 
-    if let Some(prompt) = db_prompt {
-        return Ok(prompt.0);
-    }
+    let base = if let Some(prompt) = db_prompt {
+        prompt.0
+    } else {
+        fallback_preamble()
+    };
 
-    Ok(fallback_preamble(category))
+    let categories_str = if categories.is_empty() {
+        "None defined yet".to_string()
+    } else {
+        categories.join(", ")
+    };
+    let tags_str = if tags.is_empty() {
+        "None defined yet".to_string()
+    } else {
+        tags.join(", ")
+    };
+    let authors_str = if authors.is_empty() {
+        "None known yet".to_string()
+    } else {
+        authors.join(", ")
+    };
+
+    Ok(format!(
+        "{}\n\nAvailable categories: {}\nExisting tags: {}\nExisting authors: {}",
+        base, categories_str, tags_str, authors_str
+    ))
 }
 
-fn fallback_preamble(category: Option<&str>) -> String {
-    match category {
-        Some("Novels") => "You are a novel metadata extraction assistant. Given a file name, existing metadata, and optionally some file content (first pages of a book), extract structured metadata about this novel. Return a JSON object with these fields:
-- display_name: the clean, full title of the novel
-- authors: list of author names
-- tags: relevant genre/theme tags
-- description: a brief plot summary or description
-- isbn: ISBN number if found
-- publisher: publisher name
-- year: year of publication
-- language: the language the novel is written in
-- series: series name if part of a series
-Only fill in fields you can determine. Use null for unknown fields.".to_string(),
-        Some("Comics") => "You are a comic/manga metadata extraction assistant. Given a file name and existing metadata, extract structured metadata about this comic. Return a JSON object with these fields:
-- display_name: the clean, full title of the comic
-- authors: list of author/artist names
-- tags: relevant genre/theme tags
-- description: a brief description
-- volume: volume number if applicable
-- series: series name
-- issue_number: issue/chapter number
-Only fill in fields you can determine. Use null for unknown fields.".to_string(),
-        _ => "You are a file metadata extraction assistant. Given a file name, existing metadata, and optionally some file content, extract structured metadata. \
-Return a JSON object with these fields: \
-- display_name: a clean, human-readable title for the file \
-- category: the most appropriate category (e.g. Novels, Comics, Documents, Academic, Music, Video, Other) \
-- authors: a list of author names found \
-- tags: a list of relevant tags/keywords \
-- description: a brief description of the file content \
-Only fill in fields you can determine from the provided information. Use null for fields you cannot determine.".to_string(),
-    }
+fn fallback_preamble() -> String {
+    "You are a file metadata extraction assistant. Given a file name, raw metadata signals, \
+and optionally sampled file content, extract structured metadata.\n\n\
+Instructions:\n\
+- Pick the most appropriate category from the available list\n\
+- Prefer existing tags and authors when they match, but suggest new ones if needed\n\
+- For novels/text files, extract reading progress if detectable (e.g. chapter number, 完结, 连载中)\n\
+- Only fill in fields you can determine. Use null for unknown fields."
+        .to_string()
 }
