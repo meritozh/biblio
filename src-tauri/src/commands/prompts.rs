@@ -63,11 +63,10 @@ pub async fn prompt_create(
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
     sqlx::query(
-        "INSERT INTO prompts (name, content, category, is_default) VALUES (?, ?, ?, 0)",
+        "INSERT INTO prompts (name, content, category, is_default) VALUES (?, ?, NULL, 0)",
     )
     .bind(&payload.name)
     .bind(&payload.content)
-    .bind(&payload.category)
     .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -92,11 +91,10 @@ pub async fn prompt_update(
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
     sqlx::query(
-        "UPDATE prompts SET name = ?, content = ?, category = ?, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE prompts SET name = ?, content = ?, category = NULL, updated_at = datetime('now') WHERE id = ?",
     )
     .bind(&payload.name)
     .bind(&payload.content)
-    .bind(&payload.category)
     .bind(id)
     .execute(&pool)
     .await
@@ -155,22 +153,12 @@ pub async fn prompt_set_default(
     .await
     .map_err(|e| e.to_string())?;
 
-    if let Some((cat,)) = prompt_category {
-        match cat {
-            Some(c) => {
-                sqlx::query("UPDATE prompts SET is_default = 0 WHERE category = ? AND is_default = 1")
-                    .bind(&c)
-                    .execute(&pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-            None => {
-                sqlx::query("UPDATE prompts SET is_default = 0 WHERE category IS NULL AND is_default = 1")
-                    .execute(&pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-        }
+    if prompt_category.is_some() {
+        // Clear all defaults — only one active prompt in unified mode
+        sqlx::query("UPDATE prompts SET is_default = 0 WHERE is_default = 1")
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
     sqlx::query(

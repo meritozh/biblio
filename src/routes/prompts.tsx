@@ -21,7 +21,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, Pencil, Trash2, ArrowLeft, MessageSquare, Star } from 'lucide-react';
+import { Plus, Pencil, Trash2, ArrowLeft, MessageSquare, Star, Info } from 'lucide-react';
 import {
   promptList,
   promptCreate,
@@ -31,12 +31,6 @@ import {
 } from '@/lib/tauri';
 import type { Prompt } from '@/types';
 
-const CATEGORY_OPTIONS = [
-  { value: '', label: 'Generic (all categories)' },
-  { value: 'Novels', label: 'Novels' },
-  { value: 'Comics', label: 'Comics' },
-];
-
 export const Route = createFileRoute('/prompts')({
   component: PromptsPage,
 });
@@ -44,31 +38,28 @@ export const Route = createFileRoute('/prompts')({
 function PromptsPage() {
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filterCategory, setFilterCategory] = useState<string>('');
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [newPromptName, setNewPromptName] = useState('');
   const [newPromptContent, setNewPromptContent] = useState('');
-  const [newPromptCategory, setNewPromptCategory] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [editingPrompt, setEditingPrompt] = useState<Prompt | null>(null);
   const [editName, setEditName] = useState('');
   const [editContent, setEditContent] = useState('');
-  const [editCategory, setEditCategory] = useState<string>('');
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingPrompt, setDeletingPrompt] = useState<Prompt | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const loadPrompts = useCallback(async (category?: string) => {
+  const loadPrompts = useCallback(async () => {
     setLoading(true);
-    const result = await promptList(category || undefined);
+    const result = await promptList();
     setPrompts(result);
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    void loadPrompts(filterCategory || undefined);
-  }, [loadPrompts, filterCategory]);
+    void loadPrompts();
+  }, [loadPrompts]);
 
   const handleCreate = async () => {
     if (!newPromptName.trim() || !newPromptContent.trim()) return;
@@ -77,13 +68,11 @@ function PromptsPage() {
       await promptCreate({
         name: newPromptName.trim(),
         content: newPromptContent.trim(),
-        category: newPromptCategory || null,
       });
       setCreateDialogOpen(false);
       setNewPromptName('');
       setNewPromptContent('');
-      setNewPromptCategory('');
-      void loadPrompts(filterCategory || undefined);
+      void loadPrompts();
     } catch (error) {
       console.error('Failed to create prompt:', error);
       alert(`Failed to create prompt: ${error}`);
@@ -95,7 +84,6 @@ function PromptsPage() {
     setEditingPrompt(prompt);
     setEditName(prompt.name);
     setEditContent(prompt.content);
-    setEditCategory(prompt.category ?? '');
     setEditDialogOpen(true);
   };
 
@@ -106,14 +94,12 @@ function PromptsPage() {
       await promptUpdate(editingPrompt.id, {
         name: editName.trim(),
         content: editContent.trim(),
-        category: editCategory || null,
       });
       setEditDialogOpen(false);
       setEditingPrompt(null);
       setEditName('');
       setEditContent('');
-      setEditCategory('');
-      void loadPrompts(filterCategory || undefined);
+      void loadPrompts();
     } catch (error) {
       console.error('Failed to update prompt:', error);
       alert(`Failed to update prompt: ${error}`);
@@ -133,7 +119,7 @@ function PromptsPage() {
       await promptDelete(deletingPrompt.id);
       setDeleteDialogOpen(false);
       setDeletingPrompt(null);
-      void loadPrompts(filterCategory || undefined);
+      void loadPrompts();
     } catch (error) {
       console.error('Failed to delete prompt:', error);
       alert(`Failed to delete prompt: ${error}`);
@@ -144,7 +130,7 @@ function PromptsPage() {
   const handleSetDefault = async (prompt: Prompt) => {
     try {
       await promptSetDefault(prompt.id);
-      void loadPrompts(filterCategory || undefined);
+      void loadPrompts();
     } catch (error) {
       console.error('Failed to set default prompt:', error);
       alert(`Failed to set default prompt: ${error}`);
@@ -154,17 +140,6 @@ function PromptsPage() {
   const truncateText = (text: string, maxLength: number = 150) => {
     if (text.length <= maxLength) return text;
     return text.substring(0, maxLength) + '...';
-  };
-
-  const getCategoryBadgeVariant = (category: string | null) => {
-    switch (category) {
-      case 'Novels':
-        return 'blue' as const;
-      case 'Comics':
-        return 'purple' as const;
-      default:
-        return 'secondary' as const;
-    }
   };
 
   return (
@@ -189,27 +164,21 @@ function PromptsPage() {
               <p className="text-xs text-muted-foreground mt-0.5">{prompts.length} prompts</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <select
-              value={filterCategory}
-              onChange={(e) => setFilterCategory(e.target.value)}
-              className="h-9 rounded-xl border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              <option value="">All Categories</option>
-              {CATEGORY_OPTIONS.filter((o) => o.value).map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-            <Button onClick={() => setCreateDialogOpen(true)}>
-              <Plus className="h-4 w-4 mr-1" />
-              Add Prompt
-            </Button>
-          </div>
+          <Button onClick={() => setCreateDialogOpen(true)}>
+            <Plus className="h-4 w-4 mr-1" />
+            Add Prompt
+          </Button>
         </div>
 
         <div className="flex-1 overflow-auto px-8 py-6">
+          {/* Info banner */}
+          <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 mb-6">
+            <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+            <p className="text-xs text-muted-foreground">
+              The active prompt is used for all file imports. Your available categories, existing tags, and known authors are automatically appended to the prompt at runtime.
+            </p>
+          </div>
+
           {loading ? (
             <div className="flex items-center justify-center h-32">
               <p className="text-sm text-muted-foreground">Loading...</p>
@@ -225,7 +194,9 @@ function PromptsPage() {
               {prompts.map((prompt) => (
                 <div
                   key={prompt.id}
-                  className="rounded-xl border border-border bg-card p-4 hover:shadow-sm transition-shadow"
+                  className={`rounded-xl border bg-card p-4 hover:shadow-sm transition-shadow ${
+                    prompt.is_default ? 'border-primary/30 bg-primary/[0.02]' : 'border-border'
+                  }`}
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1 min-w-0">
@@ -233,17 +204,9 @@ function PromptsPage() {
                         <h3 className="text-base font-semibold text-foreground truncate">
                           {prompt.name}
                         </h3>
-                        {prompt.category && (
-                          <Badge
-                            variant={getCategoryBadgeVariant(prompt.category)}
-                            className="text-xs"
-                          >
-                            {prompt.category}
-                          </Badge>
-                        )}
                         {prompt.is_default && (
                           <Badge variant="green" className="text-xs">
-                            Default
+                            Active
                           </Badge>
                         )}
                       </div>
@@ -266,7 +229,7 @@ function PromptsPage() {
                           variant="ghost"
                           className="h-8 w-8"
                           onClick={() => handleSetDefault(prompt)}
-                          title="Set as default"
+                          title="Set as active prompt"
                         >
                           <Star className="h-4 w-4" />
                         </Button>
@@ -303,20 +266,6 @@ function PromptsPage() {
               />
             </div>
             <div>
-              <label className="text-sm font-medium mb-2 block">Category</label>
-              <select
-                value={newPromptCategory}
-                onChange={(e) => setNewPromptCategory(e.target.value)}
-                className="w-full h-9 rounded-xl border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                {CATEGORY_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
               <label className="text-sm font-medium mb-2 block">Content</label>
               <textarea
                 value={newPromptContent}
@@ -324,6 +273,9 @@ function PromptsPage() {
                 placeholder="Prompt content..."
                 className="w-full min-h-[200px] px-3 py-2 text-sm rounded-xl border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
               />
+              <p className="text-xs text-muted-foreground mt-1.5">
+                Categories, tags, and authors from your library are automatically appended at runtime.
+              </p>
             </div>
           </div>
           <DialogFooter>
@@ -355,20 +307,6 @@ function PromptsPage() {
               />
             </div>
             <div>
-              <label className="text-sm font-medium mb-2 block">Category</label>
-              <select
-                value={editCategory}
-                onChange={(e) => setEditCategory(e.target.value)}
-                className="w-full h-9 rounded-xl border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                {CATEGORY_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
               <label className="text-sm font-medium mb-2 block">Content</label>
               <textarea
                 value={editContent}
@@ -376,6 +314,9 @@ function PromptsPage() {
                 placeholder="Prompt content..."
                 className="w-full min-h-[200px] px-3 py-2 text-sm rounded-xl border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
               />
+              <p className="text-xs text-muted-foreground mt-1.5">
+                Categories, tags, and authors from your library are automatically appended at runtime.
+              </p>
             </div>
           </div>
           <DialogFooter>
@@ -400,7 +341,7 @@ function PromptsPage() {
               Are you sure you want to delete "{deletingPrompt?.name}"?
               {deletingPrompt?.is_default && (
                 <span className="text-destructive font-medium">
-                  This is the default prompt and cannot be deleted.
+                  {' '}This is the active prompt and cannot be deleted.
                 </span>
               )}
             </AlertDialogDescription>
