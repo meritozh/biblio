@@ -66,6 +66,25 @@ pub struct FilePreparedImport {
     pub unresolved_author_names: Vec<String>,
     pub cover_data: Option<Vec<u8>>,
     pub cover_mime_type: Option<String>,
+    pub progress: Option<String>,
+    pub suggested_tags: Vec<String>,
+    pub duplicate_of: Option<DuplicateInfo>,
+    pub batch_duplicate_group: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DuplicateAction {
+    Replace,
+    Skip,
+    ImportAnyway,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DuplicateInfo {
+    pub existing_file_id: i64,
+    pub existing_display_name: String,
+    pub existing_progress: Option<String>,
+    pub recommendation: DuplicateAction,
 }
 
 fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
@@ -193,15 +212,7 @@ impl FileProcessor for FileTypeDetector {
                 .to_string(),
         };
 
-        let category_hint = if mime_type == "application/pdf" {
-            Some("Novels".to_string())
-        } else if mime_type.starts_with("image/") {
-            Some("Comics".to_string())
-        } else if mime_type.starts_with("text/") {
-            Some("Documents".to_string())
-        } else {
-            None
-        };
+        let category_hint = None;
 
         Ok(ExtractedMetadata {
             display_name: None,
@@ -395,67 +406,6 @@ fn type_matches(processor_types: &[&str], known_mime: Option<&str>) -> bool {
     }
 }
 
-fn extract_pdf_text(file_path: &Path, max_chars: usize) -> Option<String> {
-    let doc = lopdf::Document::load(file_path).ok()?;
-    let mut text = String::new();
-    let pages = doc.get_pages();
-
-    for (_, page_id) in pages {
-        let page_obj = match doc.objects.get(&page_id) {
-            Some(obj) => obj,
-            None => continue,
-        };
-
-        let page_dict = match page_obj.as_dict() {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-
-        let contents_ref = match page_dict.get(b"Contents") {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let content_ids: Vec<lopdf::ObjectId> = match contents_ref {
-            lopdf::Object::Reference(id) => vec![*id],
-            lopdf::Object::Array(arr) => arr
-                .iter()
-                .filter_map(|o| {
-                    if let lopdf::Object::Reference(id) = o { Some(*id) } else { None }
-                })
-                .collect(),
-            _ => vec![],
-        };
-
-        for cid in content_ids {
-            if let Some(obj) = doc.objects.get(&cid) {
-                if let Ok(stream) = obj.as_stream() {
-                    if let Ok(content_bytes) = stream.decompressed_content() {
-                        let content_str = String::from_utf8_lossy(&content_bytes);
-                        for token in content_str.split_whitespace() {
-                            if token.starts_with('(') && token.ends_with(')') {
-                                let inner = &token[1..token.len() - 1];
-                                text.push_str(inner);
-                                text.push(' ');
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if text.len() >= max_chars {
-            break;
-        }
-    }
-
-    if text.is_empty() {
-        None
-    } else {
-        Some(text.chars().take(max_chars).collect())
-    }
-}
-
 fn extract_cover_from_archive(file_path: &Path) -> Result<(Vec<u8>, String), String> {
     use std::io::Read;
     use zip::ZipArchive;
@@ -518,6 +468,41 @@ fn extract_cover_from_archive(file_path: &Path) -> Result<(Vec<u8>, String), Str
     };
 
     Ok((data, mime_type))
+}
+
+fn sample_text_content(file_path: &Path, num_samples: usize, sample_size: usize) -> Option<String> {
+    let content = std::fs::read_to_string(file_path).ok()?;
+    let total_chars: usize = content.chars().count();
+
+    if total_chars == 0 {
+        return None;
+    }
+
+    let total_needed = num_samples * sample_size;
+    if total_chars <= total_needed {
+        return Some(content);
+    }
+
+    let chars: Vec<char> = content.chars().collect();
+    let mut result = String::new();
+    let labels = ["Beginning", "25%", "50%", "75%", "Near End"];
+
+    for i in 0..num_samples {
+        let position = if i == num_samples - 1 {
+            (total_chars as f64 * 0.95) as usize
+        } else {
+            (total_chars as f64 * (i as f64 / (num_samples - 1) as f64)) as usize
+        };
+
+        let start = position.min(total_chars.saturating_sub(sample_size));
+        let end = (start + sample_size).min(total_chars);
+        let sample: String = chars[start..end].iter().collect();
+
+        let label = labels.get(i).unwrap_or(&"Sample");
+        result.push_str(&format!("[Sample {} - {}]\n{}\n\n", i + 1, label, sample));
+    }
+
+    Some(result)
 }
 
 #[tauri::command]
@@ -641,7 +626,7 @@ pub async fn file_prepare_import(
     app: tauri::AppHandle,
     paths: Vec<String>,
 ) -> Result<Vec<FilePreparedImport>, String> {
-    use crate::commands::{Author, Category};
+    use crate::commands::{Author, Category, Tag};
 
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
@@ -660,6 +645,13 @@ pub async fn file_prepare_import(
     .await
     .map_err(|e| format!("Failed to load authors: {e}"))?;
 
+    let tags: Vec<Tag> = sqlx::query_as(
+        "SELECT id, name, color, created_at FROM tags",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| format!("Failed to load tags: {e}"))?;
+
     let category_map: std::collections::HashMap<String, i64> = categories
         .iter()
         .map(|c| (c.name.to_lowercase(), c.id))
@@ -670,10 +662,20 @@ pub async fn file_prepare_import(
         .map(|a| (a.name.to_lowercase(), a.id))
         .collect();
 
+    let tag_map: std::collections::HashMap<String, i64> = tags
+        .iter()
+        .map(|t| (t.name.to_lowercase(), t.id))
+        .collect();
+
+    let category_names: Vec<String> = categories.iter().map(|c| c.name.clone()).collect();
+    let tag_names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
+    let author_names: Vec<String> = authors.iter().map(|a| a.name.clone()).collect();
+
+    // Phase 1: Run Rust processors (signal gathering)
     let total = paths.len();
     let app_clone = app.clone();
 
-    let results = tauri::async_runtime::spawn_blocking(move || {
+    let phase1_results = tauri::async_runtime::spawn_blocking(move || {
         let processors = get_processors();
         let mut results = Vec::new();
 
@@ -688,15 +690,13 @@ pub async fn file_prepare_import(
                 current: idx + 1,
                 total,
                 current_file: file_name.clone(),
-                status: "processing".to_string(),
+                status: "gathering_signals".to_string(),
             };
             let _ = app_clone.emit("processing-progress", &progress);
 
-            let mut merged_display_name = None::<String>;
+            let mut merged_metadata: Vec<ExtractedField> = Vec::new();
             let mut merged_authors = Vec::new();
             let mut seen_authors = HashSet::new();
-            let mut merged_metadata: Vec<ExtractedField> = Vec::new();
-            let mut merged_category_hint = None::<String>;
             let mut known_mime: Option<String> = None;
 
             for processor in &processors {
@@ -704,99 +704,55 @@ pub async fn file_prepare_import(
                     processor.supported_types(),
                     known_mime.as_deref(),
                 );
-
                 if !supported {
                     continue;
                 }
-
-                match processor.process(file_path) {
-                    Ok(extracted) => {
-                        if merged_display_name.is_none() && extracted.display_name.is_some() {
-                            merged_display_name = extracted.display_name;
-                        }
-
-                        for author in extracted.suggested_authors {
-                            if seen_authors.insert(author.clone()) {
-                                merged_authors.push(author);
-                            }
-                        }
-
-                        for field in extracted.metadata {
-                            if field.key == "mime_type" {
-                                known_mime = Some(field.value.clone());
-                            }
-                            if let Some(existing) = merged_metadata.iter_mut().find(|f| f.key == field.key) {
-                                *existing = field;
-                            } else {
-                                merged_metadata.push(field);
-                            }
-                        }
-
-                        if merged_category_hint.is_none() && extracted.category_hint.is_some() {
-                            merged_category_hint = extracted.category_hint;
+                if let Ok(extracted) = processor.process(file_path) {
+                    for author in extracted.suggested_authors {
+                        if seen_authors.insert(author.clone()) {
+                            merged_authors.push(author);
                         }
                     }
-                    Err(_) => {}
+                    for field in extracted.metadata {
+                        if field.key == "mime_type" {
+                            known_mime = Some(field.value.clone());
+                        }
+                        if let Some(existing) = merged_metadata.iter_mut().find(|f| f.key == field.key) {
+                            *existing = field;
+                        } else {
+                            merged_metadata.push(field);
+                        }
+                    }
                 }
             }
 
-            let category_id = merged_category_hint
-                .as_ref()
-                .and_then(|hint| category_map.get(&hint.to_lowercase()).copied());
+            // Content sampling for .txt files
+            let mime = known_mime.as_deref().unwrap_or("");
+            let content = if mime == "text/plain" || file_path.extension().and_then(|e| e.to_str()) == Some("txt") {
+                sample_text_content(file_path, 5, 1000)
+            } else {
+                None
+            };
 
-            let mut author_ids = Vec::new();
-            let mut unresolved_author_names = Vec::new();
-            for author_name in &merged_authors {
-                if let Some(&id) = author_map.get(&author_name.to_lowercase()) {
-                    author_ids.push(id);
-                } else {
-                    unresolved_author_names.push(author_name.clone());
-                }
-            }
-
-            let mime_type_field = merged_metadata.iter().find(|m| m.key == "mime_type");
-            let is_archive = mime_type_field.as_ref().map_or(false, |m| {
-                let mt = m.value.to_lowercase();
-                mt.contains("zip") || mt.contains("cbz")
-            });
-            let is_comic_image = mime_type_field
-                .as_ref()
-                .map_or(false, |m| m.value.starts_with("image/"));
+            // Cover extraction for archives/images
+            let is_archive = mime.contains("zip") || mime.contains("cbz");
+            let is_comic_image = mime.starts_with("image/");
 
             let (cover_data, cover_mime_type) = if is_archive {
                 match extract_cover_from_archive(file_path) {
                     Ok((data, mime)) => (Some(data), Some(mime)),
-                    Err(e) => {
-                        eprintln!("Cover extraction failed for {}: {}", file_name, e);
-                        (None, None)
-                    }
+                    Err(_) => (None, None),
                 }
             } else if is_comic_image {
                 match std::fs::read(file_path) {
-                    Ok(data) => {
-                        let mime = mime_type_field
-                            .map(|m| m.value.clone())
-                            .unwrap_or("image/jpeg".to_string());
-                        (Some(data), Some(mime))
-                    }
+                    Ok(data) => (Some(data), Some(mime.to_string())),
                     Err(_) => (None, None),
                 }
             } else {
                 (None, None)
             };
 
-            results.push(FilePreparedImport {
-                path: path_str.clone(),
-                file_name: file_name.clone(),
-                display_name: merged_display_name.unwrap_or(file_name),
-                category_id,
-                tag_ids: vec![],
-                author_ids,
-                metadata: merged_metadata,
-                unresolved_author_names,
-                cover_data,
-                cover_mime_type,
-            });
+            results.push((path_str.clone(), file_name, merged_metadata, merged_authors, content, cover_data, cover_mime_type));
         }
 
         results
@@ -804,166 +760,189 @@ pub async fn file_prepare_import(
     .await
     .map_err(|e| format!("Task join error: {e}"))?;
 
-    let llm_enabled: Option<(String,)> = sqlx::query_as(
-        "SELECT value FROM app_settings WHERE key = 'llm_enabled'",
-    )
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    // Phase 2: LLM extraction
+    let llm_config = super::llm::load_config(&pool).await?;
+    let mut results: Vec<FilePreparedImport> = Vec::new();
 
-    let llm_enabled = llm_enabled
-        .and_then(|(v,)| v.parse::<bool>().ok())
-        .unwrap_or(false);
+    for (path_str, file_name, merged_metadata, merged_authors, content, cover_data, cover_mime_type) in phase1_results {
+        let mut progress_val: Option<String> = None;
+        let mut category_id: Option<i64> = None;
+        let mut tag_ids: Vec<i64> = Vec::new();
+        let mut suggested_tags: Vec<String> = Vec::new();
+        let mut author_ids: Vec<i64> = Vec::new();
+        let mut unresolved_author_names: Vec<String> = Vec::new();
+        let mut final_display_name = file_name.clone();
+        let mut final_metadata = merged_metadata.clone();
 
-    let mut results = results;
-
-    if llm_enabled {
-        let config = super::llm::load_config(&pool).await?;
-
-        let categories: Vec<Category> = sqlx::query_as(
-            "SELECT id, name, icon, is_default, folder_name, created_at FROM categories",
-        )
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| format!("Failed to load categories: {e}"))?;
-
-        let authors: Vec<Author> = sqlx::query_as(
-            "SELECT id, name, created_at FROM authors",
-        )
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| format!("Failed to load authors: {e}"))?;
-
-        let llm_category_map: std::collections::HashMap<String, i64> = categories
-            .iter()
-            .map(|c| (c.name.to_lowercase(), c.id))
-            .collect();
-
-        let llm_author_map: std::collections::HashMap<String, i64> = authors
-            .iter()
-            .map(|a| (a.name.to_lowercase(), a.id))
-            .collect();
-
-        for result in &mut results {
-            let content = if config.mode == "with_content" {
-                let path = Path::new(&result.path);
-                let mime = result
-                    .metadata
-                    .iter()
-                    .find(|m| m.key == "mime_type")
-                    .map(|m| m.value.as_str());
-                match mime {
-                    Some("application/pdf") => extract_pdf_text(path, 4000),
-                    _ => None,
+        // Resolve processor-found authors
+        for author_name in &merged_authors {
+            if let Some(&id) = author_map.get(&author_name.to_lowercase()) {
+                if !author_ids.contains(&id) {
+                    author_ids.push(id);
                 }
-            } else {
-                None
-            };
+            } else if !unresolved_author_names.contains(author_name) {
+                unresolved_author_names.push(author_name.clone());
+            }
+        }
 
-            let category_name = result.category_id
-                .and_then(|id| categories.iter().find(|c| c.id == id).map(|c| c.name.as_str()));
+        if llm_config.enabled {
+            let _ = app.emit("processing-progress", &ProcessingProgress {
+                current: results.len() + 1,
+                total,
+                current_file: file_name.clone(),
+                status: "llm_extraction".to_string(),
+            });
 
             match super::llm::extract_metadata_with_llm(
-                &config,
+                &llm_config,
                 &pool,
-                &result.display_name,
-                &result.metadata,
+                &file_name,
+                &merged_metadata,
                 content.as_deref(),
-                category_name,
+                &category_names,
+                &tag_names,
+                &author_names,
             )
             .await
             {
                 Ok(llm_result) => {
                     if let Some(name) = llm_result.display_name {
-                        result.display_name = name;
-                    }
-                    if let Some(category) = &llm_result.category {
-                        result.category_id = llm_category_map.get(&category.to_lowercase()).copied();
-                    }
-                    for author in &llm_result.authors {
-                        if let Some(&id) = llm_author_map.get(&author.to_lowercase()) {
-                            if !result.author_ids.contains(&id) {
-                                result.author_ids.push(id);
-                            }
-                        } else if !result.unresolved_author_names.contains(author) {
-                            result.unresolved_author_names.push(author.clone());
+                        if !name.is_empty() {
+                            final_display_name = name;
                         }
                     }
+                    if let Some(cat) = &llm_result.category {
+                        category_id = category_map.get(&cat.to_lowercase()).copied();
+                    }
+                    if let Some(p) = llm_result.progress {
+                        if !p.is_empty() {
+                            progress_val = Some(p);
+                        }
+                    }
+
+                    for author in &llm_result.authors {
+                        if let Some(&id) = author_map.get(&author.to_lowercase()) {
+                            if !author_ids.contains(&id) {
+                                author_ids.push(id);
+                            }
+                        } else if !unresolved_author_names.contains(author) {
+                            unresolved_author_names.push(author.clone());
+                        }
+                    }
+
                     for tag in &llm_result.tags {
-                        result.metadata.push(ExtractedField {
-                            key: "suggested_tag".to_string(),
-                            value: tag.clone(),
-                            data_type: "text".to_string(),
-                        });
+                        if let Some(&id) = tag_map.get(&tag.to_lowercase()) {
+                            if !tag_ids.contains(&id) {
+                                tag_ids.push(id);
+                            }
+                        } else if !suggested_tags.contains(tag) {
+                            suggested_tags.push(tag.clone());
+                        }
                     }
-                    if let Some(desc) = llm_result.description {
-                        result.metadata.push(ExtractedField {
-                            key: "description".to_string(),
-                            value: desc,
-                            data_type: "text".to_string(),
-                        });
-                    }
-                    if let Some(val) = llm_result.isbn {
-                        result.metadata.push(ExtractedField {
-                            key: "isbn".to_string(),
-                            value: val,
-                            data_type: "text".to_string(),
-                        });
-                    }
-                    if let Some(val) = llm_result.publisher {
-                        result.metadata.push(ExtractedField {
-                            key: "publisher".to_string(),
-                            value: val,
-                            data_type: "text".to_string(),
-                        });
-                    }
-                    if let Some(val) = llm_result.year {
-                        result.metadata.push(ExtractedField {
-                            key: "year".to_string(),
-                            value: val,
-                            data_type: "text".to_string(),
-                        });
-                    }
-                    if let Some(val) = llm_result.language {
-                        result.metadata.push(ExtractedField {
-                            key: "language".to_string(),
-                            value: val,
-                            data_type: "text".to_string(),
-                        });
-                    }
-                    if let Some(val) = llm_result.series {
-                        result.metadata.push(ExtractedField {
-                            key: "series".to_string(),
-                            value: val,
-                            data_type: "text".to_string(),
-                        });
-                    }
-                    if let Some(val) = llm_result.volume {
-                        result.metadata.push(ExtractedField {
-                            key: "volume".to_string(),
-                            value: val,
-                            data_type: "text".to_string(),
-                        });
-                    }
-                    if let Some(val) = llm_result.issue_number {
-                        result.metadata.push(ExtractedField {
-                            key: "issue_number".to_string(),
-                            value: val,
-                            data_type: "text".to_string(),
-                        });
+
+                    let llm_fields = [
+                        ("description", llm_result.description),
+                        ("series", llm_result.series),
+                        ("volume", llm_result.volume),
+                        ("issue_number", llm_result.issue_number),
+                        ("year", llm_result.year),
+                        ("language", llm_result.language),
+                    ];
+                    for (key, val) in llm_fields {
+                        if let Some(v) = val {
+                            if !v.is_empty() {
+                                if let Some(existing) = final_metadata.iter_mut().find(|f| f.key == key) {
+                                    existing.value = v;
+                                } else {
+                                    final_metadata.push(ExtractedField {
+                                        key: key.to_string(),
+                                        value: v,
+                                        data_type: "text".to_string(),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "LLM enhancement failed for {}: {}",
-                        result.file_name, e
-                    );
+                    eprintln!("LLM extraction failed for {}: {}", file_name, e);
                 }
+            }
+        }
+
+        results.push(FilePreparedImport {
+            path: path_str,
+            file_name,
+            display_name: final_display_name,
+            category_id,
+            tag_ids,
+            author_ids,
+            metadata: final_metadata,
+            unresolved_author_names,
+            cover_data,
+            cover_mime_type,
+            progress: progress_val,
+            suggested_tags,
+            duplicate_of: None,
+            batch_duplicate_group: None,
+        });
+    }
+
+    // Phase 3: Duplicate detection
+    detect_duplicates(&pool, &mut results).await?;
+
+    Ok(results)
+}
+
+async fn detect_duplicates(
+    pool: &sqlx::SqlitePool,
+    results: &mut Vec<FilePreparedImport>,
+) -> Result<(), String> {
+    use crate::commands::FileEntry;
+
+    let existing_files: Vec<FileEntry> = sqlx::query_as(
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("Failed to load existing files: {e}"))?;
+
+    for result in results.iter_mut() {
+        let normalized_name = result.display_name.trim().to_lowercase();
+
+        if let Some(existing) = existing_files.iter().find(|f| f.display_name.trim().to_lowercase() == normalized_name) {
+            let recommendation = match (&result.progress, &existing.progress) {
+                (Some(new_p), Some(old_p)) if new_p >= old_p => DuplicateAction::Replace,
+                (Some(_), None) => DuplicateAction::Replace,
+                (None, Some(_)) => DuplicateAction::Skip,
+                _ => DuplicateAction::Replace,
+            };
+
+            result.duplicate_of = Some(DuplicateInfo {
+                existing_file_id: existing.id,
+                existing_display_name: existing.display_name.clone(),
+                existing_progress: existing.progress.clone(),
+                recommendation,
+            });
+        }
+    }
+
+    let mut name_groups: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    for (idx, result) in results.iter().enumerate() {
+        let normalized = result.display_name.trim().to_lowercase();
+        name_groups.entry(normalized).or_default().push(idx);
+    }
+
+    for (name, indices) in &name_groups {
+        if indices.len() > 1 {
+            let group_id = format!("batch_{}", name);
+            for &idx in indices {
+                results[idx].batch_duplicate_group = Some(group_id.clone());
             }
         }
     }
 
-    Ok(results)
+    Ok(())
 }
 
 #[cfg(test)]
