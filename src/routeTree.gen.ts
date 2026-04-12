@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TagsRouteImport } from './routes/tags'
 import { Route as PromptsRouteImport } from './routes/prompts'
+import { Route as CategoriesRouteImport } from './routes/categories'
 import { Route as AuthorsRouteImport } from './routes/authors'
 import { Route as IndexRouteImport } from './routes/index'
 
@@ -22,6 +23,11 @@ const TagsRoute = TagsRouteImport.update({
 const PromptsRoute = PromptsRouteImport.update({
   id: '/prompts',
   path: '/prompts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CategoriesRoute = CategoriesRouteImport.update({
+  id: '/categories',
+  path: '/categories',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthorsRoute = AuthorsRouteImport.update({
@@ -38,12 +44,14 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/authors': typeof AuthorsRoute
+  '/categories': typeof CategoriesRoute
   '/prompts': typeof PromptsRoute
   '/tags': typeof TagsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/authors': typeof AuthorsRoute
+  '/categories': typeof CategoriesRoute
   '/prompts': typeof PromptsRoute
   '/tags': typeof TagsRoute
 }
@@ -51,20 +59,22 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/authors': typeof AuthorsRoute
+  '/categories': typeof CategoriesRoute
   '/prompts': typeof PromptsRoute
   '/tags': typeof TagsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/authors' | '/prompts' | '/tags'
+  fullPaths: '/' | '/authors' | '/categories' | '/prompts' | '/tags'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/authors' | '/prompts' | '/tags'
-  id: '__root__' | '/' | '/authors' | '/prompts' | '/tags'
+  to: '/' | '/authors' | '/categories' | '/prompts' | '/tags'
+  id: '__root__' | '/' | '/authors' | '/categories' | '/prompts' | '/tags'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthorsRoute: typeof AuthorsRoute
+  CategoriesRoute: typeof CategoriesRoute
   PromptsRoute: typeof PromptsRoute
   TagsRoute: typeof TagsRoute
 }
@@ -83,6 +93,13 @@ declare module '@tanstack/react-router' {
       path: '/prompts'
       fullPath: '/prompts'
       preLoaderRoute: typeof PromptsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/categories': {
+      id: '/categories'
+      path: '/categories'
+      fullPath: '/categories'
+      preLoaderRoute: typeof CategoriesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/authors': {
@@ -105,6 +122,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthorsRoute: AuthorsRoute,
+  CategoriesRoute: CategoriesRoute,
   PromptsRoute: PromptsRoute,
   TagsRoute: TagsRoute,
 }
