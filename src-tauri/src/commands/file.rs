@@ -824,3 +824,46 @@ pub struct FileStatusUpdate {
 pub struct FileCheckStatusResponse {
     pub updated: Vec<FileStatusUpdate>,
 }
+
+#[tauri::command]
+pub async fn file_replace(
+    app: AppHandle,
+    existing_file_id: i64,
+    path: String,
+    display_name: String,
+    category_id: Option<i64>,
+    tag_ids: Option<Vec<i64>>,
+    author_ids: Option<Vec<i64>>,
+    metadata: Option<Vec<MetadataInput>>,
+    progress: Option<String>,
+    cover_data: Option<Vec<u8>>,
+    cover_mime_type: Option<String>,
+) -> Result<FileCreateResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    let existing: Option<(String, bool)> = sqlx::query_as(
+        "SELECT path, in_storage FROM files WHERE id = ?",
+    )
+    .bind(existing_file_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some((existing_path, in_storage)) = existing {
+        if in_storage {
+            let old_path = PathBuf::from(&existing_path);
+            if old_path.exists() {
+                let _ = fs::remove_file(&old_path);
+            }
+        }
+
+        sqlx::query("DELETE FROM files WHERE id = ?")
+            .bind(existing_file_id)
+            .execute(&pool)
+            .await
+            .map_err(|e| format!("Failed to delete existing file: {e}"))?;
+    }
+
+    file_create(app, path, display_name, category_id, tag_ids, author_ids, metadata, progress, cover_data, cover_mime_type).await
+}

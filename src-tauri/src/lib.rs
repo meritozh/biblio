@@ -22,6 +22,7 @@ pub fn run() {
             commands::file::file_move_category,
             commands::file::file_search,
             commands::file::file_check_status,
+            commands::file::file_replace,
             commands::category::category_list,
             commands::category::category_get,
             commands::category::category_create,
