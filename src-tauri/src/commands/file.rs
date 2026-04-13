@@ -450,53 +450,90 @@ pub async fn file_create(
     }
 
     // Rename file for novels: "<name> <progress> <author>.ext"
-    if category_name.as_deref() == Some("Novels") {
-        let current_path = PathBuf::from(&final_path_str);
-        let ext = current_path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| format!(".{}", e))
-            .unwrap_or_default();
+    sync_novel_filename(&pool, file_id, category_name.as_deref()).await;
 
-        // Get author names for this file
-        let author_names: Vec<(String,)> = sqlx::query_as(
-            "SELECT a.name FROM authors a JOIN file_authors fa ON a.id = fa.author_id WHERE fa.file_id = ?"
-        )
-        .bind(file_id)
-        .fetch_all(&pool)
-        .await
+    Ok(FileCreateResponse { id: file_id })
+}
+
+/// Rename a novel file to "<name> <progress> <author>.ext"
+/// Only applies when category is "Novels". No-op for other categories.
+/// Pass category_name = None to auto-detect from DB.
+pub async fn sync_novel_filename(pool: &sqlx::SqlitePool, file_id: i64, category_name: Option<&str>) {
+    // Auto-detect category if not provided
+    let category_name = match category_name {
+        Some(name) => Some(name.to_string()),
+        None => {
+            let result: Option<(String,)> = sqlx::query_as(
+                "SELECT c.name FROM categories c JOIN files f ON f.category_id = c.id WHERE f.id = ?"
+            )
+            .bind(file_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+            result.map(|(n,)| n)
+        }
+    };
+    let category_name = category_name.as_deref();
+    if category_name != Some("Novels") {
+        // Also check from DB if category_name not provided
+        return;
+    }
+
+    let file_info: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT path, display_name, progress FROM files WHERE id = ?"
+    )
+    .bind(file_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+
+    let Some((current_path_str, display_name, progress)) = file_info else { return };
+    let current_path = PathBuf::from(&current_path_str);
+
+    let ext = current_path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{}", e))
         .unwrap_or_default();
 
-        let mut parts = vec![validated_name.clone()];
-        if let Some(p) = &progress {
-            if !p.is_empty() {
-                parts.push(p.clone());
-            }
-        }
-        if !author_names.is_empty() {
-            let names: Vec<&str> = author_names.iter().map(|(n,)| n.as_str()).collect();
-            parts.push(names.join(", "));
-        }
+    let author_names: Vec<(String,)> = sqlx::query_as(
+        "SELECT a.name FROM authors a JOIN file_authors fa ON a.id = fa.author_id WHERE fa.file_id = ?"
+    )
+    .bind(file_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
 
-        let new_filename = format!("{}{}", parts.join(" "), ext);
-        // Sanitize: remove characters invalid in filenames
-        let new_filename: String = new_filename.chars().filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')).collect();
+    let mut parts = vec![display_name];
+    if let Some(p) = &progress {
+        if !p.is_empty() {
+            parts.push(p.clone());
+        }
+    }
+    if !author_names.is_empty() {
+        let names: Vec<&str> = author_names.iter().map(|(n,)| n.as_str()).collect();
+        parts.push(names.join(", "));
+    }
 
-        if let Some(parent) = current_path.parent() {
-            let new_path = get_unique_destination(&parent.join(&new_filename));
-            if new_path != current_path {
-                if fs::rename(&current_path, &new_path).is_ok() {
-                    let new_path_str = new_path.to_string_lossy().to_string();
-                    let _ = sqlx::query("UPDATE files SET path = ? WHERE id = ?")
-                        .bind(&new_path_str)
-                        .bind(file_id)
-                        .execute(&pool)
-                        .await;
-                }
+    let new_filename = format!("{}{}", parts.join(" "), ext);
+    let new_filename: String = new_filename.chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+
+    if let Some(parent) = current_path.parent() {
+        let new_path = get_unique_destination(&parent.join(&new_filename));
+        if new_path != current_path {
+            if fs::rename(&current_path, &new_path).is_ok() {
+                let new_path_str = new_path.to_string_lossy().to_string();
+                let _ = sqlx::query("UPDATE files SET path = ? WHERE id = ?")
+                    .bind(&new_path_str)
+                    .bind(file_id)
+                    .execute(pool)
+                    .await;
             }
         }
     }
-
-    Ok(FileCreateResponse { id: file_id })
 }
 
 #[derive(Serialize)]
@@ -597,6 +634,17 @@ pub async fn file_update(
         }
         (None, None, None) => {}
     }
+
+    // Sync novel filename after metadata changes
+    let cat_name: Option<(String,)> = sqlx::query_as(
+        "SELECT c.name FROM categories c JOIN files f ON f.category_id = c.id WHERE f.id = ?"
+    )
+    .bind(id)
+    .fetch_optional(&pool)
+    .await
+    .unwrap_or(None);
+
+    sync_novel_filename(&pool, id, cat_name.as_ref().map(|(n,)| n.as_str())).await;
 
     Ok(FileUpdateResponse { success: true })
 }

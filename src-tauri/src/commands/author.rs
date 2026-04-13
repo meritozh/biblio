@@ -186,6 +186,8 @@ pub async fn author_assign(
             .map_err(|e| e.to_string())?;
     }
 
+    super::file::sync_novel_filename(&pool, file_id, None).await;
+
     Ok(AuthorAssignResponse { success: true })
 }
 
@@ -211,6 +213,8 @@ pub async fn author_unassign(
             .await
             .map_err(|e| e.to_string())?;
     }
+
+    super::file::sync_novel_filename(&pool, file_id, None).await;
 
     Ok(AuthorUnassignResponse { success: true })
 }
@@ -245,6 +249,8 @@ pub async fn author_set(
             .await
             .map_err(|e| e.to_string())?;
     }
+
+    super::file::sync_novel_filename(&pool, file_id, None).await;
 
     Ok(AuthorSetResponse { success: true })
 }
