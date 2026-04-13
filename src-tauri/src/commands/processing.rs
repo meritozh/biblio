@@ -734,7 +734,7 @@ pub async fn file_prepare_import(
             // Content sampling for .txt files
             let mime = known_mime.as_deref().unwrap_or("");
             let content = if mime == "text/plain" || file_path.extension().and_then(|e| e.to_str()) == Some("txt") {
-                sample_text_content(file_path, 5, 1000)
+                sample_text_content(file_path, 3, 500)
             } else {
                 None
             };
