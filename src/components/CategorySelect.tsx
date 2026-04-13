@@ -51,6 +51,7 @@ export function CategorySelect({
       const newCategory: Category = {
         id: result.id,
         name: newCategoryName.trim(),
+        description: null,
         icon: null,
         is_default: false,
         folder_name: null,

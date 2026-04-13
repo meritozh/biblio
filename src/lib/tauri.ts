@@ -111,16 +111,17 @@ export async function categoryGet(id: number): Promise<Category> {
   return invoke('category_get', { id });
 }
 
-export async function categoryCreate(name: string, icon?: string): Promise<{ id: number }> {
-  return invoke('category_create', { name, icon: icon || null });
+export async function categoryCreate(name: string, icon?: string, description?: string): Promise<{ id: number }> {
+  return invoke('category_create', { name, icon: icon || null, description: description || null });
 }
 
 export async function categoryUpdate(
   id: number,
   name?: string,
-  icon?: string
+  icon?: string,
+  description?: string
 ): Promise<{ success: boolean }> {
-  return invoke('category_update', { id, name, icon: icon || null });
+  return invoke('category_update', { id, name, icon: icon || null, description: description ?? null });
 }
 
 export async function categoryDelete(

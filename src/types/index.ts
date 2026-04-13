@@ -4,6 +4,7 @@ export type MetadataType = 'text' | 'number' | 'date' | 'boolean';
 export interface Category {
   id: number;
   name: string;
+  description: string | null;
   icon: string | null;
   is_default: boolean;
   folder_name: string | null;

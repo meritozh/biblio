@@ -42,9 +42,11 @@ function CategoriesPage() {
   const [loading, setLoading] = useState(true);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategoryDescription, setNewCategoryDescription] = useState('');
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
+  const [editDescription, setEditDescription] = useState('');
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingCategory, setDeletingCategory] = useState<Category | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -64,9 +66,10 @@ function CategoriesPage() {
     if (!newCategoryName.trim()) return;
     setSaving(true);
     try {
-      await categoryCreate(newCategoryName.trim());
+      await categoryCreate(newCategoryName.trim(), undefined, newCategoryDescription.trim() || undefined);
       setCreateDialogOpen(false);
       setNewCategoryName('');
+      setNewCategoryDescription('');
       void loadCategories();
     } catch (error) {
       console.error('Failed to create category:', error);
@@ -78,14 +81,16 @@ function CategoriesPage() {
   const handleStartEdit = (category: Category) => {
     setEditingId(category.id);
     setEditName(category.name);
+    setEditDescription(category.description ?? '');
   };
 
   const handleSaveEdit = async () => {
     if (!editingId || !editName.trim()) return;
     try {
-      await categoryUpdate(editingId, editName.trim());
+      await categoryUpdate(editingId, editName.trim(), undefined, editDescription.trim() || undefined);
       setEditingId(null);
       setEditName('');
+      setEditDescription('');
       void loadCategories();
     } catch (error) {
       console.error('Failed to update category:', error);
@@ -96,6 +101,7 @@ function CategoriesPage() {
   const handleCancelEdit = () => {
     setEditingId(null);
     setEditName('');
+    setEditDescription('');
   };
 
   const handleDeleteClick = (category: Category) => {
@@ -159,6 +165,7 @@ function CategoriesPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Name</TableHead>
+                    <TableHead>Description</TableHead>
                     <TableHead className="w-[150px]">Folder</TableHead>
                     <TableHead className="w-[100px]">Actions</TableHead>
                   </TableRow>
@@ -166,7 +173,7 @@ function CategoriesPage() {
                 <TableBody>
                   {categories.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={3} className="h-24 text-center">
+                      <TableCell colSpan={4} className="h-24 text-center">
                         No categories yet. Click "Add Category" to create one.
                       </TableCell>
                     </TableRow>
@@ -193,6 +200,20 @@ function CategoriesPage() {
                               </>
                             )}
                           </div>
+                        </TableCell>
+                        <TableCell>
+                          {editingId === category.id ? (
+                            <Input
+                              value={editDescription}
+                              onChange={(e) => setEditDescription(e.target.value)}
+                              className="h-8 w-full"
+                              placeholder="Short description for LLM"
+                            />
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              {category.description || '-'}
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell>
                           <span className="text-xs text-muted-foreground font-mono">
@@ -248,15 +269,25 @@ function CategoriesPage() {
             <DialogTitle>Create Category</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
-            <Input
-              value={newCategoryName}
-              onChange={(e) => setNewCategoryName(e.target.value)}
-              placeholder="Category name"
-              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-            />
-            <p className="text-xs text-muted-foreground">
-              A storage folder will be automatically created for this category.
-            </p>
+            <div>
+              <label className="text-sm font-medium mb-2 block">Name</label>
+              <Input
+                value={newCategoryName}
+                onChange={(e) => setNewCategoryName(e.target.value)}
+                placeholder="Category name"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium mb-2 block">Description</label>
+              <Input
+                value={newCategoryDescription}
+                onChange={(e) => setNewCategoryDescription(e.target.value)}
+                placeholder="e.g., Chinese web novels, light novels, manga..."
+              />
+              <p className="text-xs text-muted-foreground mt-1.5">
+                Helps the LLM pick the right category during import.
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>

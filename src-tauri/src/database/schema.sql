@@ -2,6 +2,7 @@
 CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
+    description TEXT,
     icon TEXT,
     is_default BOOLEAN DEFAULT 0,
     folder_name TEXT,

@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 pub struct Category {
     pub id: i64,
     pub name: String,
+    pub description: Option<String>,
     pub icon: Option<String>,
     pub is_default: bool,
     pub folder_name: Option<String>,

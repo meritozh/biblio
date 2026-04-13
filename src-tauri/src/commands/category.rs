@@ -16,7 +16,7 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
 pub async fn category_list(app: AppHandle) -> Result<Vec<Category>, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-    sqlx::query_as("SELECT id, name, icon, is_default, folder_name, created_at FROM categories ORDER BY name")
+    sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, created_at FROM categories ORDER BY name")
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())
@@ -26,7 +26,7 @@ pub async fn category_list(app: AppHandle) -> Result<Vec<Category>, String> {
 pub async fn category_get(app: AppHandle, id: i64) -> Result<Category, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-    sqlx::query_as("SELECT id, name, icon, is_default, folder_name, created_at FROM categories WHERE id = ?")
+    sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, created_at FROM categories WHERE id = ?")
         .bind(id)
         .fetch_optional(&pool)
         .await
@@ -39,6 +39,7 @@ pub async fn category_create(
     app: AppHandle,
     name: String,
     icon: Option<String>,
+    description: Option<String>,
 ) -> Result<CategoryCreateResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
@@ -59,8 +60,9 @@ pub async fn category_create(
     let base_folder = sanitize_folder_name(&validated_name);
     let folder_name = get_unique_folder_name(&pool, &base_folder).await?;
 
-    let result = sqlx::query("INSERT INTO categories (name, icon, folder_name) VALUES (?, ?, ?)")
+    let result = sqlx::query("INSERT INTO categories (name, description, icon, folder_name) VALUES (?, ?, ?, ?)")
         .bind(&validated_name)
+        .bind(&description)
         .bind(&icon)
         .bind(&folder_name)
         .execute(&pool)
@@ -106,6 +108,7 @@ pub async fn category_update(
     id: i64,
     name: Option<String>,
     icon: Option<String>,
+    description: Option<String>,
 ) -> Result<CategoryUpdateResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
@@ -188,6 +191,15 @@ pub async fn category_update(
     if let Some(i) = icon {
         sqlx::query("UPDATE categories SET icon = ? WHERE id = ?")
             .bind(&i)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    if let Some(d) = description {
+        sqlx::query("UPDATE categories SET description = ? WHERE id = ?")
+            .bind(&d)
             .bind(id)
             .execute(&pool)
             .await

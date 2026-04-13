@@ -632,7 +632,7 @@ pub async fn file_prepare_import(
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
     let categories: Vec<Category> = sqlx::query_as(
-        "SELECT id, name, icon, is_default, folder_name, created_at FROM categories",
+        "SELECT id, name, description, icon, is_default, folder_name, created_at FROM categories",
     )
     .fetch_all(&pool)
     .await
@@ -667,7 +667,12 @@ pub async fn file_prepare_import(
         .map(|t| (t.name.to_lowercase(), t.id))
         .collect();
 
-    let category_names: Vec<String> = categories.iter().map(|c| c.name.clone()).collect();
+    let category_names: Vec<String> = categories.iter().map(|c| {
+        match &c.description {
+            Some(desc) if !desc.is_empty() => format!("{} ({})", c.name, desc),
+            _ => c.name.clone(),
+        }
+    }).collect();
     let tag_names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
     let author_names: Vec<String> = authors.iter().map(|a| a.name.clone()).collect();
 
