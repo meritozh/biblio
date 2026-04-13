@@ -1,5 +1,6 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { StoragePathSetting } from './StoragePathSetting';
+import { ImportModeSetting } from './ImportModeSetting';
 import { ThemeSetting } from './ThemeSetting';
 import { AiSetting } from './AiSetting';
 import { Separator } from '@/components/ui/separator';
@@ -20,6 +21,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           <ThemeSetting />
           <Separator />
           <StoragePathSetting />
+          <Separator />
+          <ImportModeSetting />
           <Separator />
           <AiSetting />
         </div>

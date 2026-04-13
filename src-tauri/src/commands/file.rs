@@ -47,6 +47,28 @@ fn get_unique_destination(dest: &std::path::Path) -> PathBuf {
     }
 }
 
+/// Copy a file to destination
+/// Returns the final destination path
+fn copy_file(source: &std::path::Path, dest: &std::path::Path) -> Result<PathBuf, String> {
+    let final_dest = get_unique_destination(dest);
+
+    fs::copy(source, &final_dest)
+        .map_err(|e| {
+            let err_str = e.to_string().to_lowercase();
+            if err_str.contains("permission denied") {
+                "PERMISSION_DENIED".to_string()
+            } else if err_str.contains("disk full") || err_str.contains("no space") {
+                "DISK_FULL".to_string()
+            } else if err_str.contains("being used") || err_str.contains("locked") {
+                "FILE_LOCKED".to_string()
+            } else {
+                format!("Failed to copy file: {}", e)
+            }
+        })?;
+
+    Ok(final_dest)
+}
+
 /// Move a file, handling cross-drive moves
 /// Returns the final destination path
 fn move_file(source: &std::path::Path, dest: &std::path::Path) -> Result<PathBuf, String> {
@@ -333,8 +355,24 @@ pub async fn file_create(
         .ok_or("Invalid filename")?;
     let dest_path = dest_folder.join(filename);
 
-    // Move the file
-    let final_path = move_file(&source_canonical, &dest_path)?;
+    // Check import mode setting
+    let import_mode: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM app_settings WHERE key = 'import_mode'"
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let use_copy = import_mode
+        .map(|(v,)| v == "copy")
+        .unwrap_or(false);
+
+    // Move or copy the file based on setting
+    let final_path = if use_copy {
+        copy_file(&source_canonical, &dest_path)?
+    } else {
+        move_file(&source_canonical, &dest_path)?
+    };
     let final_path_str = final_path.to_string_lossy().to_string();
 
     // Insert into database with in_storage=true
