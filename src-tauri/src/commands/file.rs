@@ -322,7 +322,8 @@ pub async fn file_create(
         return Err("SOURCE_ALREADY_IN_STORAGE".to_string());
     }
 
-    // Determine destination folder
+    // Determine destination folder and category name
+    let mut category_name: Option<String> = None;
     let folder_name = if let Some(cat_id) = category_id {
         // Get category's folder_name, computing if NULL
         let cat_result: Option<(Option<String>, String)> = sqlx::query_as(
@@ -334,8 +335,15 @@ pub async fn file_create(
         .map_err(|e| e.to_string())?;
 
         match cat_result {
-            Some((Some(folder), _)) => folder,
-            Some((None, name)) => sanitize_folder_name(&name),
+            Some((Some(folder), name)) => {
+                category_name = Some(name);
+                folder
+            }
+            Some((None, name)) => {
+                let folder = sanitize_folder_name(&name);
+                category_name = Some(name);
+                folder
+            }
             None => return Err("CATEGORY_NOT_FOUND".to_string()),
         }
     } else {
@@ -439,6 +447,53 @@ pub async fn file_create(
         .execute(&pool)
         .await
         .map_err(|e| format!("Failed to save cover: {}", e))?;
+    }
+
+    // Rename file for novels: "<name> <progress> <author>.ext"
+    if category_name.as_deref() == Some("Novels") {
+        let current_path = PathBuf::from(&final_path_str);
+        let ext = current_path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| format!(".{}", e))
+            .unwrap_or_default();
+
+        // Get author names for this file
+        let author_names: Vec<(String,)> = sqlx::query_as(
+            "SELECT a.name FROM authors a JOIN file_authors fa ON a.id = fa.author_id WHERE fa.file_id = ?"
+        )
+        .bind(file_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+
+        let mut parts = vec![validated_name.clone()];
+        if let Some(p) = &progress {
+            if !p.is_empty() {
+                parts.push(p.clone());
+            }
+        }
+        if !author_names.is_empty() {
+            let names: Vec<&str> = author_names.iter().map(|(n,)| n.as_str()).collect();
+            parts.push(names.join(", "));
+        }
+
+        let new_filename = format!("{}{}", parts.join(" "), ext);
+        // Sanitize: remove characters invalid in filenames
+        let new_filename: String = new_filename.chars().filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')).collect();
+
+        if let Some(parent) = current_path.parent() {
+            let new_path = get_unique_destination(&parent.join(&new_filename));
+            if new_path != current_path {
+                if fs::rename(&current_path, &new_path).is_ok() {
+                    let new_path_str = new_path.to_string_lossy().to_string();
+                    let _ = sqlx::query("UPDATE files SET path = ? WHERE id = ?")
+                        .bind(&new_path_str)
+                        .bind(file_id)
+                        .execute(&pool)
+                        .await;
+                }
+            }
+        }
     }
 
     Ok(FileCreateResponse { id: file_id })
