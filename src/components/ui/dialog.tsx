@@ -32,11 +32,15 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+>(({ className, children, onInteractOutside, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay>
       <DialogPrimitive.Content
         ref={ref}
+        onInteractOutside={(e) => {
+          e.preventDefault();
+          onInteractOutside?.(e);
+        }}
         className={cn(
           'relative z-50 grid w-full max-w-lg gap-4 bg-background p-6 shadow-lg rounded-xl',
           'data-[state=open]:animate-in data-[state=closed]:animate-out',
