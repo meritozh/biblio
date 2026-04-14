@@ -28,4 +28,5 @@ infer = "0.19"
 lopdf = "0.40"
 kamadak-exif = "0.6"
 reqwest = { version = "0.12", features = ["json"] }
+rig-core = "0.33"
 zip = "2"
