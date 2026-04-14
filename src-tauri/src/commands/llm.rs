@@ -167,7 +167,7 @@ async fn chat_completion(
                 content: user.to_string(),
             },
         ],
-        temperature: 0.1,
+        temperature: 0.0,
         max_tokens,
     };
 
@@ -232,8 +232,8 @@ pub async fn extract_metadata_with_llm(
 
     let system = format!(
         "{}\n\n\
-        Respond with ONLY a JSON object matching this schema:\n\
-        {{\"display_name\":\"string|null\",\"category\":\"string|null\",\"authors\":[\"string\"],\"tags\":[\"string\"],\"description\":\"string|null\",\"progress\":\"string|null\",\"series\":\"string|null\",\"volume\":\"string|null\",\"issue_number\":\"string|null\",\"year\":\"string|null\",\"language\":\"string|null\"}}",
+        Do NOT think or reason. Output ONLY a JSON object, nothing else.\n\
+        Schema: {{\"display_name\":\"string|null\",\"category\":\"string|null\",\"authors\":[\"string\"],\"tags\":[\"string\"],\"description\":\"string|null\",\"progress\":\"string|null\",\"series\":\"string|null\",\"volume\":\"string|null\",\"issue_number\":\"string|null\",\"year\":\"string|null\",\"language\":\"string|null\"}}",
         preamble
     );
 
