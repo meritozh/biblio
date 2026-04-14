@@ -250,7 +250,7 @@ pub async fn extract_metadata_with_llm(
         input.push_str(&format!("\nFile content samples:\n{}\n", content));
     }
 
-    let response = chat_completion(config, &system, &input, 4096).await?;
+    let response = chat_completion(config, &system, &input, 2048).await?;
 
     // Extract JSON from response — handles tool_call tags, code blocks, plain JSON
     let json_str = extract_json(&response);
