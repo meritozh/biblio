@@ -49,7 +49,7 @@ pub struct LlmUnifiedMetadata {
     pub language: Option<String>,
 }
 
-/// JSON schema for structured output — LM Studio enforces this via grammar
+/// JSON schema for structured output (grammar-constrained by LM Studio)
 fn metadata_json_schema() -> serde_json::Value {
     json!({
         "name": "metadata",
@@ -76,7 +76,6 @@ fn metadata_json_schema() -> serde_json::Value {
     })
 }
 
-// Response types — handles both normal and reasoning models
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<ChatChoice>,
@@ -158,8 +157,8 @@ pub async fn llm_config_set(app: tauri::AppHandle, config: LlmConfig) -> Result<
     Ok(())
 }
 
-/// Send chat completion request and extract text from any response field
-async fn chat_complete(
+/// Send chat completion and extract text from content or reasoning_content
+async fn chat_completion(
     config: &LlmConfig,
     body: serde_json::Value,
 ) -> Result<String, String> {
@@ -176,18 +175,18 @@ async fn chat_complete(
 
     if !response.status().is_success() {
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(format!("LLM returned {status}: {text}"));
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("LLM returned {status}: {body}"));
     }
 
-    let resp: ChatResponse = response.json().await
+    let chat: ChatResponse = response.json().await
         .map_err(|e| format!("Failed to parse LLM response: {e}"))?;
 
-    let msg = resp.choices.into_iter().next()
+    let msg = chat.choices.into_iter().next()
         .ok_or("LLM returned no choices")?
         .message;
 
-    // content first, reasoning_content as fallback (reasoning models like QwQ/Qwen3.5)
+    // Prefer content, fall back to reasoning_content (reasoning models)
     msg.content.filter(|s| !s.trim().is_empty())
         .or(msg.reasoning_content)
         .ok_or_else(|| "LLM returned empty response".to_string())
@@ -197,7 +196,7 @@ async fn chat_complete(
 pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String> {
     let config = llm_config_get(app).await?;
 
-    chat_complete(&config, json!({
+    chat_completion(&config, json!({
         "model": config.model,
         "messages": [
             {"role": "system", "content": "Respond with exactly: OK"},
@@ -221,17 +220,19 @@ pub async fn extract_metadata_with_llm(
     let preamble = resolve_preamble(pool, categories, tags, authors).await?;
 
     let mut user_input = format!("File name: {}\n", file_name);
+
     if !existing_metadata.is_empty() {
         user_input.push_str("Existing metadata:\n");
         for field in existing_metadata {
             user_input.push_str(&format!("  {}: {}\n", field.key, field.value));
         }
     }
+
     if let Some(content) = file_content {
         user_input.push_str(&format!("\nFile content samples:\n{}\n", content));
     }
 
-    let text = chat_complete(config, json!({
+    let response = chat_completion(config, json!({
         "model": config.model,
         "messages": [
             {"role": "system", "content": preamble},
@@ -245,17 +246,18 @@ pub async fn extract_metadata_with_llm(
         "max_tokens": 2048
     })).await?;
 
-    // Grammar-constrained output should be valid JSON, but extract defensively
-    let json_str = extract_json(&text);
+    // Extract JSON — handles tool_call tags, code blocks, or plain JSON
+    let json_str = extract_json(&response);
+
     serde_json::from_str(&json_str)
-        .map_err(|e| format!("Failed to parse LLM JSON: {e}\nRaw: {text}"))
+        .map_err(|e| format!("Failed to parse LLM JSON: {e}\nRaw: {response}"))
 }
 
-/// Extract JSON from text, handling tool_call tags, code blocks, extra text
+/// Extract JSON from LLM response, handling various wrapping formats
 fn extract_json(text: &str) -> String {
     let trimmed = text.trim();
 
-    // <tool_call> tags (reasoning models)
+    // <tool_call> tags (reasoning models trained on tool-calling)
     if let Some(start) = trimmed.find("<tool_call>") {
         let inner_start = start + 11;
         let inner_end = trimmed[inner_start..].find("</tool_call>")
@@ -270,7 +272,7 @@ fn extract_json(text: &str) -> String {
         return tool_json.to_string();
     }
 
-    // ```json ... ```
+    // ```json ... ``` blocks
     if let Some(start) = trimmed.find("```json") {
         let json_start = start + 7;
         if let Some(end) = trimmed[json_start..].find("```") {
@@ -278,7 +280,7 @@ fn extract_json(text: &str) -> String {
         }
     }
 
-    // Direct JSON object
+    // Plain JSON object
     if let Some(start) = trimmed.find('{') {
         if let Some(end) = trimmed.rfind('}') {
             return trimmed[start..=end].to_string();
@@ -301,13 +303,32 @@ async fn resolve_preamble(
     .await
     .map_err(|e| e.to_string())?;
 
-    let base = db_prompt.map(|p| p.0).unwrap_or_else(fallback_preamble);
+    let base = if let Some(prompt) = db_prompt {
+        prompt.0
+    } else {
+        fallback_preamble()
+    };
 
-    let cat = if categories.is_empty() { "None yet".into() } else { categories.join(", ") };
-    let tag = if tags.is_empty() { "None yet".into() } else { tags.join(", ") };
-    let aut = if authors.is_empty() { "None yet".into() } else { authors.join(", ") };
+    let categories_str = if categories.is_empty() {
+        "None defined yet".to_string()
+    } else {
+        categories.join(", ")
+    };
+    let tags_str = if tags.is_empty() {
+        "None defined yet".to_string()
+    } else {
+        tags.join(", ")
+    };
+    let authors_str = if authors.is_empty() {
+        "None known yet".to_string()
+    } else {
+        authors.join(", ")
+    };
 
-    Ok(format!("{base}\n\nAvailable categories: {cat}\nExisting tags: {tag}\nExisting authors: {aut}"))
+    Ok(format!(
+        "{}\n\nAvailable categories: {}\nExisting tags: {}\nExisting authors: {}",
+        base, categories_str, tags_str, authors_str
+    ))
 }
 
 fn fallback_preamble() -> String {
@@ -320,12 +341,12 @@ mod tests {
 
     #[test]
     fn test_extract_json_plain() {
-        let input = r#"{"display_name": "test"}"#;
+        let input = r#"{"display_name": "test", "authors": []}"#;
         assert_eq!(extract_json(input), input);
     }
 
     #[test]
-    fn test_extract_json_tool_call() {
+    fn test_extract_json_tool_call_tags() {
         let input = r#"<tool_call>
 {"name": "submit", "arguments": {"display_name": "test", "authors": ["A"]}}
 </tool_call>"#;
@@ -341,8 +362,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_json_surrounded() {
-        let input = "Here:\n{\"display_name\": \"test\"}\nDone.";
+    fn test_extract_json_with_text() {
+        let input = "Here you go:\n{\"display_name\": \"test\"}";
         assert_eq!(extract_json(input), "{\"display_name\": \"test\"}");
     }
 }
