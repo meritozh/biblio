@@ -133,6 +133,7 @@ pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String
 
     let agent = client
         .agent(&config.model)
+        .max_tokens(256)
         .preamble("You are a helpful assistant. Respond with exactly: OK")
         .build();
 
@@ -183,6 +184,7 @@ pub async fn extract_metadata_with_llm(
 
     let extractor = client
         .extractor::<LlmUnifiedMetadata>(&config.model)
+        .max_tokens(2048)
         .preamble(&preamble)
         .build();
 
