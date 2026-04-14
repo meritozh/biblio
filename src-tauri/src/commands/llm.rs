@@ -1,6 +1,6 @@
 use rig::client::CompletionClient;
 use rig::completion::Prompt;
-use rig::providers::openai;
+use rig::providers::anthropic;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -28,7 +28,7 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            base_url: "http://localhost:11434/v1".to_string(),
+            base_url: "http://localhost:1234".to_string(),
             api_key: String::new(),
             model: "llama3.2".to_string(),
         }
@@ -125,7 +125,7 @@ pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String
         config.api_key
     };
 
-    let client = openai::CompletionsClient::builder()
+    let client = anthropic::Client::builder()
         .api_key(api_key)
         .base_url(&config.base_url)
         .build()
@@ -160,7 +160,7 @@ pub async fn extract_metadata_with_llm(
         config.api_key.clone()
     };
 
-    let client = openai::CompletionsClient::builder()
+    let client = anthropic::Client::builder()
         .api_key(api_key)
         .base_url(&config.base_url)
         .build()
