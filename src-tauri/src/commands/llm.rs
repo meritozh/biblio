@@ -1,6 +1,3 @@
-use rig::client::CompletionClient;
-use rig::completion::Prompt;
-use rig::providers::openai;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::Manager;
@@ -52,7 +49,7 @@ pub struct LlmUnifiedMetadata {
     pub language: Option<String>,
 }
 
-/// JSON schema for LlmUnifiedMetadata used by LM Studio structured output
+/// JSON schema for structured output — LM Studio enforces this via grammar
 fn metadata_json_schema() -> serde_json::Value {
     json!({
         "name": "metadata",
@@ -72,10 +69,28 @@ fn metadata_json_schema() -> serde_json::Value {
                 "year": { "type": ["string", "null"] },
                 "language": { "type": ["string", "null"] }
             },
-            "required": ["display_name", "category", "authors", "tags", "description", "progress", "series", "volume", "issue_number", "year", "language"],
+            "required": ["display_name", "category", "authors", "tags", "description",
+                         "progress", "series", "volume", "issue_number", "year", "language"],
             "additionalProperties": false
         }
     })
+}
+
+// Response types — handles both normal and reasoning models
+#[derive(Deserialize)]
+struct ChatResponse {
+    choices: Vec<ChatChoice>,
+}
+
+#[derive(Deserialize)]
+struct ChatChoice {
+    message: ChatMessage,
+}
+
+#[derive(Deserialize)]
+struct ChatMessage {
+    content: Option<String>,
+    reasoning_content: Option<String>,
 }
 
 async fn read_setting(pool: &sqlx::SqlitePool, key: &str) -> Option<String> {
@@ -143,37 +158,54 @@ pub async fn llm_config_set(app: tauri::AppHandle, config: LlmConfig) -> Result<
     Ok(())
 }
 
-fn build_client(config: &LlmConfig) -> Result<openai::CompletionsClient, String> {
-    let api_key = if config.api_key.is_empty() {
-        "dummy".to_string()
-    } else {
-        config.api_key.clone()
-    };
+/// Send chat completion request and extract text from any response field
+async fn chat_complete(
+    config: &LlmConfig,
+    body: serde_json::Value,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
 
-    openai::CompletionsClient::builder()
-        .api_key(api_key)
-        .base_url(&config.base_url)
-        .build()
-        .map_err(|e| format!("Failed to create LLM client: {e}"))
+    let mut req = client.post(&url).json(&body);
+    if !config.api_key.is_empty() {
+        req = req.bearer_auth(&config.api_key);
+    }
+
+    let response = req.send().await
+        .map_err(|e| format!("LLM request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("LLM returned {status}: {text}"));
+    }
+
+    let resp: ChatResponse = response.json().await
+        .map_err(|e| format!("Failed to parse LLM response: {e}"))?;
+
+    let msg = resp.choices.into_iter().next()
+        .ok_or("LLM returned no choices")?
+        .message;
+
+    // content first, reasoning_content as fallback (reasoning models like QwQ/Qwen3.5)
+    msg.content.filter(|s| !s.trim().is_empty())
+        .or(msg.reasoning_content)
+        .ok_or_else(|| "LLM returned empty response".to_string())
 }
 
 #[tauri::command]
 pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String> {
     let config = llm_config_get(app).await?;
-    let client = build_client(&config)?;
 
-    let agent = client
-        .agent(&config.model)
-        .preamble("Respond with exactly: OK")
-        .max_tokens(64)
-        .build();
-
-    let response: String = agent
-        .prompt("Say OK")
-        .await
-        .map_err(|e| format!("LLM connection test failed: {e}"))?;
-
-    Ok(response)
+    chat_complete(&config, json!({
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": "Respond with exactly: OK"},
+            {"role": "user", "content": "Say OK"}
+        ],
+        "temperature": 0.0,
+        "max_tokens": 64
+    })).await
 }
 
 pub async fn extract_metadata_with_llm(
@@ -186,43 +218,74 @@ pub async fn extract_metadata_with_llm(
     tags: &[String],
     authors: &[String],
 ) -> Result<LlmUnifiedMetadata, String> {
-    let client = build_client(config)?;
     let preamble = resolve_preamble(pool, categories, tags, authors).await?;
 
-    let mut input = format!("File name: {}\n", file_name);
-
+    let mut user_input = format!("File name: {}\n", file_name);
     if !existing_metadata.is_empty() {
-        input.push_str("Existing metadata:\n");
+        user_input.push_str("Existing metadata:\n");
         for field in existing_metadata {
-            input.push_str(&format!("  {}: {}\n", field.key, field.value));
+            user_input.push_str(&format!("  {}: {}\n", field.key, field.value));
+        }
+    }
+    if let Some(content) = file_content {
+        user_input.push_str(&format!("\nFile content samples:\n{}\n", content));
+    }
+
+    let text = chat_complete(config, json!({
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": preamble},
+            {"role": "user", "content": user_input}
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": metadata_json_schema()
+        },
+        "temperature": 0.0,
+        "max_tokens": 2048
+    })).await?;
+
+    // Grammar-constrained output should be valid JSON, but extract defensively
+    let json_str = extract_json(&text);
+    serde_json::from_str(&json_str)
+        .map_err(|e| format!("Failed to parse LLM JSON: {e}\nRaw: {text}"))
+}
+
+/// Extract JSON from text, handling tool_call tags, code blocks, extra text
+fn extract_json(text: &str) -> String {
+    let trimmed = text.trim();
+
+    // <tool_call> tags (reasoning models)
+    if let Some(start) = trimmed.find("<tool_call>") {
+        let inner_start = start + 11;
+        let inner_end = trimmed[inner_start..].find("</tool_call>")
+            .map(|e| inner_start + e)
+            .unwrap_or(trimmed.len());
+        let tool_json = trimmed[inner_start..inner_end].trim();
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(tool_json) {
+            if let Some(args) = val.get("arguments") {
+                return args.to_string();
+            }
+        }
+        return tool_json.to_string();
+    }
+
+    // ```json ... ```
+    if let Some(start) = trimmed.find("```json") {
+        let json_start = start + 7;
+        if let Some(end) = trimmed[json_start..].find("```") {
+            return trimmed[json_start..json_start + end].trim().to_string();
         }
     }
 
-    if let Some(content) = file_content {
-        input.push_str(&format!("\nFile content samples:\n{}\n", content));
+    // Direct JSON object
+    if let Some(start) = trimmed.find('{') {
+        if let Some(end) = trimmed.rfind('}') {
+            return trimmed[start..=end].to_string();
+        }
     }
 
-    // Use Rig agent with LM Studio structured output (grammar-guaranteed valid JSON)
-    let agent = client
-        .agent(&config.model)
-        .preamble(&preamble)
-        .max_tokens(2048)
-        .additional_params(json!({
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": metadata_json_schema()
-            }
-        }))
-        .build();
-
-    let response: String = agent
-        .prompt(&input)
-        .await
-        .map_err(|e| format!("LLM extraction failed: {e}"))?;
-
-    // Response is grammar-guaranteed valid JSON in content field
-    serde_json::from_str(&response)
-        .map_err(|e| format!("Failed to parse LLM JSON: {e}\nRaw: {response}"))
+    trimmed.to_string()
 }
 
 async fn resolve_preamble(
@@ -238,34 +301,48 @@ async fn resolve_preamble(
     .await
     .map_err(|e| e.to_string())?;
 
-    let base = if let Some(prompt) = db_prompt {
-        prompt.0
-    } else {
-        fallback_preamble()
-    };
+    let base = db_prompt.map(|p| p.0).unwrap_or_else(fallback_preamble);
 
-    let categories_str = if categories.is_empty() {
-        "None defined yet".to_string()
-    } else {
-        categories.join(", ")
-    };
-    let tags_str = if tags.is_empty() {
-        "None defined yet".to_string()
-    } else {
-        tags.join(", ")
-    };
-    let authors_str = if authors.is_empty() {
-        "None known yet".to_string()
-    } else {
-        authors.join(", ")
-    };
+    let cat = if categories.is_empty() { "None yet".into() } else { categories.join(", ") };
+    let tag = if tags.is_empty() { "None yet".into() } else { tags.join(", ") };
+    let aut = if authors.is_empty() { "None yet".into() } else { authors.join(", ") };
 
-    Ok(format!(
-        "{}\n\nAvailable categories: {}\nExisting tags: {}\nExisting authors: {}",
-        base, categories_str, tags_str, authors_str
-    ))
+    Ok(format!("{base}\n\nAvailable categories: {cat}\nExisting tags: {tag}\nExisting authors: {aut}"))
 }
 
 fn fallback_preamble() -> String {
     "Extract file metadata as JSON. Pick category from the list. Use existing tags/authors when possible. Extract progress if present (chapter number, 完结, 连载中). Use null for unknown fields.".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_json_plain() {
+        let input = r#"{"display_name": "test"}"#;
+        assert_eq!(extract_json(input), input);
+    }
+
+    #[test]
+    fn test_extract_json_tool_call() {
+        let input = r#"<tool_call>
+{"name": "submit", "arguments": {"display_name": "test", "authors": ["A"]}}
+</tool_call>"#;
+        let result = extract_json(input);
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(v["display_name"], "test");
+    }
+
+    #[test]
+    fn test_extract_json_code_block() {
+        let input = "```json\n{\"display_name\": \"test\"}\n```";
+        assert_eq!(extract_json(input), "{\"display_name\": \"test\"}");
+    }
+
+    #[test]
+    fn test_extract_json_surrounded() {
+        let input = "Here:\n{\"display_name\": \"test\"}\nDone.";
+        assert_eq!(extract_json(input), "{\"display_name\": \"test\"}");
+    }
 }
