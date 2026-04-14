@@ -10,7 +10,7 @@ import { Loader2, Eye, EyeOff, Check, AlertCircle } from 'lucide-react';
 
 const defaultConfig: LlmConfig = {
   enabled: false,
-  base_url: 'http://localhost:1234',
+  base_url: 'http://localhost:1234/v1',
   api_key: '',
   model: 'llama3.2',
 };
@@ -106,11 +106,11 @@ export function AiSetting() {
             value={config.base_url}
             onChange={(e) => updateField('base_url', e.target.value)}
             disabled={disabled}
-            placeholder="http://localhost:1234"
+            placeholder="http://localhost:1234/v1"
             className="text-sm"
           />
           <p className="text-xs text-muted-foreground">
-            LM Studio or compatible provider, e.g. http://localhost:1234
+            OpenAI compatible endpoint, e.g. http://localhost:1234/v1
           </p>
         </div>
 
