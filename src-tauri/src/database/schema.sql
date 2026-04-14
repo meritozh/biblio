@@ -93,16 +93,7 @@ CREATE TABLE IF NOT EXISTS prompts (
 -- Unified default prompt
 INSERT INTO prompts (name, content, category, is_default) VALUES (
     'Unified Metadata Extraction',
-    'You are a file metadata extraction assistant. Given a file name, raw metadata signals, and optionally sampled file content, extract structured metadata.
-
-Instructions:
-- Pick the most appropriate category from the available list
-- Prefer existing tags and authors when they match, but suggest new ones if needed
-- For novels/text files, extract reading progress if detectable (e.g. chapter number, 完结, 连载中)
-- Extract the clean display name, removing file extensions and formatting artifacts
-- Identify authors from filename patterns (e.g. "Author - Title") or content
-- Suggest relevant genre/theme tags based on content and title
-- Only fill in fields you can determine. Use null for unknown fields.',
+    'Extract file metadata as JSON. Pick category from the list. Use existing tags/authors when possible. Extract progress if present (chapter number, 完结, 连载中). Use null for unknown fields.',
     NULL,
     1
 );

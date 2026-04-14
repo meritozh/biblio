@@ -76,6 +76,8 @@ struct ChatChoice {
 #[derive(Deserialize)]
 struct ChatResponseMessage {
     content: Option<String>,
+    /// Reasoning models (QwQ, etc.) put their output here
+    reasoning_content: Option<String>,
 }
 
 async fn read_setting(pool: &sqlx::SqlitePool, key: &str) -> Option<String> {
@@ -194,7 +196,12 @@ async fn chat_completion(
     chat_response
         .choices
         .first()
-        .and_then(|c| c.message.content.clone())
+        .and_then(|c| {
+            // Prefer content, fall back to reasoning_content (for reasoning models like QwQ)
+            c.message.content.clone()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| c.message.reasoning_content.clone())
+        })
         .ok_or_else(|| "LLM returned empty response".to_string())
 }
 
@@ -225,21 +232,8 @@ pub async fn extract_metadata_with_llm(
 
     let system = format!(
         "{}\n\n\
-        You MUST respond with ONLY a valid JSON object, no other text. \
-        The JSON must have these fields (use null for unknown):\n\
-        {{\n\
-          \"display_name\": string or null,\n\
-          \"category\": string or null,\n\
-          \"authors\": [string],\n\
-          \"tags\": [string],\n\
-          \"description\": string or null,\n\
-          \"progress\": string or null,\n\
-          \"series\": string or null,\n\
-          \"volume\": string or null,\n\
-          \"issue_number\": string or null,\n\
-          \"year\": string or null,\n\
-          \"language\": string or null\n\
-        }}",
+        Respond with ONLY a JSON object matching this schema:\n\
+        {{\"display_name\":\"string|null\",\"category\":\"string|null\",\"authors\":[\"string\"],\"tags\":[\"string\"],\"description\":\"string|null\",\"progress\":\"string|null\",\"series\":\"string|null\",\"volume\":\"string|null\",\"issue_number\":\"string|null\",\"year\":\"string|null\",\"language\":\"string|null\"}}",
         preamble
     );
 
@@ -256,7 +250,7 @@ pub async fn extract_metadata_with_llm(
         input.push_str(&format!("\nFile content samples:\n{}\n", content));
     }
 
-    let response = chat_completion(config, &system, &input, 2048).await?;
+    let response = chat_completion(config, &system, &input, 4096).await?;
 
     // Extract JSON from response — handle cases where model wraps in markdown code blocks
     let json_str = extract_json(&response);
@@ -342,14 +336,7 @@ async fn resolve_preamble(
 }
 
 fn fallback_preamble() -> String {
-    "You are a file metadata extraction assistant. Given a file name, raw metadata signals, \
-and optionally sampled file content, extract structured metadata.\n\n\
-Instructions:\n\
-- Pick the most appropriate category from the available list\n\
-- Prefer existing tags and authors when they match, but suggest new ones if needed\n\
-- For novels/text files, extract reading progress if detectable (e.g. chapter number, 完结, 连载中)\n\
-- Only fill in fields you can determine. Use null for unknown fields."
-        .to_string()
+    "Extract file metadata as JSON. Pick category from the list. Use existing tags/authors when possible. Extract progress if present (chapter number, 完结, 连载中). Use null for unknown fields.".to_string()
 }
 
 #[cfg(test)]
