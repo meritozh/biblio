@@ -252,46 +252,61 @@ pub async fn extract_metadata_with_llm(
 
     let response = chat_completion(config, &system, &input, 4096).await?;
 
-    // Extract JSON from response — handle cases where model wraps in markdown code blocks
+    // Extract JSON from response — handles tool_call tags, code blocks, plain JSON
     let json_str = extract_json(&response);
 
-    serde_json::from_str(json_str)
+    serde_json::from_str(&json_str)
         .map_err(|e| format!("Failed to parse LLM JSON: {e}\nRaw response: {response}"))
 }
 
-/// Extract JSON from LLM response, handling markdown code blocks and extra text
-fn extract_json(text: &str) -> &str {
+/// Extract JSON from LLM response, handling various wrapping formats
+fn extract_json(text: &str) -> String {
     let trimmed = text.trim();
 
-    // Try to find JSON in ```json ... ``` blocks
+    // Try <tool_call> tags (reasoning models trained on tool-calling)
+    if let Some(start) = trimmed.find("<tool_call>") {
+        let inner_start = start + 11;
+        let inner_end = trimmed[inner_start..].find("</tool_call>")
+            .map(|e| inner_start + e)
+            .unwrap_or(trimmed.len());
+        let tool_json = trimmed[inner_start..inner_end].trim();
+        // Extract "arguments" field from {"name": "submit", "arguments": {...}}
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(tool_json) {
+            if let Some(args) = val.get("arguments") {
+                return args.to_string();
+            }
+        }
+        return tool_json.to_string();
+    }
+
+    // Try ```json ... ``` blocks
     if let Some(start) = trimmed.find("```json") {
         let json_start = start + 7;
         if let Some(end) = trimmed[json_start..].find("```") {
-            return trimmed[json_start..json_start + end].trim();
+            return trimmed[json_start..json_start + end].trim().to_string();
         }
     }
 
-    // Try to find JSON in ``` ... ``` blocks
+    // Try ``` ... ``` blocks
     if let Some(start) = trimmed.find("```") {
         let json_start = start + 3;
-        // Skip optional language identifier on the same line
         let json_start = trimmed[json_start..]
             .find('\n')
             .map(|n| json_start + n + 1)
             .unwrap_or(json_start);
         if let Some(end) = trimmed[json_start..].find("```") {
-            return trimmed[json_start..json_start + end].trim();
+            return trimmed[json_start..json_start + end].trim().to_string();
         }
     }
 
     // Try to find a JSON object directly
     if let Some(start) = trimmed.find('{') {
         if let Some(end) = trimmed.rfind('}') {
-            return &trimmed[start..=end];
+            return trimmed[start..=end].to_string();
         }
     }
 
-    trimmed
+    trimmed.to_string()
 }
 
 async fn resolve_preamble(
@@ -368,5 +383,22 @@ mod tests {
     fn test_extract_json_generic_code_block() {
         let input = "```\n{\"display_name\": \"test\"}\n```";
         assert_eq!(extract_json(input), "{\"display_name\": \"test\"}");
+    }
+
+    #[test]
+    fn test_extract_json_tool_call_tags() {
+        let input = "<tool_call>\n{\"name\": \"submit\", \"arguments\": {\"display_name\": \"test\", \"authors\": [\"Author\"]}}\n</tool_call>";
+        let result = extract_json(input);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["display_name"], "test");
+        assert_eq!(parsed["authors"][0], "Author");
+    }
+
+    #[test]
+    fn test_extract_json_tool_call_without_close_tag() {
+        let input = "<tool_call>\n{\"name\": \"submit\", \"arguments\": {\"display_name\": \"test\"}}";
+        let result = extract_json(input);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["display_name"], "test");
     }
 }
