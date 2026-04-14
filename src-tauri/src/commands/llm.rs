@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::Manager;
 use tauri_plugin_sql::{DbInstances, DbPool};
 
@@ -48,21 +49,7 @@ pub struct LlmUnifiedMetadata {
     pub language: Option<String>,
 }
 
-// OpenAI Chat Completions API types
-#[derive(Serialize)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-    temperature: f32,
-    max_tokens: u32,
-}
-
-#[derive(Serialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
-}
-
+// Chat Completions API types
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<ChatChoice>,
@@ -76,8 +63,18 @@ struct ChatChoice {
 #[derive(Deserialize)]
 struct ChatResponseMessage {
     content: Option<String>,
-    /// Reasoning models (QwQ, etc.) put their output here
     reasoning_content: Option<String>,
+    tool_calls: Option<Vec<ToolCallResponse>>,
+}
+
+#[derive(Deserialize)]
+struct ToolCallResponse {
+    function: ToolCallFunction,
+}
+
+#[derive(Deserialize)]
+struct ToolCallFunction {
+    arguments: String,
 }
 
 async fn read_setting(pool: &sqlx::SqlitePool, key: &str) -> Option<String> {
@@ -145,34 +142,15 @@ pub async fn llm_config_set(app: tauri::AppHandle, config: LlmConfig) -> Result<
     Ok(())
 }
 
-async fn chat_completion(
+/// Send a request to the LLM and extract the response text from any field
+async fn send_llm_request(
     config: &LlmConfig,
-    system: &str,
-    user: &str,
-    max_tokens: u32,
-) -> Result<String, String> {
+    body: serde_json::Value,
+) -> Result<ChatResponseMessage, String> {
     let client = reqwest::Client::new();
-
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
 
-    let request = ChatRequest {
-        model: config.model.clone(),
-        messages: vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: system.to_string(),
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: user.to_string(),
-            },
-        ],
-        temperature: 0.0,
-        max_tokens,
-    };
-
-    let mut req = client.post(&url).json(&request);
-
+    let mut req = client.post(&url).json(&body);
     if !config.api_key.is_empty() {
         req = req.bearer_auth(&config.api_key);
     }
@@ -195,27 +173,60 @@ async fn chat_completion(
 
     chat_response
         .choices
-        .first()
-        .and_then(|c| {
-            // Prefer content, fall back to reasoning_content (for reasoning models like QwQ)
-            c.message.content.clone()
-                .filter(|s| !s.trim().is_empty())
-                .or_else(|| c.message.reasoning_content.clone())
-        })
-        .ok_or_else(|| "LLM returned empty response".to_string())
+        .into_iter()
+        .next()
+        .map(|c| c.message)
+        .ok_or_else(|| "LLM returned no choices".to_string())
 }
 
 #[tauri::command]
 pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String> {
     let config = llm_config_get(app).await?;
 
-    chat_completion(
-        &config,
-        "You are a helpful assistant. Respond with exactly: OK",
-        "Say OK",
-        64,
-    )
-    .await
+    let body = json!({
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": "Respond with exactly: OK"},
+            {"role": "user", "content": "Say OK"}
+        ],
+        "temperature": 0.0,
+        "max_tokens": 64
+    });
+
+    let msg = send_llm_request(&config, body).await?;
+
+    msg.content
+        .filter(|s| !s.trim().is_empty())
+        .or(msg.reasoning_content)
+        .ok_or_else(|| "LLM returned empty response".to_string())
+}
+
+/// The tool schema that tells the model exactly what JSON structure to produce
+fn metadata_tool_schema() -> serde_json::Value {
+    json!([{
+        "type": "function",
+        "function": {
+            "name": "submit",
+            "description": "Submit the extracted file metadata",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "display_name": {"type": ["string", "null"], "description": "Clean title"},
+                    "category": {"type": ["string", "null"], "description": "Pick from available categories"},
+                    "authors": {"type": "array", "items": {"type": "string"}},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "description": {"type": ["string", "null"], "description": "Brief description"},
+                    "progress": {"type": ["string", "null"], "description": "Reading progress, e.g. chapter number, 完结, 连载中"},
+                    "series": {"type": ["string", "null"]},
+                    "volume": {"type": ["string", "null"]},
+                    "issue_number": {"type": ["string", "null"]},
+                    "year": {"type": ["string", "null"]},
+                    "language": {"type": ["string", "null"]}
+                },
+                "required": ["display_name", "category", "authors", "tags"]
+            }
+        }
+    }])
 }
 
 pub async fn extract_metadata_with_llm(
@@ -230,36 +241,71 @@ pub async fn extract_metadata_with_llm(
 ) -> Result<LlmUnifiedMetadata, String> {
     let preamble = resolve_preamble(pool, categories, tags, authors).await?;
 
-    let system = format!(
-        "{}\n\n\
-        Do NOT think or reason. Output ONLY a JSON object, nothing else.\n\
-        Schema: {{\"display_name\":\"string|null\",\"category\":\"string|null\",\"authors\":[\"string\"],\"tags\":[\"string\"],\"description\":\"string|null\",\"progress\":\"string|null\",\"series\":\"string|null\",\"volume\":\"string|null\",\"issue_number\":\"string|null\",\"year\":\"string|null\",\"language\":\"string|null\"}}",
-        preamble
-    );
-
-    let mut input = format!("File name: {}\n", file_name);
+    let mut user_input = format!("File name: {}\n", file_name);
 
     if !existing_metadata.is_empty() {
-        input.push_str("Existing metadata:\n");
+        user_input.push_str("Existing metadata:\n");
         for field in existing_metadata {
-            input.push_str(&format!("  {}: {}\n", field.key, field.value));
+            user_input.push_str(&format!("  {}: {}\n", field.key, field.value));
         }
     }
 
     if let Some(content) = file_content {
-        input.push_str(&format!("\nFile content samples:\n{}\n", content));
+        user_input.push_str(&format!("\nFile content samples:\n{}\n", content));
     }
 
-    let response = chat_completion(config, &system, &input, 2048).await?;
+    let body = json!({
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": preamble},
+            {"role": "user", "content": user_input}
+        ],
+        "tools": metadata_tool_schema(),
+        "tool_choice": {"type": "function", "function": {"name": "submit"}},
+        "temperature": 0.0,
+        "max_tokens": 2048
+    });
 
-    // Extract JSON from response — handles tool_call tags, code blocks, plain JSON
-    let json_str = extract_json(&response);
+    let msg = send_llm_request(&config, body).await?;
 
-    serde_json::from_str(&json_str)
-        .map_err(|e| format!("Failed to parse LLM JSON: {e}\nRaw response: {response}"))
+    // Strategy 1: Proper tool_calls array (well-behaved models)
+    if let Some(tool_calls) = &msg.tool_calls {
+        if let Some(tc) = tool_calls.first() {
+            return serde_json::from_str(&tc.function.arguments)
+                .map_err(|e| format!("Failed to parse tool call arguments: {e}"));
+        }
+    }
+
+    // Strategy 2: Tool call in reasoning_content (reasoning models like QwQ)
+    if let Some(reasoning) = &msg.reasoning_content {
+        let json_str = extract_json(reasoning);
+        if !json_str.is_empty() {
+            if let Ok(metadata) = serde_json::from_str::<LlmUnifiedMetadata>(&json_str) {
+                return Ok(metadata);
+            }
+        }
+    }
+
+    // Strategy 3: JSON in content field
+    if let Some(content) = &msg.content {
+        if !content.trim().is_empty() {
+            let json_str = extract_json(content);
+            if !json_str.is_empty() {
+                return serde_json::from_str(&json_str)
+                    .map_err(|e| format!("Failed to parse LLM JSON: {e}\nRaw: {content}"));
+            }
+        }
+    }
+
+    Err(format!(
+        "LLM returned no extractable data. content={:?}, reasoning={}, tool_calls={}",
+        msg.content,
+        msg.reasoning_content.as_deref().map(|s| &s[..s.len().min(200)]).unwrap_or("none"),
+        msg.tool_calls.as_ref().map(|t| t.len()).unwrap_or(0)
+    ))
 }
 
-/// Extract JSON from LLM response, handling various wrapping formats
+/// Extract JSON from text, handling <tool_call> tags, code blocks, and plain JSON
 fn extract_json(text: &str) -> String {
     let trimmed = text.trim();
 
@@ -270,7 +316,6 @@ fn extract_json(text: &str) -> String {
             .map(|e| inner_start + e)
             .unwrap_or(trimmed.len());
         let tool_json = trimmed[inner_start..inner_end].trim();
-        // Extract "arguments" field from {"name": "submit", "arguments": {...}}
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(tool_json) {
             if let Some(args) = val.get("arguments") {
                 return args.to_string();
@@ -351,7 +396,7 @@ async fn resolve_preamble(
 }
 
 fn fallback_preamble() -> String {
-    "Extract file metadata as JSON. Pick category from the list. Use existing tags/authors when possible. Extract progress if present (chapter number, 完结, 连载中). Use null for unknown fields.".to_string()
+    "Extract file metadata. Pick category from the list. Use existing tags/authors when possible. Extract progress if present (chapter number, 完结, 连载中). Use null for unknown fields.".to_string()
 }
 
 #[cfg(test)]
@@ -371,21 +416,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_json_with_extra_text() {
-        let input = "Sure! Here is the metadata:\n{\"display_name\": \"test\", \"authors\": []}";
-        assert_eq!(
-            extract_json(input),
-            "{\"display_name\": \"test\", \"authors\": []}"
-        );
-    }
-
-    #[test]
-    fn test_extract_json_generic_code_block() {
-        let input = "```\n{\"display_name\": \"test\"}\n```";
-        assert_eq!(extract_json(input), "{\"display_name\": \"test\"}");
-    }
-
-    #[test]
     fn test_extract_json_tool_call_tags() {
         let input = "<tool_call>\n{\"name\": \"submit\", \"arguments\": {\"display_name\": \"test\", \"authors\": [\"Author\"]}}\n</tool_call>";
         let result = extract_json(input);
@@ -395,10 +425,11 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_json_tool_call_without_close_tag() {
-        let input = "<tool_call>\n{\"name\": \"submit\", \"arguments\": {\"display_name\": \"test\"}}";
-        let result = extract_json(input);
-        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(parsed["display_name"], "test");
+    fn test_extract_json_with_extra_text() {
+        let input = "Sure! Here is the metadata:\n{\"display_name\": \"test\", \"authors\": []}";
+        assert_eq!(
+            extract_json(input),
+            "{\"display_name\": \"test\", \"authors\": []}"
+        );
     }
 }
