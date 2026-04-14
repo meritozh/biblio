@@ -8,8 +8,6 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -32,7 +30,6 @@ import type {
   Tag,
   Author,
   FilePreparedImport,
-  ProcessingProgress,
   MetadataType,
   DuplicateAction,
 } from '@/types';
@@ -73,35 +70,6 @@ const EMPTY_FORM_VALUES: DynamicMetadataFormValues = {
   progress: '',
 };
 
-function StatusBadge({ status }: { status: FileStatus }) {
-  const variants: Record<FileStatus, 'gray' | 'orange' | 'green' | 'destructive'> = {
-    pending: 'gray',
-    analyzing: 'orange',
-    done: 'green',
-    error: 'destructive',
-  };
-
-  const icons: Record<FileStatus, React.ReactNode> = {
-    pending: <FileText className="h-3 w-3" />,
-    analyzing: <Loader2 className="h-3 w-3 animate-spin" />,
-    done: <CheckCircle2 className="h-3 w-3" />,
-    error: <AlertCircle className="h-3 w-3" />,
-  };
-
-  const labels: Record<FileStatus, string> = {
-    pending: 'Pending',
-    analyzing: 'Analyzing',
-    done: 'Ready',
-    error: 'Error',
-  };
-
-  return (
-    <Badge variant={variants[status]} className="gap-1.5">
-      {icons[status]}
-      {labels[status]}
-    </Badge>
-  );
-}
 
 export function ProcessingPipeline({
   open,
@@ -119,7 +87,6 @@ export function ProcessingPipeline({
   const [analyzing, setAnalyzing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  const [progress, setProgress] = useState<ProcessingProgress | null>(null);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
 
   useEffect(() => {
@@ -141,7 +108,7 @@ export function ProcessingPipeline({
       if (firstPath) {
         setExpandedIds(new Set([firstPath]));
       }
-      setProgress(null);
+
       setAnalyzing(false);
       setImporting(false);
     }
@@ -160,7 +127,6 @@ export function ProcessingPipeline({
       let unlisten: UnlistenFn | null = null;
       try {
         unlisten = await listenProcessingProgress((p) => {
-          setProgress(p);
           setFileItems((prev) =>
             prev.map((item) =>
               item.path === p.current_file ? { ...item, status: 'analyzing' as FileStatus } : item
@@ -174,38 +140,46 @@ export function ProcessingPipeline({
       try {
         const results = await filePrepareImport(paths);
 
-        setFileItems((prev) =>
-          prev.map((item) => {
-            const result = results.find((r: FilePreparedImport) => r.path === item.path);
-            if (result) {
-              const formValues: DynamicMetadataFormValues = item.userEdited
-                ? item.formValues
-                : {
-                    display_name: result.display_name || result.file_name,
-                    category_id: result.category_id,
-                    tag_ids: result.tag_ids,
-                    author_ids: result.author_ids,
-                    metadata: result.metadata.map((m) => ({
-                      key: m.key,
-                      value: m.value,
-                      data_type: m.data_type as MetadataType,
-                    })),
-                    progress: result.progress ?? '',
-                    cover_data: result.cover_data,
-                    cover_mime_type: result.cover_mime_type,
-                  };
-              return {
-                ...item,
-                status: 'done' as FileStatus,
-                preparedImport: result,
-                formValues,
-                suggestedTags: result.suggested_tags ?? [],
-                duplicateAction: result.duplicate_of?.recommendation ?? null,
+        const updatedItems = results.map((result: FilePreparedImport) => {
+          const prev = fileItems.find((item) => item.path === result.path);
+          const formValues: DynamicMetadataFormValues = prev?.userEdited
+            ? prev.formValues
+            : {
+                display_name: result.display_name || result.file_name,
+                category_id: result.category_id,
+                tag_ids: result.tag_ids,
+                author_ids: result.author_ids,
+                metadata: result.metadata.map((m) => ({
+                  key: m.key,
+                  value: m.value,
+                  data_type: m.data_type as MetadataType,
+                })),
+                progress: result.progress ?? '',
+                cover_data: result.cover_data,
+                cover_mime_type: result.cover_mime_type,
               };
-            }
-            return { ...item, status: 'error' as FileStatus, error: 'Analysis failed' };
-          })
-        );
+          return {
+            path: result.path,
+            fileName: result.file_name,
+            status: 'done' as FileStatus,
+            preparedImport: result,
+            formValues,
+            userEdited: prev?.userEdited ?? false,
+            suggestedTags: result.suggested_tags ?? [],
+            duplicateAction: result.duplicate_of?.recommendation ?? null,
+          };
+        });
+
+        setFileItems((prev) => {
+          const resultPaths = new Set(updatedItems.map((r) => r.path));
+          const failed = prev
+            .filter((item) => !resultPaths.has(item.path))
+            .map((item) => ({ ...item, status: 'error' as FileStatus, error: 'Analysis failed' }));
+          return [...updatedItems, ...failed];
+        });
+
+        // Auto-expand all items after analysis
+        setExpandedIds(new Set(paths));
       } catch (error) {
         console.error('Analysis failed:', error);
         setFileItems((prev) =>
@@ -220,7 +194,7 @@ export function ProcessingPipeline({
           unlisten();
         }
         setAnalyzing(false);
-        setProgress(null);
+  
         setAbortController(null);
       }
     };
@@ -372,46 +346,16 @@ export function ProcessingPipeline({
     (item) => item.duplicateAction === 'Skip'
   ).length;
 
-  const progressPercent = progress
-    ? Math.round((progress.current / progress.total) * 100)
-    : analyzing && fileItems.length > 0
-      ? Math.round(
-          (fileItems.filter((f) => f.status !== 'analyzing').length / fileItems.length) * 100
-        )
-      : 0;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+      <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            Import Files
-            {analyzing && (
-              <Badge variant="orange" className="gap-1.5">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                Analyzing
-              </Badge>
-            )}
-          </DialogTitle>
+          <DialogTitle>Import Files</DialogTitle>
         </DialogHeader>
 
-        {/* Progress bar during analysis */}
-        {analyzing && (
-          <div className="space-y-2 pb-4">
-            <Progress value={progressPercent} className="h-2" />
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>
-                {progress?.current_file
-                  ? `Analyzing ${progress.current_file.split('/').pop()}...`
-                  : 'Starting analysis...'}
-              </span>
-              <span>{progressPercent}%</span>
-            </div>
-          </div>
-        )}
-
-        {/* File list with expandable forms */}
-        <ScrollArea className="flex-1 min-h-0 pr-4">
+        {/* File list */}
+        <ScrollArea className="flex-1 min-h-0 -mx-6 px-6">
           <div className="space-y-3 py-2">
             {fileItems.map((item) => (
               <Card
@@ -422,6 +366,27 @@ export function ProcessingPipeline({
                 <CardContent className="p-3">
                   {/* File header row */}
                   <div className="flex items-center gap-3">
+                    {/* Status icon */}
+                    <div className="shrink-0">
+                      {item.status === 'analyzing' ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                      ) : item.status === 'done' ? (
+                        <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      ) : item.status === 'error' ? (
+                        <AlertCircle className="h-4 w-4 text-destructive" />
+                      ) : (
+                        <FileText className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </div>
+
+                    {/* File name */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{item.fileName}</p>
+                      {item.status === 'analyzing' && (
+                        <p className="text-xs text-muted-foreground">Analyzing...</p>
+                      )}
+                    </div>
+
                     {/* Expand/collapse icon */}
                     <div className="shrink-0 text-muted-foreground">
                       {expandedIds.has(item.path) ? (
@@ -430,21 +395,6 @@ export function ProcessingPipeline({
                         <ChevronRight className="h-4 w-4" />
                       )}
                     </div>
-
-                    {/* File name */}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">{item.fileName}</p>
-                      {item.preparedImport?.unresolved_author_names &&
-                        item.preparedImport.unresolved_author_names.length > 0 && (
-                          <p className="text-xs text-muted-foreground truncate">
-                            Unresolved authors:{' '}
-                            {item.preparedImport.unresolved_author_names.join(', ')}
-                          </p>
-                        )}
-                    </div>
-
-                    {/* Status badge */}
-                    <StatusBadge status={item.status} />
                   </div>
 
                   {/* Expandable form */}
