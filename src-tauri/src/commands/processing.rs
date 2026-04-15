@@ -790,7 +790,8 @@ pub async fn file_prepare_import(
             }
         }
 
-        if llm_config.enabled {
+        // Always attempt LLM extraction — falls back silently on error
+        {
             let _ = app.emit("processing-progress", &ProcessingProgress {
                 current: results.len() + 1,
                 total,
