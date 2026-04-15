@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { UnlistenFn } from '@tauri-apps/api/event';
 import {
   Dialog,
@@ -88,41 +88,37 @@ export function ProcessingPipeline({
   const [importing, setImporting] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [abortController, setAbortController] = useState<AbortController | null>(null);
+  const analysisStarted = useRef(false);
 
   useEffect(() => {
-    if (open && paths.length > 0) {
-      const initialItems: FileItemState[] = paths.map((path) => {
-        const fileName = path.substring(Math.max(0, path.lastIndexOf('/') + 1)) || path;
-        return {
-          path,
-          fileName,
-          status: 'pending',
-          formValues: { ...EMPTY_FORM_VALUES, display_name: fileName },
-          userEdited: false,
-          suggestedTags: [],
-          duplicateAction: null,
-        };
-      });
-      setFileItems(initialItems);
-      const firstPath = paths[0];
-      if (firstPath) {
-        setExpandedIds(new Set([firstPath]));
-      }
-
-      setAnalyzing(false);
-      setImporting(false);
+    if (!open || paths.length === 0) {
+      analysisStarted.current = false;
+      return;
     }
-  }, [open, paths]);
 
-  useEffect(() => {
-    if (!open || paths.length === 0 || analyzing) return;
+    // Prevent re-entry
+    if (analysisStarted.current) return;
+    analysisStarted.current = true;
+
+    const initialItems: FileItemState[] = paths.map((path) => {
+      const fileName = path.substring(Math.max(0, path.lastIndexOf('/') + 1)) || path;
+      return {
+        path,
+        fileName,
+        status: 'analyzing' as FileStatus,
+        formValues: { ...EMPTY_FORM_VALUES, display_name: fileName },
+        userEdited: false,
+        suggestedTags: [],
+        duplicateAction: null,
+      };
+    });
+    setFileItems(initialItems);
+    setImporting(false);
 
     const runAnalysis = async () => {
       setAnalyzing(true);
       const controller = new AbortController();
       setAbortController(controller);
-
-      setFileItems((prev) => prev.map((item) => ({ ...item, status: 'analyzing' as FileStatus })));
 
       let unlisten: UnlistenFn | null = null;
       try {
@@ -200,7 +196,7 @@ export function ProcessingPipeline({
     };
 
     runAnalysis();
-  }, [open, paths, analyzing]);
+  }, [open, paths]);
 
   const handleCancelAnalysis = useCallback(() => {
     if (abortController) {
