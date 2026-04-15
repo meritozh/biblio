@@ -132,16 +132,9 @@ function HomePage() {
 
   const handleFilesSelected = async (paths: string[]) => {
     setSelectedFiles(paths);
-    if (paths.length === 1 && paths[0]) {
-      const path = paths[0];
-      const fileName = path.substring(Math.max(0, path.lastIndexOf('/') + 1)) || path;
-      setFormValues({ ...EMPTY_FORM_VALUES, display_name: fileName });
-      setAddDialogOpen(true);
-    } else {
-      setFormValues(EMPTY_FORM_VALUES);
-      setAddDialogOpen(false);
-      setPipelineOpen(true);
-    }
+    setFormValues(EMPTY_FORM_VALUES);
+    setAddDialogOpen(false);
+    setPipelineOpen(true);
   };
 
   const handleAddFile = async () => {
