@@ -2,9 +2,12 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_sql::{DbInstances, DbPool};
+
+use crate::ProcessingCancelled;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedMetadata {
@@ -622,11 +625,21 @@ pub async fn file_analyze(
 }
 
 #[tauri::command]
+pub async fn cancel_processing(app: tauri::AppHandle) {
+    let cancelled = app.state::<ProcessingCancelled>();
+    cancelled.0.store(true, Ordering::Relaxed);
+}
+
+#[tauri::command]
 pub async fn file_prepare_import(
     app: tauri::AppHandle,
     paths: Vec<String>,
 ) -> Result<Vec<FilePreparedImport>, String> {
     use crate::commands::{Author, Category, Tag};
+
+    // Reset cancellation flag
+    let cancelled = app.state::<ProcessingCancelled>();
+    cancelled.0.store(false, Ordering::Relaxed);
 
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
@@ -775,6 +788,11 @@ pub async fn file_prepare_import(
     let mut results: Vec<FilePreparedImport> = Vec::new();
 
     for (path_str, file_name, merged_metadata, merged_authors, content, cover_data, cover_mime_type) in phase1_results {
+        // Check cancellation before each file
+        if cancelled.0.load(Ordering::Relaxed) {
+            break;
+        }
+
         let mut progress_val: Option<String> = None;
         let mut category_id: Option<i64> = None;
         let mut tag_ids: Vec<i64> = Vec::new();

@@ -1,11 +1,17 @@
 mod commands;
 mod database;
 
+use std::sync::atomic::AtomicBool;
+
+/// Shared cancellation flag for processing pipeline
+pub struct ProcessingCancelled(pub AtomicBool);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let migrations = database::get_migrations();
 
     tauri::Builder::default()
+        .manage(ProcessingCancelled(AtomicBool::new(false)))
         .plugin(
             tauri_plugin_sql::Builder::new()
                 .add_migrations("sqlite:biblio.db", migrations)
@@ -57,6 +63,7 @@ pub fn run() {
             database::recovery::db_get_stats,
             commands::processing::file_analyze,
             commands::processing::file_prepare_import,
+            commands::processing::cancel_processing,
             commands::llm::llm_config_get,
             commands::llm::llm_config_set,
             commands::llm::llm_test_connection,

@@ -294,6 +294,10 @@ export async function filePrepareImport(paths: string[]): Promise<FilePreparedIm
   return invoke('file_prepare_import', { paths });
 }
 
+export async function cancelProcessing(): Promise<void> {
+  return invoke('cancel_processing');
+}
+
 export function listenProcessingProgress(
   callback: (progress: ProcessingProgress) => void
 ): Promise<UnlistenFn> {

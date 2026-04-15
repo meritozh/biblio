@@ -16,7 +16,7 @@ import {
 } from '@/components/DynamicMetadataForm';
 import { SuggestedTagChip } from '@/components/SuggestedTagChip';
 import { DuplicateWarning } from '@/components/DuplicateWarning';
-import { filePrepareImport, fileCreate, fileReplace, listenProcessingProgress } from '@/lib/tauri';
+import { filePrepareImport, fileCreate, fileReplace, cancelProcessing, listenProcessingProgress } from '@/lib/tauri';
 import {
   ChevronDown,
   ChevronRight,
@@ -87,7 +87,6 @@ export function ProcessingPipeline({
   const [analyzing, setAnalyzing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  const [abortController, setAbortController] = useState<AbortController | null>(null);
   const analysisStarted = useRef(false);
 
   useEffect(() => {
@@ -117,8 +116,6 @@ export function ProcessingPipeline({
 
     const runAnalysis = async () => {
       setAnalyzing(true);
-      const controller = new AbortController();
-      setAbortController(controller);
 
       let unlisten: UnlistenFn | null = null;
       try {
@@ -191,25 +188,23 @@ export function ProcessingPipeline({
         }
         setAnalyzing(false);
   
-        setAbortController(null);
       }
     };
 
     runAnalysis();
   }, [open, paths]);
 
-  const handleCancelAnalysis = useCallback(() => {
-    if (abortController) {
-      abortController.abort();
-      setAnalyzing(false);
-      setFileItems((prev) =>
-        prev.map((item) =>
-          item.status === 'analyzing' ? { ...item, status: 'pending' as FileStatus } : item
-        )
-      );
-    }
+  const handleCancelAnalysis = useCallback(async () => {
+    await cancelProcessing();
+    analysisStarted.current = false;
+    setAnalyzing(false);
+    setFileItems((prev) =>
+      prev.map((item) =>
+        item.status === 'analyzing' ? { ...item, status: 'pending' as FileStatus } : item
+      )
+    );
     onOpenChange(false);
-  }, [abortController, onOpenChange]);
+  }, [onOpenChange]);
 
   const handleToggleExpand = useCallback((path: string) => {
     setExpandedIds((prev) => {
