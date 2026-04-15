@@ -93,7 +93,12 @@ CREATE TABLE IF NOT EXISTS prompts (
 -- Unified default prompt
 INSERT INTO prompts (name, content, category, is_default) VALUES (
     'Unified Metadata Extraction',
-    'Extract file metadata as JSON. Pick category from the list. Use existing tags/authors when possible. Extract progress if present (chapter number, 完结, 连载中). Use null for unknown fields.',
+    'Extract file metadata. Rules:
+- display_name: the clean title (not the filename), always fill this
+- category: pick from the available list
+- progress: combine chapter range and status, e.g. "第1-45章 未完结", "完结", "连载中"
+- Use existing tags/authors when possible
+- Use null for unknown fields',
     NULL,
     1
 );

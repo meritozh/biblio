@@ -39,17 +39,18 @@ impl Default for LlmConfig {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct LlmUnifiedMetadata {
+    /// Clean title of the file, e.g. "三体" from "刘慈欣-三体.txt"
     pub display_name: Option<String>,
+    /// Category from the available list
     pub category: Option<String>,
+    /// Author names
     pub authors: Vec<String>,
+    /// Genre/theme tags
     pub tags: Vec<String>,
+    /// Brief description
     pub description: Option<String>,
+    /// Reading progress, e.g. "第1-45章 未完结", "完结", "连载中"
     pub progress: Option<String>,
-    pub series: Option<String>,
-    pub volume: Option<String>,
-    pub issue_number: Option<String>,
-    pub year: Option<String>,
-    pub language: Option<String>,
 }
 
 async fn read_setting(pool: &sqlx::SqlitePool, key: &str) -> Option<String> {
@@ -237,5 +238,10 @@ async fn resolve_preamble(
 }
 
 fn fallback_preamble() -> String {
-    "Extract file metadata. Pick category from the list. Use existing tags/authors when possible. Extract progress if present (chapter number, 完结, 连载中). Use null for unknown fields.".to_string()
+    "Extract file metadata. Rules:\n\
+    - display_name: the clean title (not the filename), always fill this\n\
+    - category: pick from the available list\n\
+    - progress: combine chapter range and status, e.g. \"第1-45章 未完结\", \"完结\", \"连载中\"\n\
+    - Use existing tags/authors when possible\n\
+    - Use null for unknown fields".to_string()
 }

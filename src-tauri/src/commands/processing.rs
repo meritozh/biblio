@@ -871,11 +871,6 @@ pub async fn file_prepare_import(
 
                     let llm_fields = [
                         ("description", llm_result.description),
-                        ("series", llm_result.series),
-                        ("volume", llm_result.volume),
-                        ("issue_number", llm_result.issue_number),
-                        ("year", llm_result.year),
-                        ("language", llm_result.language),
                     ];
                     for (key, val) in llm_fields {
                         if let Some(v) = val {
