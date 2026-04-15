@@ -13,6 +13,7 @@ const defaultConfig: LlmConfig = {
   base_url: 'http://localhost:1234/v1',
   api_key: '',
   model: 'llama3.2',
+  analyze_content: true,
 };
 
 export function AiSetting() {
@@ -152,6 +153,23 @@ export function AiSetting() {
             disabled={disabled}
             placeholder="llama3.2"
             className="text-sm"
+          />
+        </div>
+
+        <div className="flex items-center justify-between pt-1">
+          <div>
+            <Label htmlFor="llm-analyze-content" className="text-xs">
+              Analyze file content
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Send text samples to LLM for better tags and genre detection
+            </p>
+          </div>
+          <Switch
+            id="llm-analyze-content"
+            checked={config.analyze_content}
+            onCheckedChange={(checked) => updateField('analyze_content', checked)}
+            disabled={disabled}
           />
         </div>
 

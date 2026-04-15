@@ -676,6 +676,11 @@ pub async fn file_prepare_import(
     let tag_names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
     let author_names: Vec<String> = authors.iter().map(|a| a.name.clone()).collect();
 
+    // Load LLM config early to check analyze_content setting
+    let llm_analyze_content = super::llm::load_config(&pool).await
+        .map(|c| c.analyze_content)
+        .unwrap_or(true);
+
     // Phase 1: Run Rust processors (signal gathering)
     let total = paths.len();
     let app_clone = app.clone();
@@ -731,9 +736,9 @@ pub async fn file_prepare_import(
                 }
             }
 
-            // Content sampling for .txt files
+            // Content sampling for .txt files (only when analyze_content is enabled)
             let mime = known_mime.as_deref().unwrap_or("");
-            let content = if mime == "text/plain" || file_path.extension().and_then(|e| e.to_str()) == Some("txt") {
+            let content = if llm_analyze_content && (mime == "text/plain" || file_path.extension().and_then(|e| e.to_str()) == Some("txt")) {
                 sample_text_content(file_path, 5, 1000)
             } else {
                 None

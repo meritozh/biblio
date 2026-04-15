@@ -22,6 +22,7 @@ pub struct LlmConfig {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    pub analyze_content: bool,
 }
 
 impl Default for LlmConfig {
@@ -31,6 +32,7 @@ impl Default for LlmConfig {
             base_url: "http://localhost:1234/v1".to_string(),
             api_key: String::new(),
             model: "gemma-4".to_string(),
+            analyze_content: true,
         }
     }
 }
@@ -87,11 +89,17 @@ pub async fn load_config(pool: &sqlx::SqlitePool) -> Result<LlmConfig, String> {
         .await
         .unwrap_or_else(|| "gemma-4".to_string());
 
+    let analyze_content = read_setting(pool, "llm_analyze_content")
+        .await
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(true);
+
     Ok(LlmConfig {
         enabled,
         base_url,
         api_key,
         model,
+        analyze_content,
     })
 }
 
@@ -111,6 +119,7 @@ pub async fn llm_config_set(app: tauri::AppHandle, config: LlmConfig) -> Result<
     write_setting(&pool, "llm_base_url", &config.base_url).await?;
     write_setting(&pool, "llm_api_key", &config.api_key).await?;
     write_setting(&pool, "llm_model", &config.model).await?;
+    write_setting(&pool, "llm_analyze_content", &config.analyze_content.to_string()).await?;
 
     Ok(())
 }

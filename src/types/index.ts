@@ -187,6 +187,7 @@ export interface LlmConfig {
   base_url: string;
   api_key: string;
   model: string;
+  analyze_content: boolean;
 }
 
 export interface Prompt {
