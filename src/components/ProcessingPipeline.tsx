@@ -365,7 +365,11 @@ export function ProcessingPipeline({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+      <DialogContent
+        className="max-w-2xl max-h-[90vh] flex flex-col overflow-hidden"
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>Import Files</DialogTitle>
         </DialogHeader>

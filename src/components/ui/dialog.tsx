@@ -32,19 +32,11 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, onInteractOutside, ...props }, ref) => (
+>(({ className, children, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay>
       <DialogPrimitive.Content
         ref={ref}
-        onInteractOutside={(e) => {
-          // Don't prevent interaction with portaled content (popovers, comboboxes)
-          const target = e.target as HTMLElement;
-          if (!target?.closest?.('[data-radix-popper-content-wrapper]')) {
-            e.preventDefault();
-          }
-          onInteractOutside?.(e);
-        }}
         className={cn(
           'relative z-50 grid w-full max-w-lg gap-4 bg-background p-6 shadow-lg rounded-xl',
           'data-[state=open]:animate-in data-[state=closed]:animate-out',
