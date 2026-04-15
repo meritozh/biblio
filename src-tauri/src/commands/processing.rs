@@ -105,14 +105,11 @@ pub trait FileProcessor: Send + Sync {
 
 pub fn get_processors() -> Vec<Box<dyn FileProcessor>> {
     vec![
-        Box::new(FilenameProcessor),
         Box::new(FileTypeDetector),
         Box::new(PdfMetadataProcessor),
         Box::new(ExifProcessor),
     ]
 }
-
-pub struct FilenameProcessor;
 
 pub struct FileTypeDetector;
 
@@ -120,31 +117,6 @@ pub struct PdfMetadataProcessor;
 
 pub struct ExifProcessor;
 
-impl FileProcessor for FilenameProcessor {
-    fn name(&self) -> &str {
-        "filename"
-    }
-
-    fn supported_types(&self) -> &[&str] {
-        &["*"]
-    }
-
-    fn process(&self, file_path: &Path) -> Result<ExtractedMetadata, String> {
-        let stem = file_path
-            .file_stem()
-            .ok_or_else(|| "Cannot extract file stem".to_string())?
-            .to_string_lossy()
-            .to_string();
-
-        // Just provide the raw filename — LLM handles all parsing
-        Ok(ExtractedMetadata {
-            display_name: Some(stem),
-            suggested_authors: vec![],
-            metadata: vec![],
-            category_hint: None,
-        })
-    }
-}
 
 impl FileProcessor for FileTypeDetector {
     fn name(&self) -> &str {
