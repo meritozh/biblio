@@ -455,31 +455,9 @@ pub async fn file_create(
     Ok(FileCreateResponse { id: file_id })
 }
 
-/// Rename a novel file to "<name> <progress> <author>.ext"
-/// Only applies when category is "Novels". No-op for other categories.
-/// Pass category_name = None to auto-detect from DB.
-pub async fn sync_novel_filename(pool: &sqlx::SqlitePool, file_id: i64, category_name: Option<&str>) {
-    // Auto-detect category if not provided
-    let category_name = match category_name {
-        Some(name) => Some(name.to_string()),
-        None => {
-            let result: Option<(String,)> = sqlx::query_as(
-                "SELECT c.name FROM categories c JOIN files f ON f.category_id = c.id WHERE f.id = ?"
-            )
-            .bind(file_id)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
-            result.map(|(n,)| n)
-        }
-    };
-    let category_name = category_name.as_deref();
-    if category_name != Some("Novels") {
-        // Also check from DB if category_name not provided
-        return;
-    }
-
+/// Rename a file to "<name> <progress> <author>.ext"
+/// Only applies to text files (.txt, .epub). Skips archives and images.
+pub async fn sync_novel_filename(pool: &sqlx::SqlitePool, file_id: i64, _category_name: Option<&str>) {
     let file_info: Option<(String, String, Option<String>)> = sqlx::query_as(
         "SELECT path, display_name, progress FROM files WHERE id = ?"
     )
@@ -494,8 +472,15 @@ pub async fn sync_novel_filename(pool: &sqlx::SqlitePool, file_id: i64, category
 
     let ext = current_path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| format!(".{}", e))
-        .unwrap_or_default();
+        .map(|e| e.to_lowercase());
+
+    // Only rename text-based files, skip archives/images
+    let is_text = matches!(ext.as_deref(), Some("txt" | "epub" | "pdf" | "mobi"));
+    if !is_text {
+        return;
+    }
+
+    let ext = ext.map(|e| format!(".{}", e)).unwrap_or_default();
 
     let author_names: Vec<(String,)> = sqlx::query_as(
         "SELECT a.name FROM authors a JOIN file_authors fa ON a.id = fa.author_id WHERE fa.file_id = ?"

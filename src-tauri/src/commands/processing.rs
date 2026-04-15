@@ -1,4 +1,3 @@
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
@@ -137,44 +136,9 @@ impl FileProcessor for FilenameProcessor {
             .to_string_lossy()
             .to_string();
 
-        let author_title_re = Regex::new(r"^(.+?)\s*-\s*(.+)$").map_err(|e| e.to_string())?;
-        let year_re = Regex::new(r"^(.+?)\s*\((\d{4})\)\s*$").map_err(|e| e.to_string())?;
-
-        let clean = |s: &str| -> String {
-            s.replace(['_', '-', '.'], " ")
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-
-        if let Some(caps) = author_title_re.captures(&stem) {
-            let author = clean(caps[1].trim());
-            let title = clean(caps[2].trim());
-            return Ok(ExtractedMetadata {
-                display_name: Some(title),
-                suggested_authors: vec![author],
-                metadata: vec![],
-                category_hint: None,
-            });
-        }
-
-        if let Some(caps) = year_re.captures(&stem) {
-            let title = clean(caps[1].trim());
-            let year = caps[2].trim().to_string();
-            return Ok(ExtractedMetadata {
-                display_name: Some(title),
-                suggested_authors: vec![],
-                metadata: vec![ExtractedField {
-                    key: "year".to_string(),
-                    value: year,
-                    data_type: "text".to_string(),
-                }],
-                category_hint: None,
-            });
-        }
-
+        // Just provide the raw filename — LLM handles all parsing
         Ok(ExtractedMetadata {
-            display_name: Some(clean(&stem)),
+            display_name: Some(stem),
             suggested_authors: vec![],
             metadata: vec![],
             category_hint: None,
