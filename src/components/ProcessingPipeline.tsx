@@ -133,15 +133,40 @@ export function ProcessingPipeline({
       try {
         const results = await filePrepareImport(paths);
 
+        // Auto-create unresolved authors from LLM results
+        const createdAuthorIds: Record<string, number> = {};
+        for (const result of results) {
+          for (const name of result.unresolved_author_names) {
+            if (!createdAuthorIds[name]) {
+              try {
+                const newAuthor = await onAuthorCreate(name);
+                createdAuthorIds[name] = newAuthor.id;
+              } catch {
+                // Author creation failed (e.g. duplicate) — skip
+              }
+            }
+          }
+        }
+
         const updatedItems = results.map((result: FilePreparedImport) => {
           const prev = fileItems.find((item) => item.path === result.path);
+
+          // Merge resolved + newly created author IDs
+          const allAuthorIds = [...result.author_ids];
+          for (const name of result.unresolved_author_names) {
+            const id = createdAuthorIds[name];
+            if (id && !allAuthorIds.includes(id)) {
+              allAuthorIds.push(id);
+            }
+          }
+
           const formValues: DynamicMetadataFormValues = prev?.userEdited
             ? prev.formValues
             : {
                 display_name: result.display_name || result.file_name,
                 category_id: result.category_id,
                 tag_ids: result.tag_ids,
-                author_ids: result.author_ids,
+                author_ids: allAuthorIds,
                 metadata: result.metadata.map((m) => ({
                   key: m.key,
                   value: m.value,

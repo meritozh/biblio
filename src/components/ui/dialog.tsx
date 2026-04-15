@@ -38,7 +38,11 @@ const DialogContent = React.forwardRef<
       <DialogPrimitive.Content
         ref={ref}
         onInteractOutside={(e) => {
-          e.preventDefault();
+          // Don't prevent interaction with portaled content (popovers, comboboxes)
+          const target = e.target as HTMLElement;
+          if (!target?.closest?.('[data-radix-popper-content-wrapper]')) {
+            e.preventDefault();
+          }
           onInteractOutside?.(e);
         }}
         className={cn(
