@@ -186,6 +186,7 @@
   }
 }
 
+/* macOS-style overlay scrollbar: hidden when idle, fades in on hover */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -196,17 +197,26 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--muted-foreground);
-  opacity: 0.5;
+  background-color: transparent;
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: padding-box;
+  transition: background-color 0.2s ease;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--accent);
-  border: 2px solid transparent;
-  background-clip: padding-box;
+/* Fade in when hovering the scrollable container */
+*:hover::-webkit-scrollbar-thumb {
+  background-color: var(--muted-foreground);
+}
+
+/* Stronger when hovering the thumb itself or dragging it */
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--accent);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .scrollbar-hidden {
