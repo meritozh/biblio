@@ -29,6 +29,26 @@ interface FileListProps {
 
 const MAX_VISIBLE_TAGS = 3;
 
+// Layout & sizing constants for FileList, also used by useFileListAutoFit hook (Task 2)
+// @ts-ignore unused (Task 2: useEffect will read these)
+const ROW_HEIGHT = 44;
+// @ts-ignore unused (Task 2: useEffect will read these)
+const HEADER_HEIGHT = 40;
+const ACTIONS_WIDTH = 60;
+// @ts-ignore unused (Task 2: useEffect will read these)
+const SCROLLBAR_BUFFER = 10;
+// @ts-ignore unused (Task 2: useEffect will read these)
+const MIN_PAGE_SIZE = 10;
+// @ts-ignore unused (Task 2: useEffect will read these)
+const DEBOUNCE_MS = 150;
+const DEFAULT_COL_SIZES: Record<string, number> = {
+  display_name: 320,
+  created_at: 120,
+  tags: 220,
+  authors: 200,
+  progress: 140,
+};
+
 export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileListProps) {
   const [sorting, setSorting] = useState<{ id: string; desc: boolean }[]>([]);
 
@@ -50,7 +70,7 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
           <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
         </Button>
       ),
-      size: 320,
+      size: DEFAULT_COL_SIZES.display_name,
       minSize: 150,
       maxSize: 600,
     },
@@ -59,7 +79,7 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
       header: 'Added',
       cell: ({ row }: { row: { original: FileEntry } }) =>
         new Date(row.original.created_at).toLocaleDateString(),
-      size: 120,
+      size: DEFAULT_COL_SIZES.created_at,
       minSize: 80,
       maxSize: 200,
     },
@@ -92,7 +112,7 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
           </div>
         );
       },
-      size: 220,
+      size: DEFAULT_COL_SIZES.tags,
       minSize: 100,
       maxSize: 400,
     },
@@ -106,7 +126,7 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
         }
         return <span className="text-sm">{authors.map((a) => a.name).join(', ')}</span>;
       },
-      size: 200,
+      size: DEFAULT_COL_SIZES.authors,
       minSize: 80,
       maxSize: 400,
     },
@@ -118,7 +138,7 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
         if (!progress) return <span className="text-muted-foreground text-sm">—</span>;
         return <span className="text-sm">{progress}</span>;
       },
-      size: 140,
+      size: DEFAULT_COL_SIZES.progress,
       minSize: 80,
       maxSize: 300,
     },
@@ -134,9 +154,9 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
           </div>
         );
       },
-      size: 60,
-      minSize: 60,
-      maxSize: 60,
+      size: ACTIONS_WIDTH,
+      minSize: ACTIONS_WIDTH,
+      maxSize: ACTIONS_WIDTH,
       enableResizing: false,
     },
   ];
