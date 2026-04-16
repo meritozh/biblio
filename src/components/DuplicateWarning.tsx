@@ -1,5 +1,4 @@
 import { AlertTriangle } from 'lucide-react';
-import { Label } from '@/components/ui/label';
 import type { DuplicateInfo, DuplicateAction } from '@/types';
 
 interface DuplicateWarningProps {
@@ -69,12 +68,12 @@ export function DuplicateWarning({
               className="mt-0.5 accent-primary"
             />
             <div>
-              <Label className="text-sm font-medium cursor-pointer">
+              <span className="text-sm font-medium block">
                 {ACTION_LABELS[action].label}
-              </Label>
-              <p className="text-xs text-muted-foreground">
+              </span>
+              <span className="text-xs text-muted-foreground block">
                 {ACTION_LABELS[action].description}
-              </p>
+              </span>
             </div>
           </label>
         ))}
