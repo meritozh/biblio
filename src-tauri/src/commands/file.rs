@@ -213,6 +213,81 @@ pub struct FileListResponse {
     pub total: i64,
 }
 
+/// Hydrate a list of `FileEntry` rows into `FileListItem`s by fetching their
+/// associated tags and authors. Matches the per-file loop used inside `file_list`.
+async fn hydrate_file_items(
+    pool: &sqlx::SqlitePool,
+    files: Vec<FileEntry>,
+) -> Result<Vec<FileListItem>, String> {
+    let mut items = Vec::with_capacity(files.len());
+    for file in files {
+        let tags: Vec<Tag> = sqlx::query_as(
+            "SELECT t.id, t.name, t.color, t.created_at FROM tags t
+             INNER JOIN file_tags ft ON t.id = ft.tag_id WHERE ft.file_id = ?",
+        )
+        .bind(file.id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let authors: Vec<Author> = sqlx::query_as(
+            "SELECT a.id, a.name, a.created_at FROM authors a
+             INNER JOIN file_authors fa ON a.id = fa.author_id WHERE fa.file_id = ?",
+        )
+        .bind(file.id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        items.push(FileListItem {
+            id: file.id,
+            path: file.path,
+            display_name: file.display_name,
+            category_id: file.category_id,
+            file_status: file.file_status,
+            in_storage: file.in_storage,
+            original_path: file.original_path,
+            progress: file.progress,
+            created_at: file.created_at,
+            updated_at: file.updated_at,
+            tags,
+            authors,
+        });
+    }
+    Ok(items)
+}
+
+/// Core query for `file_list_by_tag` — testable without a Tauri `AppHandle`.
+pub(crate) async fn list_files_by_tag_impl(
+    pool: &sqlx::SqlitePool,
+    tag_id: i64,
+) -> Result<Vec<FileListItem>, String> {
+    let files: Vec<FileEntry> = sqlx::query_as(
+        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status,
+                f.in_storage, f.original_path, f.progress, f.created_at, f.updated_at
+         FROM files f
+         INNER JOIN file_tags ft ON ft.file_id = f.id
+         WHERE ft.tag_id = ?
+         ORDER BY f.created_at DESC",
+    )
+    .bind(tag_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    hydrate_file_items(pool, files).await
+}
+
+#[tauri::command]
+pub async fn file_list_by_tag(
+    app: AppHandle,
+    tag_id: i64,
+) -> Result<Vec<FileListItem>, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    list_files_by_tag_impl(&pool, tag_id).await
+}
+
 #[tauri::command]
 pub async fn file_get(
     app: AppHandle,
@@ -1251,5 +1326,72 @@ mod reverse_index_tests {
             .await
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn list_files_by_tag_returns_joined_files_sorted_desc() {
+        let pool = setup_db().await;
+
+        // Seed 3 files with distinct created_at values (oldest → newest = A → B → C).
+        sqlx::query(
+            "INSERT INTO files (path, display_name, created_at) VALUES \
+             ('/a.txt', 'File A', '2026-01-01 10:00:00'), \
+             ('/b.txt', 'File B', '2026-01-02 10:00:00'), \
+             ('/c.txt', 'File C', '2026-01-03 10:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("INSERT INTO tags (name) VALUES ('sci-fi'), ('unused')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO authors (name) VALUES ('Liu Cixin')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Tag 'sci-fi' (id 1) applied to File A (id 1) and File B (id 2), not File C.
+        sqlx::query(
+            "INSERT INTO file_tags (file_id, tag_id) VALUES (1, 1), (2, 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO file_authors (file_id, author_id) VALUES (2, 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = list_files_by_tag_impl(&pool, 1).await.unwrap();
+
+        // Two files matched the tag.
+        assert_eq!(result.len(), 2);
+        // Sorted by created_at DESC: File B first (newer), File A second.
+        assert_eq!(result[0].display_name, "File B");
+        assert_eq!(result[1].display_name, "File A");
+        // Tags hydrated on each row.
+        assert_eq!(result[0].tags.len(), 1);
+        assert_eq!(result[0].tags[0].name, "sci-fi");
+        assert_eq!(result[1].tags[0].name, "sci-fi");
+        // Authors hydrated (only File B has an author).
+        assert_eq!(result[0].authors.len(), 1);
+        assert_eq!(result[0].authors[0].name, "Liu Cixin");
+        assert_eq!(result[1].authors.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_files_by_tag_returns_empty_when_tag_has_no_files() {
+        let pool = setup_db().await;
+        sqlx::query("INSERT INTO tags (name) VALUES ('unused')")
+            .execute(&pool).await.unwrap();
+
+        let result = list_files_by_tag_impl(&pool, 1).await.unwrap();
+        assert!(result.is_empty());
     }
 }

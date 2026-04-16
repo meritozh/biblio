@@ -164,6 +164,10 @@ export async function tagUnassign(
   return invoke('tag_unassign', { fileId: file_id, tagIds: tag_ids });
 }
 
+export async function fileListByTag(tagId: number): Promise<FileEntry[]> {
+  return invoke('file_list_by_tag', { tagId });
+}
+
 export async function metadataGet(file_id: number): Promise<{ metadata: Metadata[] }> {
   return invoke('metadata_get', { fileId: file_id });
 }
