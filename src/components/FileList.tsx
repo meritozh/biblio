@@ -27,6 +27,8 @@ interface FileListProps {
   onFileDelete?: (file: FileEntry) => void;
 }
 
+const MAX_VISIBLE_TAGS = 3;
+
 export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileListProps) {
   const [sorting, setSorting] = useState<{ id: string; desc: boolean }[]>([]);
 
@@ -42,17 +44,24 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
           variant="ghost"
           onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
           aria-label={`Sort by name ${column.getIsSorted() === 'asc' ? 'descending' : 'ascending'}`}
+          className="-ml-3"
         >
           Name
           <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
         </Button>
       ),
+      size: 320,
+      minSize: 150,
+      maxSize: 600,
     },
     {
       accessorKey: 'created_at',
       header: 'Added',
       cell: ({ row }: { row: { original: FileEntry } }) =>
         new Date(row.original.created_at).toLocaleDateString(),
+      size: 120,
+      minSize: 80,
+      maxSize: 200,
     },
     {
       id: 'tags',
@@ -62,16 +71,30 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
         if (!tags || tags.length === 0) {
           return <span className="text-muted-foreground text-sm">—</span>;
         }
+        const visible = tags.slice(0, MAX_VISIBLE_TAGS);
+        const overflow = tags.length - visible.length;
         return (
-          <div className="flex items-center gap-1 max-w-[180px] flex-wrap">
-            {tags.map((tag) => (
+          <div className="flex items-center gap-1">
+            {visible.map((tag) => (
               <Badge key={tag.id} variant="gray" className="text-xs font-normal shrink-0">
                 {tag.name}
               </Badge>
             ))}
+            {overflow > 0 && (
+              <Badge
+                variant="gray"
+                className="text-xs font-normal shrink-0 opacity-60"
+                title={`${overflow} more`}
+              >
+                …
+              </Badge>
+            )}
           </div>
         );
       },
+      size: 220,
+      minSize: 100,
+      maxSize: 400,
     },
     {
       id: 'authors',
@@ -81,12 +104,11 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
         if (!authors || authors.length === 0) {
           return <span className="text-muted-foreground text-sm">—</span>;
         }
-        return (
-          <div className="max-w-[200px]">
-            <span className="text-sm truncate block">{authors.map((a) => a.name).join(', ')}</span>
-          </div>
-        );
+        return <span className="text-sm">{authors.map((a) => a.name).join(', ')}</span>;
       },
+      size: 200,
+      minSize: 80,
+      maxSize: 400,
     },
     {
       id: 'progress',
@@ -96,6 +118,9 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
         if (!progress) return <span className="text-muted-foreground text-sm">—</span>;
         return <span className="text-sm">{progress}</span>;
       },
+      size: 140,
+      minSize: 80,
+      maxSize: 300,
     },
     {
       id: 'actions',
@@ -109,6 +134,10 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
           </div>
         );
       },
+      size: 60,
+      minSize: 60,
+      maxSize: 60,
+      enableResizing: false,
     },
   ];
 
@@ -120,20 +149,46 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
     getSortedRowModel: getSortedRowModel(),
     onSortingChange: setSorting,
     state: { sorting },
+    columnResizeMode: 'onChange',
+    enableColumnResizing: true,
   });
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div className="flex-1 min-h-0 overflow-auto rounded-md border">
-        <Table>
+        <Table
+          className="table-fixed w-auto"
+          style={{ width: table.getTotalSize() }}
+        >
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
-                  <TableHead key={header.id}>
+                  <TableHead
+                    key={header.id}
+                    style={{ width: header.getSize() }}
+                    className="relative overflow-hidden whitespace-nowrap"
+                  >
                     {header.isPlaceholder
                       ? null
                       : flexRender(header.column.columnDef.header, header.getContext())}
+                    {header.column.getCanResize() && (
+                      <div
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          header.getResizeHandler()(e);
+                        }}
+                        onTouchStart={(e) => {
+                          e.stopPropagation();
+                          header.getResizeHandler()(e);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        className={`absolute top-0 right-0 h-full w-1 cursor-col-resize select-none touch-none hover:bg-primary/40 ${
+                          header.column.getIsResizing() ? 'bg-primary' : ''
+                        }`}
+                        aria-label="Resize column"
+                      />
+                    )}
                   </TableHead>
                 ))}
               </TableRow>
@@ -157,7 +212,11 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
                   aria-label={onFileClick ? `View ${row.original.display_name}` : undefined}
                 >
                   {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>
+                    <TableCell
+                      key={cell.id}
+                      style={{ width: cell.column.getSize() }}
+                      className="overflow-hidden whitespace-nowrap truncate"
+                    >
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </TableCell>
                   ))}
