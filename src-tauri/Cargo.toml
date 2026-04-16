@@ -29,4 +29,6 @@ lopdf = "0.40"
 kamadak-exif = "0.6"
 rig-core = "0.35"
 schemars = "1"
+chardet = { package = "chardet-rs", git = "https://github.com/meritozh/chardet-rust" }
+encoding_rs = "0.8"
 zip = "2"
