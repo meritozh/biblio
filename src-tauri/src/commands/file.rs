@@ -508,68 +508,83 @@ pub async fn file_create(
     Ok(FileCreateResponse { id: file_id })
 }
 
-/// Rename a file to "<name> <progress> <author>.ext"
-/// Only applies to text files (.txt, .epub). Skips archives and images.
-pub async fn sync_novel_filename(pool: &sqlx::SqlitePool, file_id: i64, _category_name: Option<&str>) {
+/// Rename a file on disk to match current metadata, updating DB atomically.
+/// Only renames .txt and .epub files. No-op for other extensions.
+/// Uses a transaction: DB update first, then fs rename; rollback on rename failure.
+pub async fn rename_file_to_match_metadata(
+    pool: &sqlx::SqlitePool,
+    file_id: i64,
+) -> Result<(), String> {
     let file_info: Option<(String, String, Option<String>)> = sqlx::query_as(
         "SELECT path, display_name, progress FROM files WHERE id = ?"
     )
     .bind(file_id)
     .fetch_optional(pool)
     .await
-    .ok()
-    .flatten();
+    .map_err(|e| e.to_string())?;
 
-    let Some((current_path_str, display_name, progress)) = file_info else { return };
+    let Some((current_path_str, display_name, progress)) = file_info else {
+        return Ok(());
+    };
     let current_path = PathBuf::from(&current_path_str);
 
-    let ext = current_path.extension()
+    let ext_lower = current_path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase());
 
-    // Only rename text-based files, skip archives/images
-    let is_text = matches!(ext.as_deref(), Some("txt" | "epub" | "pdf" | "mobi"));
-    if !is_text {
-        return;
+    // Only rename text files
+    if !matches!(ext_lower.as_deref(), Some("txt") | Some("epub")) {
+        return Ok(());
     }
+    let ext_with_dot = ext_lower
+        .as_ref()
+        .map(|e| format!(".{}", e))
+        .unwrap_or_default();
 
-    let ext = ext.map(|e| format!(".{}", e)).unwrap_or_default();
-
-    let author_names: Vec<(String,)> = sqlx::query_as(
+    let author_rows: Vec<(String,)> = sqlx::query_as(
         "SELECT a.name FROM authors a JOIN file_authors fa ON a.id = fa.author_id WHERE fa.file_id = ?"
     )
     .bind(file_id)
     .fetch_all(pool)
     .await
     .unwrap_or_default();
+    let author_names_vec: Vec<String> = author_rows.into_iter().map(|(n,)| n).collect();
 
-    let mut parts = vec![display_name];
-    if let Some(p) = &progress {
-        if !p.is_empty() {
-            parts.push(p.clone());
+    let clean = build_novel_filename(
+        &display_name,
+        progress.as_deref(),
+        &author_names_vec,
+        &ext_with_dot,
+    );
+    let sanitized = sanitize_filename(&clean);
+
+    let Some(parent) = current_path.parent() else {
+        return Ok(());
+    };
+
+    let new_path = get_unique_destination(&parent.join(&sanitized));
+    if new_path == current_path {
+        return Ok(());
+    }
+    let new_path_str = new_path.to_string_lossy().to_string();
+
+    // Transaction: update DB first, then rename file
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE files SET path = ? WHERE id = ?")
+        .bind(&new_path_str)
+        .bind(file_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    match fs::rename(&current_path, &new_path) {
+        Ok(_) => {
+            tx.commit().await.map_err(|e| e.to_string())?;
+            Ok(())
         }
-    }
-    if !author_names.is_empty() {
-        let names: Vec<&str> = author_names.iter().map(|(n,)| n.as_str()).collect();
-        parts.push(names.join(", "));
-    }
-
-    let new_filename = format!("{}{}", parts.join(" "), ext);
-    let new_filename: String = new_filename.chars()
-        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
-        .collect();
-
-    if let Some(parent) = current_path.parent() {
-        let new_path = get_unique_destination(&parent.join(&new_filename));
-        if new_path != current_path {
-            if fs::rename(&current_path, &new_path).is_ok() {
-                let new_path_str = new_path.to_string_lossy().to_string();
-                let _ = sqlx::query("UPDATE files SET path = ? WHERE id = ?")
-                    .bind(&new_path_str)
-                    .bind(file_id)
-                    .execute(pool)
-                    .await;
-            }
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(format!("Failed to rename file: {}", e))
         }
     }
 }
@@ -673,16 +688,8 @@ pub async fn file_update(
         (None, None, None) => {}
     }
 
-    // Sync novel filename after metadata changes
-    let cat_name: Option<(String,)> = sqlx::query_as(
-        "SELECT c.name FROM categories c JOIN files f ON f.category_id = c.id WHERE f.id = ?"
-    )
-    .bind(id)
-    .fetch_optional(&pool)
-    .await
-    .unwrap_or(None);
-
-    sync_novel_filename(&pool, id, cat_name.as_ref().map(|(n,)| n.as_str())).await;
+    // Rename file on disk to match updated metadata (atomic with DB)
+    let _ = rename_file_to_match_metadata(&pool, id).await;
 
     Ok(FileUpdateResponse { success: true })
 }

@@ -186,7 +186,7 @@ pub async fn author_assign(
             .map_err(|e| e.to_string())?;
     }
 
-    super::file::sync_novel_filename(&pool, file_id, None).await;
+    let _ = super::file::rename_file_to_match_metadata(&pool, file_id).await;
 
     Ok(AuthorAssignResponse { success: true })
 }
@@ -214,7 +214,7 @@ pub async fn author_unassign(
             .map_err(|e| e.to_string())?;
     }
 
-    super::file::sync_novel_filename(&pool, file_id, None).await;
+    let _ = super::file::rename_file_to_match_metadata(&pool, file_id).await;
 
     Ok(AuthorUnassignResponse { success: true })
 }
@@ -250,7 +250,7 @@ pub async fn author_set(
             .map_err(|e| e.to_string())?;
     }
 
-    super::file::sync_novel_filename(&pool, file_id, None).await;
+    let _ = super::file::rename_file_to_match_metadata(&pool, file_id).await;
 
     Ok(AuthorSetResponse { success: true })
 }
