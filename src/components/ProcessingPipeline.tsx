@@ -8,7 +8,6 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   DynamicMetadataForm,
@@ -386,9 +385,9 @@ export function ProcessingPipeline({
           <DialogTitle>Import Files</DialogTitle>
         </DialogHeader>
 
-        {/* File list */}
-        <ScrollArea className="flex-1 min-h-0 -mx-6 px-6">
-          <div className="space-y-3 py-2">
+        {/* File list — native overflow so scrollbar is reliable and sits outside content padding */}
+        <div className="flex-1 min-h-0 -mx-6 overflow-y-auto">
+          <div className="space-y-3 py-2 px-6">
             {fileItems.map((item) => (
               <Card
                 key={item.path}
@@ -490,7 +489,7 @@ export function ProcessingPipeline({
               </Card>
             ))}
           </div>
-        </ScrollArea>
+        </div>
 
         {/* Footer with summary and actions */}
         <DialogFooter className="flex-col gap-3 sm:flex-row sm:justify-between">
