@@ -1,7 +1,7 @@
 use crate::commands::validation::validate_author_name;
 use serde::Serialize;
 use tauri::AppHandle;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_sql::{DbPool, DbInstances};
 
 fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
@@ -10,6 +10,11 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
     match db_pool {
         DbPool::Sqlite(pool) => Ok(pool.clone()),
     }
+}
+
+#[derive(serde::Serialize, Clone)]
+struct AuthorChangeEvent {
+    id: i64,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -122,6 +127,8 @@ pub async fn author_update(
         .await
         .map_err(|e| e.to_string())?;
 
+    let _ = app.emit("author-updated", AuthorChangeEvent { id });
+
     Ok(AuthorUpdateResponse { success: true })
 }
 
@@ -155,6 +162,8 @@ pub async fn author_delete(
         .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
+
+    let _ = app.emit("author-deleted", AuthorChangeEvent { id });
 
     Ok(AuthorDeleteResponse {
         success: true,
