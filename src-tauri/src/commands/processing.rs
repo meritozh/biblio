@@ -726,7 +726,7 @@ pub async fn file_prepare_import(
     .await
     .map_err(|e| format!("Task join error: {e}"))?;
 
-    // Phase 2: LLM extraction
+    // Phase 2: LLM extraction — two-call pipeline for novels
     let llm_config = super::llm::load_config(&pool).await?;
     let mut results: Vec<FilePreparedImport> = Vec::new();
 
@@ -756,85 +756,124 @@ pub async fn file_prepare_import(
             }
         }
 
-        // Always attempt LLM extraction — falls back silently on error
-        {
+        let is_novel = is_novel_file(&path_str);
+
+        if is_novel && llm_config.enabled {
+            // === Call 1: filename extraction ===
             let _ = app.emit("processing-progress", &ProcessingProgress {
                 current: results.len() + 1,
                 total,
                 current_file: file_name.clone(),
-                status: "llm_extraction".to_string(),
+                status: "extracting_name".to_string(),
             });
 
-            match super::llm::extract_metadata_with_llm(
+            let name_result = super::llm::extract_filename_metadata(
                 &llm_config,
-                &pool,
                 &file_name,
-                &merged_metadata,
-                content.as_deref(),
-                &category_names,
-                &tag_names,
-                &author_names,
-            )
-            .await
-            {
-                Ok(llm_result) => {
-                    if let Some(name) = llm_result.display_name {
-                        if !name.is_empty() {
-                            final_display_name = name;
-                        }
-                    }
-                    if let Some(cat) = &llm_result.category {
-                        category_id = category_map.get(&cat.to_lowercase()).copied();
-                    }
-                    if let Some(p) = llm_result.progress {
-                        if !p.is_empty() {
-                            progress_val = Some(p);
-                        }
-                    }
+            ).await;
 
-                    for author in &llm_result.authors {
-                        if let Some(&id) = author_map.get(&author.to_lowercase()) {
-                            if !author_ids.contains(&id) {
-                                author_ids.push(id);
-                            }
-                        } else if !unresolved_author_names.contains(author) {
-                            unresolved_author_names.push(author.clone());
-                        }
-                    }
-
-                    for tag in &llm_result.tags {
-                        if let Some(&id) = tag_map.get(&tag.to_lowercase()) {
-                            if !tag_ids.contains(&id) {
-                                tag_ids.push(id);
-                            }
-                        } else if !suggested_tags.contains(tag) {
-                            suggested_tags.push(tag.clone());
-                        }
-                    }
-
-                    let llm_fields = [
-                        ("description", llm_result.description),
-                    ];
-                    for (key, val) in llm_fields {
-                        if let Some(v) = val {
-                            if !v.is_empty() {
-                                if let Some(existing) = final_metadata.iter_mut().find(|f| f.key == key) {
-                                    existing.value = v;
-                                } else {
-                                    final_metadata.push(ExtractedField {
-                                        key: key.to_string(),
-                                        value: v,
-                                        data_type: "text".to_string(),
-                                    });
-                                }
-                            }
-                        }
+            // Apply name result (independent fallback: if this call fails, keep defaults)
+            if let Ok(ref name_meta) = name_result {
+                if let Some(ref name) = name_meta.display_name {
+                    if !name.is_empty() {
+                        final_display_name = name.clone();
                     }
                 }
-                Err(e) => {
-                    eprintln!("LLM extraction failed for {}: {}", file_name, e);
+                if let Some(ref p) = name_meta.progress {
+                    if !p.is_empty() {
+                        progress_val = Some(p.clone());
+                    }
                 }
+                for author in &name_meta.authors {
+                    if let Some(&id) = author_map.get(&author.to_lowercase()) {
+                        if !author_ids.contains(&id) {
+                            author_ids.push(id);
+                        }
+                    } else if !unresolved_author_names.contains(author) {
+                        unresolved_author_names.push(author.clone());
+                    }
+                }
+            } else if let Err(ref e) = name_result {
+                eprintln!("LLM filename extraction failed for {}: {}", file_name, e);
             }
+
+            // === Call 2: content analysis ===
+            let _ = app.emit("processing-progress", &ProcessingProgress {
+                current: results.len() + 1,
+                total,
+                current_file: file_name.clone(),
+                status: "analyzing_content".to_string(),
+            });
+
+            let content_result = if llm_config.analyze_content {
+                match content.as_deref() {
+                    Some(c) => {
+                        let hint = name_result.as_ref().ok()
+                            .and_then(|r| r.display_name.as_deref());
+                        super::llm::extract_content_metadata(
+                            &llm_config,
+                            c,
+                            hint,
+                            &category_names,
+                            &tag_names,
+                        ).await
+                    }
+                    None => Err("No content sampled".to_string()),
+                }
+            } else {
+                Err("Content analysis disabled".to_string())
+            };
+
+            if let Ok(ref content_meta) = content_result {
+                if let Some(ref cat) = content_meta.category {
+                    category_id = category_map.get(&cat.to_lowercase()).copied();
+                }
+                for tag in &content_meta.tags {
+                    if let Some(&id) = tag_map.get(&tag.to_lowercase()) {
+                        if !tag_ids.contains(&id) {
+                            tag_ids.push(id);
+                        }
+                    } else if !suggested_tags.contains(tag) {
+                        suggested_tags.push(tag.clone());
+                    }
+                }
+                if let Some(ref desc) = content_meta.description {
+                    if !desc.is_empty() {
+                        if let Some(existing) = final_metadata.iter_mut().find(|f| f.key == "description") {
+                            existing.value = desc.clone();
+                        } else {
+                            final_metadata.push(ExtractedField {
+                                key: "description".to_string(),
+                                value: desc.clone(),
+                                data_type: "text".to_string(),
+                            });
+                        }
+                    }
+                }
+            } else if let Err(ref e) = content_result {
+                eprintln!("LLM content analysis failed for {}: {}", file_name, e);
+            }
+
+            // Emit final per-file status
+            let final_status = match (&name_result, &content_result) {
+                (Ok(_), Ok(_)) => "ready",
+                (Ok(_), Err(_)) | (Err(_), Ok(_)) => "partial",
+                (Err(_), Err(_)) => "error",
+            };
+            let _ = app.emit("processing-progress", &ProcessingProgress {
+                current: results.len() + 1,
+                total,
+                current_file: file_name.clone(),
+                status: final_status.to_string(),
+            });
+        } else {
+            // Non-novel or LLM disabled: emit ready immediately (no LLM extraction)
+            let _ = app.emit("processing-progress", &ProcessingProgress {
+                current: results.len() + 1,
+                total,
+                current_file: file_name.clone(),
+                status: "ready".to_string(),
+            });
         }
 
         results.push(FilePreparedImport {
