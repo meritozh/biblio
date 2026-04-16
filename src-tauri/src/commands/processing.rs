@@ -416,8 +416,31 @@ fn extract_cover_from_archive(file_path: &Path) -> Result<(Vec<u8>, String), Str
     Ok((data, mime_type))
 }
 
+/// Detect encoding and decode bytes to UTF-8.
+/// Returns None on low confidence (<0.7), unknown encoding label,
+/// or when decoding produces replacement characters (corrupted bytes).
+fn decode_to_utf8(bytes: &[u8]) -> Option<String> {
+    let detected = chardet::detect_bytes(bytes, chardet::EncodingEra::All, 200_000);
+    if detected.confidence < 0.7 {
+        return None;
+    }
+
+    let encoding_label = detected.encoding?;
+    let encoding = encoding_rs::Encoding::for_label(encoding_label.as_bytes())?;
+    let (text, _, had_errors) = encoding.decode(bytes);
+    if had_errors {
+        return None;
+    }
+
+    Some(text.into_owned())
+}
+
 fn sample_text_content(file_path: &Path, num_samples: usize, sample_size: usize) -> Option<String> {
-    let content = std::fs::read_to_string(file_path).ok()?;
+    let bytes = std::fs::read(file_path).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let content = decode_to_utf8(&bytes)?;
     let total_chars: usize = content.chars().count();
 
     if total_chars == 0 {
@@ -998,5 +1021,51 @@ mod tests {
         assert!(!is_novel_file("book.zip"));
         assert!(!is_novel_file("book.pdf"));
         assert!(!is_novel_file("book"));
+    }
+
+    #[test]
+    fn test_decode_to_utf8_plain_ascii() {
+        let bytes = b"Hello, world!";
+        let result = decode_to_utf8(bytes);
+        assert_eq!(result.as_deref(), Some("Hello, world!"));
+    }
+
+    #[test]
+    fn test_decode_to_utf8_utf8_chinese() {
+        let text = "你好，世界！这是一段中文测试内容，包含足够的字符让 chardet 有信心识别为 UTF-8。三体，刘慈欣。";
+        let bytes = text.as_bytes();
+        let result = decode_to_utf8(bytes);
+        assert_eq!(result.as_deref(), Some(text));
+    }
+
+    #[test]
+    fn test_decode_to_utf8_gb18030_chinese() {
+        // Encode a realistic-length varied Chinese text to GB18030,
+        // then verify decode_to_utf8 round-trips it correctly.
+        // chardet needs enough varied bytes to reach confidence threshold.
+        let sample = "这是一段较长的中文测试内容，用于验证 GB18030 编码的文件能够被正确识别和转换为 UTF-8。内容包含了标点符号、数字 123、以及一些常见的汉字，比如：你好世界、春夏秋冬、日月星辰、山川河流。小说标题示例：三体、流浪地球、活着、平凡的世界。作者示例：刘慈欣、余华、路遥、莫言。";
+        // Repeat to ensure ~2KB of varied text, enough for chardet detection.
+        let full_text = sample.repeat(5);
+        let gb18030 = encoding_rs::GB18030;
+        let (encoded_bytes, _, had_errors) = gb18030.encode(&full_text);
+        assert!(!had_errors, "Test setup: encoding to GB18030 should not produce errors");
+
+        let result = decode_to_utf8(&encoded_bytes);
+        assert!(result.is_some(), "GB18030 bytes should decode successfully");
+        let decoded = result.unwrap();
+        // Verify round-trip produced matching Chinese content.
+        assert!(
+            decoded.contains("三体") && decoded.contains("刘慈欣"),
+            "decoded text should contain expected Chinese chars from the sample, got first 100 chars: {}",
+            &decoded.chars().take(100).collect::<String>()
+        );
+    }
+
+    #[test]
+    fn test_decode_to_utf8_garbage_returns_none() {
+        // Random non-text bytes should result in low confidence or decode errors.
+        let bytes: Vec<u8> = (0..200).map(|i| (i as u8).wrapping_mul(31)).collect();
+        let result = decode_to_utf8(&bytes);
+        assert!(result.is_none(), "Garbage bytes should return None");
     }
 }
