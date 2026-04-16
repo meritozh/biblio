@@ -791,6 +791,7 @@ pub async fn file_prepare_import(
 
             let name_result = super::llm::extract_filename_metadata(
                 &llm_config,
+                &pool,
                 &file_name,
             ).await;
 
@@ -834,6 +835,7 @@ pub async fn file_prepare_import(
                             .and_then(|r| r.display_name.as_deref());
                         super::llm::extract_content_metadata(
                             &llm_config,
+                            &pool,
                             c,
                             hint,
                             &category_names,

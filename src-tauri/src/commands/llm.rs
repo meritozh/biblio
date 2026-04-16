@@ -163,24 +163,20 @@ pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String
 }
 
 /// Call 1: Extract display_name, authors, progress from filename only.
-/// No DB context needed — filename parsing is structurally deterministic.
+/// Preamble is loaded from the active `filename` prompt in the DB.
 pub async fn extract_filename_metadata(
     config: &LlmConfig,
+    pool: &sqlx::SqlitePool,
     file_name: &str,
 ) -> Result<LlmFilenameMetadata, String> {
     let client = build_client(config)?;
-
-    let preamble = "Extract metadata from this filename only. Rules:\n\
-        - display_name: the clean title (remove site prefixes like [sxsy.org], brackets, file extension)\n\
-        - authors: if filename has \"作者：xxx\" or \"xxx - title\" pattern, extract the author\n\
-        - progress: combine chapter range + status, e.g. \"第1-45章 未完结\", \"完结\", \"连载中\"\n\
-        - Use null for unknown fields";
+    let preamble = crate::commands::prompts::prompt_get_active(pool, "filename").await?;
 
     let input = format!("File name: {}", file_name);
 
     let extractor = client
         .extractor::<LlmFilenameMetadata>(&config.model)
-        .preamble(preamble)
+        .preamble(&preamble)
         .max_tokens(512)
         .build();
 
@@ -191,15 +187,19 @@ pub async fn extract_filename_metadata(
 }
 
 /// Call 2: Analyze content samples for classification.
-/// Takes the display_name hint from Call 1 and DB context for categories/tags.
+/// Rules are loaded from the active `content` prompt in the DB; the
+/// context header (available categories, existing tags) is prepended
+/// here so the stored prompt can focus on rules only.
 pub async fn extract_content_metadata(
     config: &LlmConfig,
+    pool: &sqlx::SqlitePool,
     content: &str,
     display_name_hint: Option<&str>,
     categories: &[String],
     tags: &[String],
 ) -> Result<LlmContentMetadata, String> {
     let client = build_client(config)?;
+    let rules = crate::commands::prompts::prompt_get_active(pool, "content").await?;
 
     let categories_str = if categories.is_empty() {
         "None defined yet".to_string()
@@ -216,12 +216,8 @@ pub async fn extract_content_metadata(
         "Analyze the content samples to classify this novel.\n\
         Available categories: {}\n\
         Existing tags: {}\n\n\
-        Rules:\n\
-        - category: return ONLY the category name. If a category is shown as \"name (description)\", the parenthesized text is just a hint — return \"name\" without the parentheses or description. Example: for \"h-novel (novel with sexual content)\", return \"h-novel\".\n\
-        - tags: prefer existing tags, suggest new ones if needed\n\
-        - description: 1-2 sentence plot summary based on content\n\
-        - Use null for unknown fields",
-        categories_str, tags_str
+        Rules:\n{}",
+        categories_str, tags_str, rules
     );
 
     let mut input = String::new();
