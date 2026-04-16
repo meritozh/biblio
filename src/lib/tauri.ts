@@ -293,10 +293,15 @@ const ERROR_MESSAGES: Record<string, string> = {
   PERMISSION_DENIED: 'Permission denied. Please check folder permissions.',
   FILE_LOCKED: 'File is in use by another application.',
   DISK_FULL: 'Not enough disk space to complete the operation.',
+  NO_ACTIVE_PROMPT: 'No active prompt configured — set one in /prompts.',
 };
 
 export function translateError(error: string): string {
-  return ERROR_MESSAGES[error] || error;
+  if (ERROR_MESSAGES[error]) return ERROR_MESSAGES[error];
+  // Handle prefix-coded errors like "NO_ACTIVE_PROMPT: filename"
+  const prefix = (error.split(':')[0] ?? '').trim();
+  if (ERROR_MESSAGES[prefix]) return ERROR_MESSAGES[prefix];
+  return error;
 }
 
 export async function filePrepareImport(paths: string[]): Promise<FilePreparedImport[]> {

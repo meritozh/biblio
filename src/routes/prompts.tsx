@@ -29,7 +29,7 @@ import {
   promptDelete,
   promptSetDefault,
 } from '@/lib/tauri';
-import type { Prompt } from '@/types';
+import type { Prompt, PromptCategory } from '@/types';
 
 export const Route = createFileRoute('/prompts')({
   component: PromptsPage,
@@ -42,6 +42,7 @@ function PromptsPage() {
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [newPromptName, setNewPromptName] = useState('');
   const [newPromptContent, setNewPromptContent] = useState('');
+  const [newPromptCategory, setNewPromptCategory] = useState<PromptCategory>('content');
   const [saving, setSaving] = useState(false);
   const [editingPrompt, setEditingPrompt] = useState<Prompt | null>(null);
   const [editName, setEditName] = useState('');
@@ -68,10 +69,12 @@ function PromptsPage() {
       await promptCreate({
         name: newPromptName.trim(),
         content: newPromptContent.trim(),
+        category: newPromptCategory,
       });
       setCreateDialogOpen(false);
       setNewPromptName('');
       setNewPromptContent('');
+      setNewPromptCategory('content');
       void loadPrompts();
     } catch (error) {
       console.error('Failed to create prompt:', error);
@@ -94,6 +97,7 @@ function PromptsPage() {
       await promptUpdate(editingPrompt.id, {
         name: editName.trim(),
         content: editContent.trim(),
+        category: editingPrompt.category,
       });
       setEditDialogOpen(false);
       setEditingPrompt(null);
@@ -175,7 +179,7 @@ function PromptsPage() {
           <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 mb-6">
             <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
             <p className="text-xs text-muted-foreground">
-              The active prompt is used for all file imports. Your available categories, existing tags, and known authors are automatically appended to the prompt at runtime.
+              Two active prompts run during file import: one extracts metadata from the filename, the other classifies content. Your categories, existing tags, and known authors are automatically appended to the content-analysis prompt at runtime.
             </p>
           </div>
 
@@ -204,6 +208,9 @@ function PromptsPage() {
                         <h3 className="text-base font-semibold text-foreground truncate">
                           {prompt.name}
                         </h3>
+                        <Badge variant="gray" className="text-xs">
+                          {prompt.category === 'filename' ? 'filename' : 'content'}
+                        </Badge>
                         {prompt.is_default && (
                           <Badge variant="green" className="text-xs">
                             Active
@@ -258,6 +265,31 @@ function PromptsPage() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div>
+              <label className="text-sm font-medium mb-2 block">Type</label>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="new-prompt-category"
+                    checked={newPromptCategory === 'content'}
+                    onChange={() => setNewPromptCategory('content')}
+                    className="accent-primary"
+                  />
+                  <span className="text-sm">Content analysis</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="new-prompt-category"
+                    checked={newPromptCategory === 'filename'}
+                    onChange={() => setNewPromptCategory('filename')}
+                    className="accent-primary"
+                  />
+                  <span className="text-sm">Filename extraction</span>
+                </label>
+              </div>
+            </div>
+            <div>
               <label className="text-sm font-medium mb-2 block">Name</label>
               <Input
                 value={newPromptName}
@@ -274,7 +306,9 @@ function PromptsPage() {
                 className="w-full min-h-[200px] px-3 py-2 text-sm rounded-xl border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
               />
               <p className="text-xs text-muted-foreground mt-1.5">
-                Categories, tags, and authors from your library are automatically appended at runtime.
+                {newPromptCategory === 'content'
+                  ? 'Categories, tags, and authors from your library are automatically appended at runtime.'
+                  : 'Filename extraction has no runtime context — this prompt is used verbatim.'}
               </p>
             </div>
           </div>
@@ -299,6 +333,12 @@ function PromptsPage() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div>
+              <label className="text-sm font-medium mb-2 block">Type</label>
+              <p className="text-sm text-muted-foreground">
+                {editingPrompt?.category === 'filename' ? 'Filename extraction' : 'Content analysis'}
+              </p>
+            </div>
+            <div>
               <label className="text-sm font-medium mb-2 block">Name</label>
               <Input
                 value={editName}
@@ -315,7 +355,9 @@ function PromptsPage() {
                 className="w-full min-h-[200px] px-3 py-2 text-sm rounded-xl border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
               />
               <p className="text-xs text-muted-foreground mt-1.5">
-                Categories, tags, and authors from your library are automatically appended at runtime.
+                {editingPrompt?.category === 'content'
+                  ? 'Categories, tags, and authors from your library are automatically appended at runtime.'
+                  : 'Filename extraction has no runtime context — this prompt is used verbatim.'}
               </p>
             </div>
           </div>

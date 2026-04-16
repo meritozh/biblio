@@ -198,11 +198,13 @@ export interface LlmConfig {
   analyze_content: boolean;
 }
 
+export type PromptCategory = 'filename' | 'content';
+
 export interface Prompt {
   id: number;
   name: string;
   content: string;
-  category: string | null;
+  category: PromptCategory;
   is_default: boolean;
   created_at: string;
   updated_at: string;
@@ -211,5 +213,5 @@ export interface Prompt {
 export interface PromptCreatePayload {
   name: string;
   content: string;
-  category?: string | null;
+  category: PromptCategory;
 }
