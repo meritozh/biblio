@@ -1334,20 +1334,7 @@ mod filename_tests {
 #[cfg(test)]
 mod reverse_index_tests {
     use super::*;
-    use sqlx::SqlitePool;
-
-    /// Spin up an in-memory SQLite database with the production schema applied.
-    /// Used by reverse-index query tests that need realistic file/tag/author tables.
-    pub(crate) async fn setup_db() -> SqlitePool {
-        let pool = SqlitePool::connect(":memory:")
-            .await
-            .expect("connect in-memory sqlite");
-        sqlx::raw_sql(include_str!("../database/schema.sql"))
-            .execute(&pool)
-            .await
-            .expect("apply schema");
-        pool
-    }
+    use crate::commands::test_helpers::setup_db;
 
     #[tokio::test]
     async fn setup_db_smoke_test() {

@@ -10,6 +10,9 @@ pub mod processing;
 pub mod llm;
 pub mod prompts;
 
+#[cfg(test)]
+pub mod test_helpers;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
