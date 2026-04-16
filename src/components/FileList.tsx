@@ -191,9 +191,25 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
       }
       table.setColumnSizing(newSizing);
 
-      // Page size — max(MIN_PAGE_SIZE, floor(rowsArea / ROW_HEIGHT))
-      const rowsArea = Math.max(0, height - HEADER_HEIGHT);
-      const pageSize = Math.max(MIN_PAGE_SIZE, Math.floor(rowsArea / ROW_HEIGHT));
+      // Page size — measure actual header & row height from the rendered DOM
+      // instead of guessing from Tailwind class names. border-b, cell padding,
+      // button heights, sub-pixel rounding all vary; a single constant can't
+      // stay accurate. HEADER_HEIGHT/ROW_HEIGHT are fallbacks only (used when
+      // no rows are rendered, e.g. empty file list).
+      const thead = el.querySelector<HTMLElement>('thead');
+      const tbody = el.querySelector<HTMLElement>('tbody');
+      const renderedRows = tbody?.querySelectorAll('tr').length ?? 0;
+      const hasRealData = files.length > 0 && renderedRows > 0;
+
+      const actualHeader = thead
+        ? thead.getBoundingClientRect().height
+        : HEADER_HEIGHT;
+      const actualRow = hasRealData && tbody
+        ? tbody.getBoundingClientRect().height / renderedRows
+        : ROW_HEIGHT;
+
+      const rowsArea = Math.max(0, height - actualHeader);
+      const pageSize = Math.max(MIN_PAGE_SIZE, Math.floor(rowsArea / actualRow));
       table.setPageSize(pageSize);
     };
 
@@ -215,7 +231,7 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
       if (timeoutId !== null) window.clearTimeout(timeoutId);
       observer.disconnect();
     };
-  }, [table]);
+  }, [table, files.length]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
