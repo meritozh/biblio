@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tauri_plugin_sql::{DbInstances, DbPool};
 
-use super::processing::ExtractedField;
-
 fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
     let instances_lock = instances.0.try_read().map_err(|e| e.to_string())?;
     let db_pool = instances_lock.get(db_url).ok_or("Database not found")?;
@@ -35,22 +33,6 @@ impl Default for LlmConfig {
             analyze_content: true,
         }
     }
-}
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct LlmUnifiedMetadata {
-    /// Clean title of the file, e.g. "三体" from "刘慈欣-三体.txt"
-    pub display_name: Option<String>,
-    /// Category from the available list
-    pub category: Option<String>,
-    /// Author names
-    pub authors: Vec<String>,
-    /// Genre/theme tags
-    pub tags: Vec<String>,
-    /// Brief description
-    pub description: Option<String>,
-    /// Reading progress, e.g. "第1-45章 未完结", "完结", "连载中"
-    pub progress: Option<String>,
 }
 
 /// Schema for Call 1: extract metadata from filename only
@@ -180,44 +162,6 @@ pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String
     Ok(response)
 }
 
-pub async fn extract_metadata_with_llm(
-    config: &LlmConfig,
-    pool: &sqlx::SqlitePool,
-    file_name: &str,
-    existing_metadata: &[ExtractedField],
-    file_content: Option<&str>,
-    categories: &[String],
-    tags: &[String],
-    authors: &[String],
-) -> Result<LlmUnifiedMetadata, String> {
-    let client = build_client(config)?;
-    let preamble = resolve_preamble(pool, categories, tags, authors).await?;
-
-    let mut input = format!("File name: {}\n", file_name);
-
-    if !existing_metadata.is_empty() {
-        input.push_str("Existing metadata:\n");
-        for field in existing_metadata {
-            input.push_str(&format!("  {}: {}\n", field.key, field.value));
-        }
-    }
-
-    if let Some(content) = file_content {
-        input.push_str(&format!("\nFile content samples:\n{}\n", content));
-    }
-
-    let extractor = client
-        .extractor::<LlmUnifiedMetadata>(&config.model)
-        .preamble(&preamble)
-        .max_tokens(2048)
-        .build();
-
-    extractor
-        .extract(&input)
-        .await
-        .map_err(|e| format!("LLM extraction failed: {e}"))
-}
-
 /// Call 1: Extract display_name, authors, progress from filename only.
 /// No DB context needed — filename parsing is structurally deterministic.
 pub async fn extract_filename_metadata(
@@ -299,52 +243,3 @@ pub async fn extract_content_metadata(
         .map_err(|e| format!("LLM content analysis failed: {e}"))
 }
 
-async fn resolve_preamble(
-    pool: &sqlx::SqlitePool,
-    categories: &[String],
-    tags: &[String],
-    authors: &[String],
-) -> Result<String, String> {
-    let db_prompt: Option<(String,)> = sqlx::query_as(
-        "SELECT content FROM prompts WHERE is_default = 1 AND category IS NULL LIMIT 1",
-    )
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let base = if let Some(prompt) = db_prompt {
-        prompt.0
-    } else {
-        fallback_preamble()
-    };
-
-    let categories_str = if categories.is_empty() {
-        "None defined yet".to_string()
-    } else {
-        categories.join(", ")
-    };
-    let tags_str = if tags.is_empty() {
-        "None defined yet".to_string()
-    } else {
-        tags.join(", ")
-    };
-    let authors_str = if authors.is_empty() {
-        "None known yet".to_string()
-    } else {
-        authors.join(", ")
-    };
-
-    Ok(format!(
-        "{}\n\nAvailable categories: {}\nExisting tags: {}\nExisting authors: {}",
-        base, categories_str, tags_str, authors_str
-    ))
-}
-
-fn fallback_preamble() -> String {
-    "Extract file metadata. Rules:\n\
-    - display_name: the clean title (not the filename), always fill this\n\
-    - category: pick from the available list\n\
-    - progress: combine chapter range and status, e.g. \"第1-45章 未完结\", \"完结\", \"连载中\"\n\
-    - Use existing tags/authors when possible\n\
-    - Use null for unknown fields".to_string()
-}
