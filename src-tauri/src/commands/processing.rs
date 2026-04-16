@@ -89,6 +89,13 @@ pub struct DuplicateInfo {
     pub recommendation: DuplicateAction,
 }
 
+/// Check if a file path is a novel (text-based book format).
+/// Only novels go through the two-call LLM pipeline.
+pub fn is_novel_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".txt") || lower.ends_with(".epub")
+}
+
 fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
     let instances_lock = instances.0.try_read().map_err(|e| e.to_string())?;
     let db_pool = instances_lock.get(db_url).ok_or("Database not found")?;
@@ -934,5 +941,16 @@ mod tests {
         assert!(type_matches(&["application/pdf"], Some("application/pdf")));
         assert!(!type_matches(&["application/pdf"], Some("image/jpeg")));
         assert!(!type_matches(&["application/pdf"], None));
+    }
+
+    #[test]
+    fn test_is_novel_file() {
+        assert!(is_novel_file("book.txt"));
+        assert!(is_novel_file("book.TXT"));
+        assert!(is_novel_file("book.epub"));
+        assert!(is_novel_file("/path/to/book.txt"));
+        assert!(!is_novel_file("book.zip"));
+        assert!(!is_novel_file("book.pdf"));
+        assert!(!is_novel_file("book"));
     }
 }
