@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   useReactTable,
   getCoreRowModel,
@@ -29,17 +29,12 @@ interface FileListProps {
 
 const MAX_VISIBLE_TAGS = 3;
 
-// Layout & sizing constants for FileList, also used by useFileListAutoFit hook (Task 2)
-// @ts-ignore unused (Task 2: useEffect will read these)
+// Layout & sizing constants
 const ROW_HEIGHT = 44;
-// @ts-ignore unused (Task 2: useEffect will read these)
 const HEADER_HEIGHT = 40;
 const ACTIONS_WIDTH = 60;
-// @ts-ignore unused (Task 2: useEffect will read these)
 const SCROLLBAR_BUFFER = 10;
-// @ts-ignore unused (Task 2: useEffect will read these)
 const MIN_PAGE_SIZE = 10;
-// @ts-ignore unused (Task 2: useEffect will read these)
 const DEBOUNCE_MS = 150;
 const DEFAULT_COL_SIZES: Record<string, number> = {
   display_name: 320,
@@ -51,6 +46,7 @@ const DEFAULT_COL_SIZES: Record<string, number> = {
 
 export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileListProps) {
   const [sorting, setSorting] = useState<{ id: string; desc: boolean }[]>([]);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const columns = [
     {
@@ -173,9 +169,56 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
     enableColumnResizing: true,
   });
 
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    let timeoutId: number | null = null;
+
+    const applyFitSizing = (width: number, height: number) => {
+      // Column widths — scale proportional to defaults, clamp to min/max
+      const resizableTotal = Object.values(DEFAULT_COL_SIZES).reduce((a, b) => a + b, 0);
+      const availableWidth = Math.max(0, width - ACTIONS_WIDTH - SCROLLBAR_BUFFER);
+      const ratio = availableWidth / resizableTotal;
+
+      const newSizing: Record<string, number> = { actions: ACTIONS_WIDTH };
+      for (const [id, base] of Object.entries(DEFAULT_COL_SIZES)) {
+        const col = table.getColumn(id);
+        const min = col?.columnDef.minSize ?? 60;
+        const max = col?.columnDef.maxSize ?? 600;
+        newSizing[id] = Math.min(max, Math.max(min, Math.round(base * ratio)));
+      }
+      table.setColumnSizing(newSizing);
+
+      // Page size — max(MIN_PAGE_SIZE, floor(rowsArea / ROW_HEIGHT))
+      const rowsArea = Math.max(0, height - HEADER_HEIGHT);
+      const pageSize = Math.max(MIN_PAGE_SIZE, Math.floor(rowsArea / ROW_HEIGHT));
+      table.setPageSize(pageSize);
+    };
+
+    const recompute = () => {
+      applyFitSizing(el.clientWidth, el.clientHeight);
+    };
+
+    // Initial: run immediately (no debounce) so first render is correct
+    recompute();
+
+    // Subsequent resize events: debounced
+    const observer = new ResizeObserver(() => {
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(recompute, DEBOUNCE_MS);
+    });
+    observer.observe(el);
+
+    return () => {
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+      observer.disconnect();
+    };
+  }, [table]);
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <div className="flex-1 min-h-0 overflow-auto rounded-md border">
+      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-auto rounded-md border">
         <Table
           className="table-fixed w-auto"
           style={{ width: table.getTotalSize() }}
