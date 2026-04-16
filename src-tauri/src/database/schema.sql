@@ -90,16 +90,26 @@ CREATE TABLE IF NOT EXISTS prompts (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Unified default prompt
+-- Filename-extraction default prompt
 INSERT INTO prompts (name, content, category, is_default) VALUES (
-    'Unified Metadata Extraction',
-    'Extract file metadata. Rules:
-- display_name: the clean title (not the filename), always fill this
-- category: pick from the available list
-- progress: combine chapter range and status, e.g. "第1-45章 未完结", "完结", "连载中"
-- Use existing tags/authors when possible
+    'Filename Extraction',
+    'Extract metadata from this filename only. Rules:
+- display_name: the clean title (remove site prefixes like [sxsy.org], brackets, file extension)
+- authors: if filename has "作者：xxx" or "xxx - title" pattern, extract the author
+- progress: combine chapter range + status, e.g. "第1-45章 未完结", "完结", "连载中"
 - Use null for unknown fields',
-    NULL,
+    'filename',
+    1
+);
+
+-- Content-analysis default prompt
+INSERT INTO prompts (name, content, category, is_default) VALUES (
+    'Content Analysis',
+    '- category: return ONLY the category name. If a category is shown as "name (description)", the parenthesized text is just a hint — return "name" without the parentheses or description. Example: for "h-novel (novel with sexual content)", return "h-novel".
+- tags: at most 6 total; prefer existing tags; only propose new ones when you''re confident they clearly apply — be confident, not eager
+- description: 1-2 sentence plot summary based on content
+- Use null for unknown fields',
+    'content',
     1
 );
 
