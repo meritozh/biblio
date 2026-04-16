@@ -32,3 +32,6 @@ schemars = "1"
 chardet = { package = "chardet-rs", git = "https://github.com/meritozh/chardet-rust" }
 encoding_rs = "0.8"
 zip = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
