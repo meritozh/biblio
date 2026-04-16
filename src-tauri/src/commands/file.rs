@@ -594,6 +594,95 @@ pub struct FileCreateResponse {
     pub id: i64,
 }
 
+/// Move a file to the folder of a different category when category_id changes.
+/// Updates files.path in the DB to match. No-op when the file isn't in storage,
+/// the category hasn't actually changed, or the file is already in the target
+/// folder. Caller is responsible for updating files.category_id.
+async fn move_file_to_category_folder(
+    pool: &sqlx::SqlitePool,
+    file_id: i64,
+    new_category_id: Option<i64>,
+) -> Result<(), String> {
+    let file_info: Option<(String, bool, Option<i64>)> = sqlx::query_as(
+        "SELECT path, in_storage, category_id FROM files WHERE id = ?",
+    )
+    .bind(file_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some((current_path, in_storage, current_category)) = file_info else {
+        return Ok(());
+    };
+
+    if !in_storage || current_category == new_category_id {
+        return Ok(());
+    }
+
+    let storage_row: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM app_settings WHERE key = 'storage_path'",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let storage_path = match storage_row {
+        Some((p,)) if !p.is_empty() => PathBuf::from(&p),
+        _ => return Err("STORAGE_PATH_NOT_CONFIGURED".to_string()),
+    };
+    let storage_canonical = storage_path
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve storage path: {}", e))?;
+
+    let folder_name = if let Some(cat_id) = new_category_id {
+        let cat_row: Option<(Option<String>, String)> = sqlx::query_as(
+            "SELECT folder_name, name FROM categories WHERE id = ?",
+        )
+        .bind(cat_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        match cat_row {
+            Some((Some(folder), _)) => folder,
+            Some((None, name)) => sanitize_folder_name(&name),
+            None => return Err("CATEGORY_NOT_FOUND".to_string()),
+        }
+    } else {
+        UNCATEGORIZED_FOLDER.to_string()
+    };
+
+    let dest_folder = storage_canonical.join(&folder_name);
+    if !dest_folder.exists() {
+        fs::create_dir_all(&dest_folder)
+            .map_err(|e| format!("Failed to create folder: {}", e))?;
+    }
+
+    let current_pb = PathBuf::from(&current_path);
+    if let Some(parent) = current_pb.parent() {
+        if parent == dest_folder {
+            return Ok(()); // already in correct folder
+        }
+    }
+
+    let filename = current_pb
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("Invalid filename")?;
+
+    let dest_path = dest_folder.join(filename);
+    let final_path = move_file(&current_pb, &dest_path)?;
+    let final_path_str = final_path.to_string_lossy().to_string();
+
+    sqlx::query("UPDATE files SET path = ? WHERE id = ?")
+        .bind(&final_path_str)
+        .bind(file_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn file_update(
     app: AppHandle,
@@ -604,6 +693,12 @@ pub async fn file_update(
 ) -> Result<FileUpdateResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    // If the category changed, physically move the file first so that the
+    // subsequent rename_file_to_match_metadata operates on the new location.
+    if let Some(new_cat) = category_id {
+        move_file_to_category_folder(&pool, id, Some(new_cat)).await?;
+    }
 
     match (display_name, category_id, progress) {
         (Some(name), Some(cat_id), Some(prog)) => {
