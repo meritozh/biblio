@@ -71,12 +71,13 @@ export async function fileReplace(
 
 export async function fileUpdate(
   id: number,
-  params: { display_name?: string; category_id?: number | null }
+  params: { display_name?: string; category_id?: number | null; progress?: string | null }
 ): Promise<{ success: boolean }> {
   return invoke('file_update', {
     id,
     displayName: params.display_name,
     categoryId: params.category_id,
+    progress: params.progress,
   });
 }
 

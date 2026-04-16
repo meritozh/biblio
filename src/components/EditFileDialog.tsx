@@ -44,6 +44,7 @@ export function EditFileDialog({
     tag_ids: [],
     author_ids: [],
     metadata: [],
+    progress: '',
   });
 
   // Populate form when file changes or dialog opens
@@ -59,6 +60,7 @@ export function EditFileDialog({
           value: m.value,
           data_type: m.data_type,
         })) ?? [],
+        progress: file.progress ?? '',
       });
     }
   }, [file, open]);

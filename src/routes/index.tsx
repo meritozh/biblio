@@ -215,6 +215,7 @@ function HomePage() {
       await fileUpdate(fileId, {
         display_name: values.display_name,
         category_id: values.category_id,
+        progress: values.progress ?? null,
       });
 
       const currentTagIds = editingFile?.tags?.map((t) => t.id) ?? [];
