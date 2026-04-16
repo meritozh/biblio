@@ -855,10 +855,15 @@ pub async fn file_prepare_import(
             }
 
             // Emit final per-file status
-            let final_status = match (&name_result, &content_result) {
-                (Ok(_), Ok(_)) => "ready",
-                (Ok(_), Err(_)) | (Err(_), Ok(_)) => "partial",
-                (Err(_), Err(_)) => "error",
+            // If content analysis is disabled by config, treat a missing content result
+            // as "ready" (not "partial") — partial means a real LLM failure.
+            let content_analysis_active = llm_config.analyze_content;
+            let final_status = match (&name_result, &content_result, content_analysis_active) {
+                (Ok(_), Ok(_), _) => "ready",
+                (Ok(_), Err(_), false) => "ready",
+                (Err(_), Err(_), false) => "error",
+                (Ok(_), Err(_), true) | (Err(_), Ok(_), _) => "partial",
+                (Err(_), Err(_), true) => "error",
             };
             let _ = app.emit("processing-progress", &ProcessingProgress {
                 current: results.len() + 1,
