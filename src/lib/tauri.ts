@@ -168,6 +168,10 @@ export async function fileListByTag(tagId: number): Promise<FileEntry[]> {
   return invoke('file_list_by_tag', { tagId });
 }
 
+export async function fileListByAuthor(authorId: number): Promise<FileEntry[]> {
+  return invoke('file_list_by_author', { authorId });
+}
+
 export async function metadataGet(file_id: number): Promise<{ metadata: Metadata[] }> {
   return invoke('metadata_get', { fileId: file_id });
 }

@@ -288,6 +288,37 @@ pub async fn file_list_by_tag(
     list_files_by_tag_impl(&pool, tag_id).await
 }
 
+/// Core query for `file_list_by_author` — testable without a Tauri `AppHandle`.
+pub(crate) async fn list_files_by_author_impl(
+    pool: &sqlx::SqlitePool,
+    author_id: i64,
+) -> Result<Vec<FileListItem>, String> {
+    let files: Vec<FileEntry> = sqlx::query_as(
+        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status,
+                f.in_storage, f.original_path, f.progress, f.created_at, f.updated_at
+         FROM files f
+         INNER JOIN file_authors fa ON fa.file_id = f.id
+         WHERE fa.author_id = ?
+         ORDER BY f.created_at DESC",
+    )
+    .bind(author_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    hydrate_file_items(pool, files).await
+}
+
+#[tauri::command]
+pub async fn file_list_by_author(
+    app: AppHandle,
+    author_id: i64,
+) -> Result<Vec<FileListItem>, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    list_files_by_author_impl(&pool, author_id).await
+}
+
 #[tauri::command]
 pub async fn file_get(
     app: AppHandle,
@@ -1392,6 +1423,67 @@ mod reverse_index_tests {
             .execute(&pool).await.unwrap();
 
         let result = list_files_by_tag_impl(&pool, 1).await.unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_files_by_author_returns_joined_files_sorted_desc() {
+        let pool = setup_db().await;
+
+        sqlx::query(
+            "INSERT INTO files (path, display_name, created_at) VALUES \
+             ('/a.txt', 'File A', '2026-01-01 10:00:00'), \
+             ('/b.txt', 'File B', '2026-01-02 10:00:00'), \
+             ('/c.txt', 'File C', '2026-01-03 10:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("INSERT INTO authors (name) VALUES ('Liu Cixin'), ('Unused')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO tags (name) VALUES ('sci-fi')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "INSERT INTO file_authors (file_id, author_id) VALUES (1, 1), (3, 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("INSERT INTO file_tags (file_id, tag_id) VALUES (3, 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let result = list_files_by_author_impl(&pool, 1).await.unwrap();
+
+        assert_eq!(result.len(), 2);
+        // Sorted by created_at DESC: File C (newer) first, File A second.
+        assert_eq!(result[0].display_name, "File C");
+        assert_eq!(result[1].display_name, "File A");
+        // Authors hydrated.
+        assert_eq!(result[0].authors.len(), 1);
+        assert_eq!(result[0].authors[0].name, "Liu Cixin");
+        // Tags hydrated (File C has the sci-fi tag, File A has none).
+        assert_eq!(result[0].tags.len(), 1);
+        assert_eq!(result[0].tags[0].name, "sci-fi");
+        assert_eq!(result[1].tags.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_files_by_author_returns_empty_when_author_has_no_files() {
+        let pool = setup_db().await;
+        sqlx::query("INSERT INTO authors (name) VALUES ('Unused')")
+            .execute(&pool).await.unwrap();
+
+        let result = list_files_by_author_impl(&pool, 1).await.unwrap();
         assert!(result.is_empty());
     }
 }
