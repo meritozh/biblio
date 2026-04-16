@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { useEffect, useState, useCallback } from 'react';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 import { FilePicker } from '@/components/FilePicker';
 import { FileList } from '@/components/FileList';
 import { CategorySidebar } from '@/components/CategorySidebar';
@@ -21,6 +22,7 @@ import {
   coverSet,
   storageGetPath,
   storageCheckAccess,
+  listenTagAuthorChanges,
 } from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
@@ -119,6 +121,26 @@ function HomePage() {
   useEffect(() => {
     void loadFiles(selectedCategoryId);
   }, [selectedCategoryId, loadFiles]);
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+    listenTagAuthorChanges(() => {
+      void loadFiles(selectedCategoryId);
+      void loadTags();
+      void loadAuthors();
+    }).then((u) => {
+      if (cancelled) {
+        u();
+      } else {
+        unlisten = u;
+      }
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [selectedCategoryId, loadFiles, loadTags, loadAuthors]);
 
   const handleSettingsOpenChange = useCallback(
     (open: boolean) => {

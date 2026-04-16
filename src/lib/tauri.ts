@@ -323,6 +323,31 @@ export function listenFilePrepared(
   });
 }
 
+/**
+ * Subscribe to tag/author mutation events. The callback runs when any of
+ * `tag-deleted`, `tag-updated`, `author-deleted`, or `author-updated` fires.
+ * The returned UnlistenFn detaches all four listeners.
+ */
+export function listenTagAuthorChanges(
+  callback: () => void
+): Promise<UnlistenFn> {
+  const events = [
+    'tag-deleted',
+    'tag-updated',
+    'author-deleted',
+    'author-updated',
+  ] as const;
+
+  return Promise.all(
+    events.map((name) => listen(name, () => callback()))
+  ).then((unlisteners) => {
+    const unlistenAll: UnlistenFn = () => {
+      for (const u of unlisteners) u();
+    };
+    return unlistenAll;
+  });
+}
+
 export async function llmConfigGet(): Promise<LlmConfig> {
   return invoke('llm_config_get');
 }
