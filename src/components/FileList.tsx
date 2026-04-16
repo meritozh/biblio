@@ -30,7 +30,8 @@ interface FileListProps {
 const MAX_VISIBLE_TAGS = 3;
 
 // Layout & sizing constants
-const ROW_HEIGHT = 44;
+// ROW_HEIGHT = FileContextMenu button (h-8 = 32) + TableCell p-2 padding (16) = 48
+const ROW_HEIGHT = 48;
 const HEADER_HEIGHT = 40;
 const ACTIONS_WIDTH = 60;
 const SCROLLBAR_BUFFER = 10;
