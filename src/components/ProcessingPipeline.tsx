@@ -392,12 +392,14 @@ export function ProcessingPipeline({
             {fileItems.map((item) => (
               <Card
                 key={item.path}
-                className="transition-all duration-200 cursor-pointer hover:border-primary/30"
-                onClick={() => handleToggleExpand(item.path)}
+                className="transition-all duration-200"
               >
                 <CardContent className="p-3">
-                  {/* File header row */}
-                  <div className="flex items-center gap-3">
+                  {/* File header row — only this is clickable, so popovers in the expanded form below aren't caught by the toggle handler */}
+                  <div
+                    className="flex items-center gap-3 cursor-pointer hover:text-primary/90"
+                    onClick={() => handleToggleExpand(item.path)}
+                  >
                     {/* Status icon */}
                     <div className="shrink-0">
                       {item.status === 'extracting_name' || item.status === 'analyzing_content' ? (
