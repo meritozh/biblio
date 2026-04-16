@@ -825,7 +825,10 @@ pub async fn file_prepare_import(
 
             if let Ok(ref content_meta) = content_result {
                 if let Some(ref cat) = content_meta.category {
-                    category_id = category_map.get(&cat.to_lowercase()).copied();
+                    // Defensive: LLM may include the parenthesized description
+                    // (e.g. "h-novel (novel with sexual content)"). Strip it.
+                    let cat_clean = cat.split('(').next().unwrap_or(cat).trim().to_lowercase();
+                    category_id = category_map.get(&cat_clean).copied();
                 }
                 for tag in &content_meta.tags {
                     if let Some(&id) = tag_map.get(&tag.to_lowercase()) {

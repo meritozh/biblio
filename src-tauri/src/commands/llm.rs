@@ -217,7 +217,7 @@ pub async fn extract_content_metadata(
         Available categories: {}\n\
         Existing tags: {}\n\n\
         Rules:\n\
-        - category: pick the most appropriate from the list\n\
+        - category: return ONLY the category name. If a category is shown as \"name (description)\", the parenthesized text is just a hint — return \"name\" without the parentheses or description. Example: for \"h-novel (novel with sexual content)\", return \"h-novel\".\n\
         - tags: prefer existing tags, suggest new ones if needed\n\
         - description: 1-2 sentence plot summary based on content\n\
         - Use null for unknown fields",
