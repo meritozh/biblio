@@ -47,6 +47,32 @@ fn get_unique_destination(dest: &std::path::Path) -> PathBuf {
     }
 }
 
+/// Build a clean filename from metadata: "<display_name> <progress> <authors>.ext"
+pub fn build_novel_filename(
+    display_name: &str,
+    progress: Option<&str>,
+    author_names: &[String],
+    ext_with_dot: &str,
+) -> String {
+    let mut parts: Vec<String> = vec![display_name.to_string()];
+    if let Some(p) = progress {
+        if !p.is_empty() {
+            parts.push(p.to_string());
+        }
+    }
+    if !author_names.is_empty() {
+        parts.push(author_names.join(", "));
+    }
+    format!("{}{}", parts.join(" "), ext_with_dot)
+}
+
+/// Remove filesystem-invalid characters from a filename
+pub fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect()
+}
+
 /// Copy a file to destination
 /// Returns the final destination path
 fn copy_file(source: &std::path::Path, dest: &std::path::Path) -> Result<PathBuf, String> {
@@ -992,4 +1018,80 @@ pub async fn file_replace(
     }
 
     file_create(app, path, display_name, category_id, tag_ids, author_ids, metadata, progress, cover_data, cover_mime_type).await
+}
+
+#[cfg(test)]
+mod filename_tests {
+    use super::*;
+
+    #[test]
+    fn test_build_novel_filename_full() {
+        let result = build_novel_filename(
+            "三体",
+            Some("完结"),
+            &["刘慈欣".to_string()],
+            ".txt",
+        );
+        assert_eq!(result, "三体 完结 刘慈欣.txt");
+    }
+
+    #[test]
+    fn test_build_novel_filename_no_progress() {
+        let result = build_novel_filename(
+            "三体",
+            None,
+            &["刘慈欣".to_string()],
+            ".txt",
+        );
+        assert_eq!(result, "三体 刘慈欣.txt");
+    }
+
+    #[test]
+    fn test_build_novel_filename_no_authors() {
+        let result = build_novel_filename(
+            "三体",
+            Some("完结"),
+            &[],
+            ".txt",
+        );
+        assert_eq!(result, "三体 完结.txt");
+    }
+
+    #[test]
+    fn test_build_novel_filename_multiple_authors() {
+        let result = build_novel_filename(
+            "三体",
+            None,
+            &["A".to_string(), "B".to_string()],
+            ".txt",
+        );
+        assert_eq!(result, "三体 A, B.txt");
+    }
+
+    #[test]
+    fn test_build_novel_filename_empty_progress() {
+        let result = build_novel_filename(
+            "三体",
+            Some(""),
+            &["刘慈欣".to_string()],
+            ".txt",
+        );
+        assert_eq!(result, "三体 刘慈欣.txt");
+    }
+
+    #[test]
+    fn test_sanitize_filename_invalid_chars() {
+        assert_eq!(
+            sanitize_filename("a/b\\c:d*e?f\"g<h>i|j.txt"),
+            "abcdefghij.txt"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_filename_preserves_valid() {
+        assert_eq!(
+            sanitize_filename("三体 完结 刘慈欣.txt"),
+            "三体 完结 刘慈欣.txt"
+        );
+    }
 }

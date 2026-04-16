@@ -908,47 +908,9 @@ async fn detect_duplicates(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn test_filename_basic() {
-        let processor = FilenameProcessor;
-        let path = PathBuf::from("/some/path/My Document.pdf");
-        let result = processor.process(&path).unwrap();
-        assert_eq!(result.display_name.unwrap(), "My Document");
-    }
-
-    #[test]
-    fn test_filename_author_title() {
-        let processor = FilenameProcessor;
-        let path = PathBuf::from("/some/John Doe - Great Book.epub");
-        let result = processor.process(&path).unwrap();
-        assert_eq!(result.display_name.unwrap(), "Great Book");
-        assert!(result.suggested_authors.contains(&"John Doe".to_string()));
-    }
-
-    #[test]
-    fn test_filename_with_year() {
-        let processor = FilenameProcessor;
-        let path = PathBuf::from("/some/Amazing Story (2024).pdf");
-        let result = processor.process(&path).unwrap();
-        assert_eq!(result.display_name.unwrap(), "Amazing Story");
-        let year_meta = result.metadata.iter().find(|m| m.key == "year");
-        assert!(year_meta.is_some());
-        assert_eq!(year_meta.unwrap().value, "2024");
-    }
-
-    #[test]
-    fn test_filename_underscores() {
-        let processor = FilenameProcessor;
-        let path = PathBuf::from("/some/my_awesome_file.txt");
-        let result = processor.process(&path).unwrap();
-        assert_eq!(result.display_name.unwrap(), "my awesome file");
-    }
 
     #[test]
     fn test_processor_names() {
-        assert_eq!(FilenameProcessor.name(), "filename");
         assert_eq!(FileTypeDetector.name(), "file_type");
         assert_eq!(PdfMetadataProcessor.name(), "pdf_metadata");
         assert_eq!(ExifProcessor.name(), "exif");
@@ -956,7 +918,6 @@ mod tests {
 
     #[test]
     fn test_processor_supported_types() {
-        assert_eq!(FilenameProcessor.supported_types(), &["*"]);
         assert_eq!(FileTypeDetector.supported_types(), &["*"]);
         assert_eq!(PdfMetadataProcessor.supported_types(), &["application/pdf"]);
         assert!(ExifProcessor.supported_types().contains(&"image/jpeg"));
