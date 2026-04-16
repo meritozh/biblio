@@ -182,6 +182,14 @@ export interface ProcessingProgress {
   status: string;
 }
 
+export type FileAnalysisStatus =
+  | 'pending'
+  | 'extracting_name'
+  | 'analyzing_content'
+  | 'ready'
+  | 'partial'
+  | 'error';
+
 export interface LlmConfig {
   enabled: boolean;
   base_url: string;

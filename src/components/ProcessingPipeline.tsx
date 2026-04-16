@@ -23,6 +23,7 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   FileText,
 } from 'lucide-react';
 import type {
@@ -32,9 +33,10 @@ import type {
   FilePreparedImport,
   MetadataType,
   DuplicateAction,
+  FileAnalysisStatus,
 } from '@/types';
 
-type FileStatus = 'pending' | 'analyzing' | 'done' | 'error';
+type FileStatus = FileAnalysisStatus;
 
 interface FileItemState {
   path: string;
@@ -104,7 +106,7 @@ export function ProcessingPipeline({
       return {
         path,
         fileName,
-        status: 'analyzing' as FileStatus,
+        status: 'pending' as FileStatus,
         formValues: { ...EMPTY_FORM_VALUES, display_name: fileName },
         userEdited: false,
         suggestedTags: [],
@@ -122,7 +124,9 @@ export function ProcessingPipeline({
         unlisten = await listenProcessingProgress((p) => {
           setFileItems((prev) =>
             prev.map((item) =>
-              item.path === p.current_file ? { ...item, status: 'analyzing' as FileStatus } : item
+              item.path === p.current_file
+                ? { ...item, status: p.status as FileStatus }
+                : item
             )
           );
         });
@@ -179,7 +183,9 @@ export function ProcessingPipeline({
           return {
             path: result.path,
             fileName: result.file_name,
-            status: 'done' as FileStatus,
+            status: (prev?.status === 'partial' || prev?.status === 'error')
+              ? prev.status
+              : 'ready' as FileStatus,
             preparedImport: result,
             formValues,
             userEdited: prev?.userEdited ?? false,
@@ -225,7 +231,9 @@ export function ProcessingPipeline({
     setAnalyzing(false);
     setFileItems((prev) =>
       prev.map((item) =>
-        item.status === 'analyzing' ? { ...item, status: 'pending' as FileStatus } : item
+        item.status === 'extracting_name' || item.status === 'analyzing_content'
+          ? { ...item, status: 'pending' as FileStatus }
+          : item
       )
     );
     onOpenChange(false);
@@ -296,7 +304,9 @@ export function ProcessingPipeline({
   const handleImportAll = useCallback(async () => {
     if (importing) return;
 
-    const readyFiles = fileItems.filter((item) => item.status === 'done');
+    const readyFiles = fileItems.filter(
+      (item) => item.status === 'ready' || item.status === 'partial'
+    );
     if (readyFiles.length === 0) return;
 
     setImporting(true);
@@ -355,7 +365,9 @@ export function ProcessingPipeline({
     }
   }, [fileItems, importing, onOpenChange, onImportComplete]);
 
-  const doneCount = fileItems.filter((item) => item.status === 'done').length;
+  const doneCount = fileItems.filter(
+    (item) => item.status === 'ready' || item.status === 'partial'
+  ).length;
   const errorCount = fileItems.filter((item) => item.status === 'error').length;
   const totalFiles = fileItems.length;
   const skipCount = fileItems.filter(
@@ -388,10 +400,12 @@ export function ProcessingPipeline({
                   <div className="flex items-center gap-3">
                     {/* Status icon */}
                     <div className="shrink-0">
-                      {item.status === 'analyzing' ? (
+                      {item.status === 'extracting_name' || item.status === 'analyzing_content' ? (
                         <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                      ) : item.status === 'done' ? (
+                      ) : item.status === 'ready' ? (
                         <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      ) : item.status === 'partial' ? (
+                        <AlertTriangle className="h-4 w-4 text-amber-500" />
                       ) : item.status === 'error' ? (
                         <AlertCircle className="h-4 w-4 text-destructive" />
                       ) : (
@@ -402,8 +416,14 @@ export function ProcessingPipeline({
                     {/* File name */}
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium truncate">{item.fileName}</p>
-                      {item.status === 'analyzing' && (
-                        <p className="text-xs text-muted-foreground">Analyzing...</p>
+                      {item.status === 'extracting_name' && (
+                        <p className="text-xs text-muted-foreground">Extracting name...</p>
+                      )}
+                      {item.status === 'analyzing_content' && (
+                        <p className="text-xs text-muted-foreground">Analyzing content...</p>
+                      )}
+                      {item.status === 'partial' && (
+                        <p className="text-xs text-amber-600">Partial extraction — please fill missing fields</p>
                       )}
                     </div>
 
@@ -418,7 +438,7 @@ export function ProcessingPipeline({
                   </div>
 
                   {/* Expandable form */}
-                  {expandedIds.has(item.path) && item.status === 'done' && (
+                  {expandedIds.has(item.path) && (item.status === 'ready' || item.status === 'partial') && (
                     <div className="mt-4 pt-4 border-t border-border space-y-4">
                       {/* Duplicate warning */}
                       {item.preparedImport?.duplicate_of && (
