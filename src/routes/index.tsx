@@ -281,7 +281,7 @@ function HomePage() {
           />
         </div>
 
-        <div className="flex-1 overflow-auto px-8 py-6">
+        <div className="flex-1 flex flex-col overflow-hidden px-8 py-6">
           {storagePathConfigured === false && (
             <div className="mb-6 p-4 bg-secondary/50 rounded flex items-center gap-3">
               <AlertCircle className="h-4 w-4 text-muted-foreground shrink-0" />

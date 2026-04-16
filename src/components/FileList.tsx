@@ -123,8 +123,8 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
   });
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-md border">
+    <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex-1 min-h-0 overflow-auto rounded-md border">
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
@@ -174,7 +174,7 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
         </Table>
       </div>
       <div
-        className="flex items-center justify-end space-x-2"
+        className="flex items-center justify-end space-x-2 mt-4 shrink-0"
         role="navigation"
         aria-label="Table pagination"
       >
