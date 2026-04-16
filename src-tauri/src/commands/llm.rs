@@ -53,6 +53,28 @@ pub struct LlmUnifiedMetadata {
     pub progress: Option<String>,
 }
 
+/// Schema for Call 1: extract metadata from filename only
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct LlmFilenameMetadata {
+    /// Clean title extracted from filename
+    pub display_name: Option<String>,
+    /// Author names from filename patterns (e.g. "作者：xxx" or "xxx - title")
+    pub authors: Vec<String>,
+    /// Reading progress from filename, e.g. "第1-45章 未完结", "完结", "连载中"
+    pub progress: Option<String>,
+}
+
+/// Schema for Call 2: analyze content samples for classification
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct LlmContentMetadata {
+    /// Category from the available list
+    pub category: Option<String>,
+    /// Genre/theme tags
+    pub tags: Vec<String>,
+    /// Brief description based on content
+    pub description: Option<String>,
+}
+
 async fn read_setting(pool: &sqlx::SqlitePool, key: &str) -> Option<String> {
     let result: Option<(String,)> = sqlx::query_as(
         "SELECT value FROM app_settings WHERE key = ?",
@@ -194,6 +216,87 @@ pub async fn extract_metadata_with_llm(
         .extract(&input)
         .await
         .map_err(|e| format!("LLM extraction failed: {e}"))
+}
+
+/// Call 1: Extract display_name, authors, progress from filename only.
+/// No DB context needed — filename parsing is structurally deterministic.
+pub async fn extract_filename_metadata(
+    config: &LlmConfig,
+    file_name: &str,
+) -> Result<LlmFilenameMetadata, String> {
+    let client = build_client(config)?;
+
+    let preamble = "Extract metadata from this filename only. Rules:\n\
+        - display_name: the clean title (remove site prefixes like [sxsy.org], brackets, file extension)\n\
+        - authors: if filename has \"作者：xxx\" or \"xxx - title\" pattern, extract the author\n\
+        - progress: combine chapter range + status, e.g. \"第1-45章 未完结\", \"完结\", \"连载中\"\n\
+        - Use null for unknown fields";
+
+    let input = format!("File name: {}", file_name);
+
+    let extractor = client
+        .extractor::<LlmFilenameMetadata>(&config.model)
+        .preamble(preamble)
+        .max_tokens(512)
+        .build();
+
+    extractor
+        .extract(&input)
+        .await
+        .map_err(|e| format!("LLM filename extraction failed: {e}"))
+}
+
+/// Call 2: Analyze content samples for classification.
+/// Takes the display_name hint from Call 1 and DB context for categories/tags.
+pub async fn extract_content_metadata(
+    config: &LlmConfig,
+    content: &str,
+    display_name_hint: Option<&str>,
+    categories: &[String],
+    tags: &[String],
+) -> Result<LlmContentMetadata, String> {
+    let client = build_client(config)?;
+
+    let categories_str = if categories.is_empty() {
+        "None defined yet".to_string()
+    } else {
+        categories.join(", ")
+    };
+    let tags_str = if tags.is_empty() {
+        "None defined yet".to_string()
+    } else {
+        tags.join(", ")
+    };
+
+    let preamble = format!(
+        "Analyze the content samples to classify this novel.\n\
+        Available categories: {}\n\
+        Existing tags: {}\n\n\
+        Rules:\n\
+        - category: pick the most appropriate from the list\n\
+        - tags: prefer existing tags, suggest new ones if needed\n\
+        - description: 1-2 sentence plot summary based on content\n\
+        - Use null for unknown fields",
+        categories_str, tags_str
+    );
+
+    let mut input = String::new();
+    if let Some(name) = display_name_hint {
+        input.push_str(&format!("Title: {}\n\n", name));
+    }
+    input.push_str("File content samples:\n");
+    input.push_str(content);
+
+    let extractor = client
+        .extractor::<LlmContentMetadata>(&config.model)
+        .preamble(&preamble)
+        .max_tokens(1024)
+        .build();
+
+    extractor
+        .extract(&input)
+        .await
+        .map_err(|e| format!("LLM content analysis failed: {e}"))
 }
 
 async fn resolve_preamble(
