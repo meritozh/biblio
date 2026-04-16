@@ -348,10 +348,8 @@ pub async fn file_create(
         return Err("SOURCE_ALREADY_IN_STORAGE".to_string());
     }
 
-    // Determine destination folder and category name
-    let mut category_name: Option<String> = None;
+    // Determine destination folder
     let folder_name = if let Some(cat_id) = category_id {
-        // Get category's folder_name, computing if NULL
         let cat_result: Option<(Option<String>, String)> = sqlx::query_as(
             "SELECT folder_name, name FROM categories WHERE id = ?"
         )
@@ -361,15 +359,8 @@ pub async fn file_create(
         .map_err(|e| e.to_string())?;
 
         match cat_result {
-            Some((Some(folder), name)) => {
-                category_name = Some(name);
-                folder
-            }
-            Some((None, name)) => {
-                let folder = sanitize_folder_name(&name);
-                category_name = Some(name);
-                folder
-            }
+            Some((Some(folder), _)) => folder,
+            Some((None, name)) => sanitize_folder_name(&name),
             None => return Err("CATEGORY_NOT_FOUND".to_string()),
         }
     } else {
@@ -383,11 +374,50 @@ pub async fn file_create(
             .map_err(|e| format!("Failed to create folder: {}", e))?;
     }
 
-    // Get filename and build destination path
-    let filename = source_path.file_name()
+    // Get source filename and extension
+    let source_filename = source_path.file_name()
         .and_then(|n| n.to_str())
         .ok_or("Invalid filename")?;
-    let dest_path = dest_folder.join(filename);
+    let ext_lower = source_path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+    let should_clean_name = matches!(ext_lower.as_deref(), Some("txt") | Some("epub"));
+
+    // Resolve author names up-front (needed for clean filename)
+    let resolved_author_names: Vec<String> = match author_ids.as_ref() {
+        Some(ids) if !ids.is_empty() => {
+            let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT name FROM authors WHERE id IN ({})",
+                placeholders
+            );
+            let mut q = sqlx::query_scalar::<_, String>(&sql);
+            for id in ids {
+                q = q.bind(id);
+            }
+            q.fetch_all(&pool).await.map_err(|e| e.to_string())?
+        }
+        _ => Vec::new(),
+    };
+
+    // Compute destination filename
+    let dest_filename = if should_clean_name {
+        let ext_with_dot = ext_lower
+            .as_ref()
+            .map(|e| format!(".{}", e))
+            .unwrap_or_default();
+        let clean = build_novel_filename(
+            &validated_name,
+            progress.as_deref(),
+            &resolved_author_names,
+            &ext_with_dot,
+        );
+        sanitize_filename(&clean)
+    } else {
+        source_filename.to_string()
+    };
+
+    let dest_path = get_unique_destination(&dest_folder.join(&dest_filename));
 
     // Check import mode setting
     let import_mode: Option<(String,)> = sqlx::query_as(
@@ -474,9 +504,6 @@ pub async fn file_create(
         .await
         .map_err(|e| format!("Failed to save cover: {}", e))?;
     }
-
-    // Rename file for novels: "<name> <progress> <author>.ext"
-    sync_novel_filename(&pool, file_id, category_name.as_deref()).await;
 
     Ok(FileCreateResponse { id: file_id })
 }
