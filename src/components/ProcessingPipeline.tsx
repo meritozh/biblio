@@ -15,7 +15,7 @@ import {
 } from '@/components/DynamicMetadataForm';
 import { SuggestedTagChip } from '@/components/SuggestedTagChip';
 import { DuplicateWarning } from '@/components/DuplicateWarning';
-import { filePrepareImport, fileCreate, fileReplace, cancelProcessing, listenProcessingProgress } from '@/lib/tauri';
+import { filePrepareImport, fileCreate, fileReplace, cancelProcessing, listenProcessingProgress, listenFilePrepared } from '@/lib/tauri';
 import {
   ChevronDown,
   ChevronRight,
@@ -115,12 +115,17 @@ export function ProcessingPipeline({
     setFileItems(initialItems);
     setImporting(false);
 
+    // Track authors auto-created during this batch, shared across per-file events
+    const createdAuthorIds: Record<string, number> = {};
+
     const runAnalysis = async () => {
       setAnalyzing(true);
 
-      let unlisten: UnlistenFn | null = null;
+      let unlistenProgress: UnlistenFn | null = null;
+      let unlistenPrepared: UnlistenFn | null = null;
+
       try {
-        unlisten = await listenProcessingProgress((p) => {
+        unlistenProgress = await listenProcessingProgress((p) => {
           setFileItems((prev) =>
             prev.map((item) =>
               item.path === p.current_file
@@ -134,27 +139,19 @@ export function ProcessingPipeline({
       }
 
       try {
-        const results = await filePrepareImport(paths);
-
-        // Auto-create unresolved authors from LLM results
-        const createdAuthorIds: Record<string, number> = {};
-        for (const result of results) {
+        unlistenPrepared = await listenFilePrepared(async (result) => {
+          // Auto-create any unresolved authors for THIS file (deduped across batch)
           for (const name of result.unresolved_author_names) {
             if (!createdAuthorIds[name]) {
               try {
                 const newAuthor = await onAuthorCreate(name);
                 createdAuthorIds[name] = newAuthor.id;
               } catch {
-                // Author creation failed (e.g. duplicate) — skip
+                // Already exists or creation failed — ignore
               }
             }
           }
-        }
 
-        const updatedItems = results.map((result: FilePreparedImport) => {
-          const prev = fileItems.find((item) => item.path === result.path);
-
-          // Merge resolved + newly created author IDs
           const allAuthorIds = [...result.author_ids];
           for (const name of result.unresolved_author_names) {
             const id = createdAuthorIds[name];
@@ -163,46 +160,68 @@ export function ProcessingPipeline({
             }
           }
 
-          const formValues: DynamicMetadataFormValues = prev?.userEdited
-            ? prev.formValues
-            : {
-                display_name: result.display_name || result.file_name,
-                category_id: result.category_id,
-                tag_ids: result.tag_ids,
-                author_ids: allAuthorIds,
-                metadata: result.metadata.map((m) => ({
-                  key: m.key,
-                  value: m.value,
-                  data_type: m.data_type as MetadataType,
-                })),
-                progress: result.progress ?? '',
-                cover_data: result.cover_data,
-                cover_mime_type: result.cover_mime_type,
+          setFileItems((prev) =>
+            prev.map((item) => {
+              if (item.path !== result.path) return item;
+
+              const formValues: DynamicMetadataFormValues = item.userEdited
+                ? item.formValues
+                : {
+                    display_name: result.display_name || result.file_name,
+                    category_id: result.category_id,
+                    tag_ids: result.tag_ids,
+                    author_ids: allAuthorIds,
+                    metadata: result.metadata.map((m) => ({
+                      key: m.key,
+                      value: m.value,
+                      data_type: m.data_type as MetadataType,
+                    })),
+                    progress: result.progress ?? '',
+                    cover_data: result.cover_data,
+                    cover_mime_type: result.cover_mime_type,
+                  };
+              return {
+                ...item,
+                status:
+                  item.status === 'partial' || item.status === 'error'
+                    ? item.status
+                    : ('ready' as FileStatus),
+                preparedImport: result,
+                formValues,
+                suggestedTags: result.suggested_tags ?? [],
               };
-          return {
-            path: result.path,
-            fileName: result.file_name,
-            status: (prev?.status === 'partial' || prev?.status === 'error')
-              ? prev.status
-              : 'ready' as FileStatus,
-            preparedImport: result,
-            formValues,
-            userEdited: prev?.userEdited ?? false,
-            suggestedTags: result.suggested_tags ?? [],
-            duplicateAction: result.duplicate_of?.recommendation ?? null,
-          };
-        });
+            })
+          );
 
+          // Auto-expand this card now that its metadata is ready
+          setExpandedIds((prev) => {
+            const next = new Set(prev);
+            next.add(result.path);
+            return next;
+          });
+        });
+      } catch (error) {
+        console.error('Failed to listen for file-prepared:', error);
+      }
+
+      try {
+        const results = await filePrepareImport(paths);
+
+        // Final sync: duplicate info isn't in streaming events — apply it here.
         setFileItems((prev) => {
-          const resultPaths = new Set(updatedItems.map((r) => r.path));
-          const failed = prev
-            .filter((item) => !resultPaths.has(item.path))
-            .map((item) => ({ ...item, status: 'error' as FileStatus, error: 'Analysis failed' }));
-          return [...updatedItems, ...failed];
+          const resultsByPath = new Map(results.map((r) => [r.path, r] as const));
+          return prev.map((item) => {
+            const r = resultsByPath.get(item.path);
+            if (!r) {
+              return { ...item, status: 'error' as FileStatus, error: 'Analysis failed' };
+            }
+            return {
+              ...item,
+              preparedImport: r,
+              duplicateAction: r.duplicate_of?.recommendation ?? null,
+            };
+          });
         });
-
-        // Auto-expand all items after analysis
-        setExpandedIds(new Set(paths));
       } catch (error) {
         console.error('Analysis failed:', error);
         setFileItems((prev) =>
@@ -213,11 +232,9 @@ export function ProcessingPipeline({
           }))
         );
       } finally {
-        if (unlisten) {
-          unlisten();
-        }
+        if (unlistenProgress) unlistenProgress();
+        if (unlistenPrepared) unlistenPrepared();
         setAnalyzing(false);
-  
       }
     };
 

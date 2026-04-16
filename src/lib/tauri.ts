@@ -307,6 +307,14 @@ export function listenProcessingProgress(
   });
 }
 
+export function listenFilePrepared(
+  callback: (prepared: FilePreparedImport) => void
+): Promise<UnlistenFn> {
+  return listen<FilePreparedImport>('file-prepared', (event) => {
+    callback(event.payload);
+  });
+}
+
 export async function llmConfigGet(): Promise<LlmConfig> {
   return invoke('llm_config_get');
 }

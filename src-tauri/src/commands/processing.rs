@@ -906,7 +906,7 @@ pub async fn file_prepare_import(
             });
         }
 
-        results.push(FilePreparedImport {
+        let prepared = FilePreparedImport {
             path: path_str,
             file_name,
             display_name: final_display_name,
@@ -921,7 +921,14 @@ pub async fn file_prepare_import(
             suggested_tags,
             duplicate_of: None,
             batch_duplicate_group: None,
-        });
+        };
+
+        // Stream partial result to the frontend as this file finishes.
+        // duplicate_of / batch_duplicate_group are filled in Phase 3 and
+        // delivered via the final promise return value.
+        let _ = app.emit("file-prepared", &prepared);
+
+        results.push(prepared);
     }
 
     // Phase 3: Duplicate detection
