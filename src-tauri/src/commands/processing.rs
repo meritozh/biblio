@@ -630,7 +630,6 @@ pub async fn file_prepare_import(
         }
     }).collect();
     let tag_names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
-    let author_names: Vec<String> = authors.iter().map(|a| a.name.clone()).collect();
 
     // Load LLM config early to check analyze_content setting
     let llm_analyze_content = super::llm::load_config(&pool).await
