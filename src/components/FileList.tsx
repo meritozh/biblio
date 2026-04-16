@@ -191,21 +191,17 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
       }
       table.setColumnSizing(newSizing);
 
-      // Page size — measure actual header & row height from the rendered DOM
-      // instead of guessing from Tailwind class names. border-b, cell padding,
-      // button heights, sub-pixel rounding all vary; a single constant can't
-      // stay accurate. HEADER_HEIGHT/ROW_HEIGHT are fallbacks only (used when
-      // no rows are rendered, e.g. empty file list).
+      // Page size — measure actual header & first-row heights from the
+      // rendered DOM instead of guessing from Tailwind class names.
+      // HEADER_HEIGHT/ROW_HEIGHT are fallbacks only (used when no rows are
+      // rendered, e.g. empty file list).
       const thead = el.querySelector<HTMLElement>('thead');
-      const tbody = el.querySelector<HTMLElement>('tbody');
-      const renderedRows = tbody?.querySelectorAll('tr').length ?? 0;
-      const hasRealData = files.length > 0 && renderedRows > 0;
-
+      const firstRow = el.querySelector<HTMLElement>('tbody tr');
       const actualHeader = thead
         ? thead.getBoundingClientRect().height
         : HEADER_HEIGHT;
-      const actualRow = hasRealData && tbody
-        ? tbody.getBoundingClientRect().height / renderedRows
+      const actualRow = firstRow && files.length > 0
+        ? firstRow.getBoundingClientRect().height
         : ROW_HEIGHT;
 
       const rowsArea = Math.max(0, height - actualHeader);
