@@ -178,7 +178,18 @@ function TagsPage() {
                               autoFocus
                             />
                           ) : (
-                            tag.name
+                            <Link
+                              to="/tags/$tagId"
+                              params={{ tagId: String(tag.id) }}
+                              className="text-foreground hover:text-primary hover:underline underline-offset-4"
+                            >
+                              {tag.name}
+                              {tag.usageCount > 0 && (
+                                <span className="ml-2 text-xs text-muted-foreground font-serif-italic">
+                                  — {tag.usageCount}
+                                </span>
+                              )}
+                            </Link>
                           )}
                         </TableCell>
                         <TableCell>

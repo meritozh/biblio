@@ -92,6 +92,7 @@ pub struct FileListItem {
     pub in_storage: bool,
     pub original_path: Option<String>,
     pub progress: Option<String>,
+    pub description: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub tags: Vec<Tag>,

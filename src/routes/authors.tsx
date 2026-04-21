@@ -178,7 +178,18 @@ function AuthorsPage() {
                               autoFocus
                             />
                           ) : (
-                            author.name
+                            <Link
+                              to="/authors/$authorId"
+                              params={{ authorId: String(author.id) }}
+                              className="text-foreground hover:text-primary hover:underline underline-offset-4"
+                            >
+                              {author.name}
+                              {author.usageCount > 0 && (
+                                <span className="ml-2 text-xs text-muted-foreground font-serif-italic">
+                                  — {author.usageCount}
+                                </span>
+                              )}
+                            </Link>
                           )}
                         </TableCell>
                         <TableCell>

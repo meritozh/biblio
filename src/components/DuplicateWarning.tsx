@@ -13,9 +13,9 @@ const ACTION_LABELS: Record<DuplicateAction, { label: string; description: strin
     label: 'Replace existing',
     description: 'Delete the existing file and import this one',
   },
-  Skip: {
-    label: 'Skip',
-    description: 'Do not import this file',
+  Delete: {
+    label: 'Delete',
+    description: 'Do not import — permanently delete this file from disk',
   },
   ImportAnyway: {
     label: 'Import anyway',
@@ -62,7 +62,7 @@ export function DuplicateWarning({
           >
             <input
               type="radio"
-              name="duplicate-action"
+              name={`duplicate-action-${duplicateInfo.existing_file_id}`}
               checked={selectedAction === action}
               onChange={() => onActionChange(action)}
               className="mt-0.5 accent-primary"

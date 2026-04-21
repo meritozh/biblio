@@ -41,9 +41,9 @@ TypeScript 5.x (frontend), Rust 1.75+ (Tauri backend): Follow standard conventio
 
 ## Gotchas
 
-- **Database Schema**: Project is in active development. Update `schema.sql` directly when schema changes. Do NOT create migration files. After modifying schema, delete the dev database to reset (`~/Library/Application Support/com.biblio.app/biblio.db`).
+- **Database Schema**: Do not edit `schema.sql` directly. Add a new migration entry in `src-tauri/src/database/mod.rs::get_migrations()` with the next `version` number and the SQL in the `sql` field. `tauri_plugin_sql` runs pending migrations on startup.
 
-- **Database Location**: Dev database is at `~/Library/Application Support/io.augite.biblio/biblio.db`. Delete to reset.
+- **Database Location**: Dev database is at `~/Library/Application Support/io.augite.biblio/biblio.db`. Delete only as a last-resort dev reset — normally rely on migrations to evolve the schema.
 
 - **Storage System**: Files are moved to `{storage_path}/{category}/` folders. Check storage path state when dialogs close.
 

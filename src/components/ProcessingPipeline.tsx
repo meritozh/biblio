@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { UnlistenFn } from '@tauri-apps/api/event';
 import {
   Dialog,
@@ -10,12 +10,27 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  TabsContent,
+} from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import {
   DynamicMetadataForm,
   type DynamicMetadataFormValues,
 } from '@/components/DynamicMetadataForm';
 import { SuggestedTagChip } from '@/components/SuggestedTagChip';
 import { DuplicateWarning } from '@/components/DuplicateWarning';
-import { filePrepareImport, fileCreate, fileReplace, cancelProcessing, listenProcessingProgress, listenFilePrepared } from '@/lib/tauri';
+import {
+  filePrepareImport,
+  fileCreate,
+  fileReplace,
+  fileDeleteSource,
+  cancelProcessing,
+  listenProcessingProgress,
+  listenFilePrepared,
+} from '@/lib/tauri';
 import {
   ChevronDown,
   ChevronRight,
@@ -37,10 +52,22 @@ import type {
 
 type FileStatus = FileAnalysisStatus;
 
+/**
+ * Which panel a file belongs in:
+ *   - `processing`: still being analyzed — not yet in any tab, shown only as a
+ *     header-level progress counter.
+ *   - `review`: analysis complete but needs human attention (duplicate detected
+ *     OR partial metadata extraction).
+ *   - `ready`: analysis complete, all signals healthy, safe to batch-import.
+ *   - `failed`: analysis errored. Cannot be imported.
+ */
+type Bucket = 'processing' | 'review' | 'ready' | 'failed';
+
 interface FileItemState {
   path: string;
   fileName: string;
   status: FileStatus;
+  selected: boolean;
   preparedImport?: FilePreparedImport;
   formValues: DynamicMetadataFormValues;
   error?: string;
@@ -71,6 +98,23 @@ const EMPTY_FORM_VALUES: DynamicMetadataFormValues = {
   progress: '',
 };
 
+function bucketOf(item: FileItemState): Bucket {
+  if (item.status === 'error') return 'failed';
+  if (
+    item.status === 'pending' ||
+    item.status === 'extracting_name' ||
+    item.status === 'analyzing_content'
+  ) {
+    return 'processing';
+  }
+  // status is 'ready' or 'partial' — decide between review and ready
+  if (item.status === 'partial' || item.preparedImport?.duplicate_of) {
+    return 'review';
+  }
+  return 'ready';
+}
+
+type TabKey = 'review' | 'ready' | 'failed';
 
 export function ProcessingPipeline({
   open,
@@ -88,6 +132,7 @@ export function ProcessingPipeline({
   const [analyzing, setAnalyzing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState<TabKey>('review');
   const analysisStarted = useRef(false);
 
   useEffect(() => {
@@ -96,7 +141,6 @@ export function ProcessingPipeline({
       return;
     }
 
-    // Prevent re-entry
     if (analysisStarted.current) return;
     analysisStarted.current = true;
 
@@ -106,6 +150,7 @@ export function ProcessingPipeline({
         path,
         fileName,
         status: 'pending' as FileStatus,
+        selected: true, // default-include; Failed items will be auto-unchecked on transition
         formValues: { ...EMPTY_FORM_VALUES, display_name: fileName },
         userEdited: false,
         suggestedTags: [],
@@ -114,8 +159,8 @@ export function ProcessingPipeline({
     });
     setFileItems(initialItems);
     setImporting(false);
+    setExpandedIds(new Set()); // start all collapsed; Review items auto-expand on arrival
 
-    // Track authors auto-created during this batch, shared across per-file events
     const createdAuthorIds: Record<string, number> = {};
 
     const runAnalysis = async () => {
@@ -189,16 +234,25 @@ export function ProcessingPipeline({
                 preparedImport: result,
                 formValues,
                 suggestedTags: result.suggested_tags ?? [],
+                duplicateAction:
+                  item.duplicateAction ??
+                  result.duplicate_of?.recommendation ??
+                  null,
               };
             })
           );
 
-          // Auto-expand this card now that its metadata is ready
-          setExpandedIds((prev) => {
-            const next = new Set(prev);
-            next.add(result.path);
-            return next;
-          });
+          // Review items auto-expand so duplicate & partial signals are visible;
+          // Ready items stay collapsed to keep the list dense.
+          const needsReview =
+            result.duplicate_of !== null && result.duplicate_of !== undefined;
+          if (needsReview) {
+            setExpandedIds((prev) => {
+              const next = new Set(prev);
+              next.add(result.path);
+              return next;
+            });
+          }
         });
       } catch (error) {
         console.error('Failed to listen for file-prepared:', error);
@@ -207,18 +261,25 @@ export function ProcessingPipeline({
       try {
         const results = await filePrepareImport(paths);
 
-        // Final sync: duplicate info isn't in streaming events — apply it here.
+        // Final sync: backfill anything the streaming events missed + mark
+        // items that never produced a result as errored.
         setFileItems((prev) => {
           const resultsByPath = new Map(results.map((r) => [r.path, r] as const));
           return prev.map((item) => {
             const r = resultsByPath.get(item.path);
             if (!r) {
-              return { ...item, status: 'error' as FileStatus, error: 'Analysis failed' };
+              return {
+                ...item,
+                status: 'error' as FileStatus,
+                error: 'Analysis failed',
+                selected: false,
+              };
             }
             return {
               ...item,
               preparedImport: r,
-              duplicateAction: r.duplicate_of?.recommendation ?? null,
+              duplicateAction:
+                item.duplicateAction ?? r.duplicate_of?.recommendation ?? null,
             };
           });
         });
@@ -229,6 +290,7 @@ export function ProcessingPipeline({
             ...item,
             status: 'error' as FileStatus,
             error: String(error),
+            selected: false,
           }))
         );
       } finally {
@@ -239,7 +301,25 @@ export function ProcessingPipeline({
     };
 
     runAnalysis();
-  }, [open, paths]);
+  }, [open, paths, onAuthorCreate]);
+
+  // Auto-deselect items that transitioned to error after initial analysis.
+  // (The streaming path can mark a file ready → we then import it and it
+  //  fails → status becomes error; in that case leave selected untouched so
+  //  the error stays visible in Failed tab without surprising re-check.)
+  useEffect(() => {
+    setFileItems((prev) => {
+      let changed = false;
+      const next = prev.map((item) => {
+        if (item.status === 'error' && item.selected) {
+          changed = true;
+          return { ...item, selected: false };
+        }
+        return item;
+      });
+      return changed ? next : prev;
+    });
+  }, [fileItems.length]);
 
   const handleCancelAnalysis = useCallback(async () => {
     await cancelProcessing();
@@ -258,22 +338,32 @@ export function ProcessingPipeline({
   const handleToggleExpand = useCallback((path: string) => {
     setExpandedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
       return next;
     });
   }, []);
 
-  const handleFormChange = useCallback((path: string, values: DynamicMetadataFormValues) => {
+  const handleToggleSelected = useCallback((path: string) => {
     setFileItems((prev) =>
       prev.map((item) =>
-        item.path === path ? { ...item, formValues: values, userEdited: true } : item
+        item.path === path ? { ...item, selected: !item.selected } : item
       )
     );
   }, []);
+
+  const handleFormChange = useCallback(
+    (path: string, values: DynamicMetadataFormValues) => {
+      setFileItems((prev) =>
+        prev.map((item) =>
+          item.path === path
+            ? { ...item, formValues: values, userEdited: true }
+            : item
+        )
+      );
+    },
+    []
+  );
 
   const handleApproveSuggestedTag = useCallback(
     async (path: string, tagName: string) => {
@@ -317,21 +407,90 @@ export function ProcessingPipeline({
     );
   }, []);
 
-  const handleImportAll = useCallback(async () => {
+  // Bucket all items once per render.
+  const buckets = useMemo(() => {
+    const b: Record<Bucket, FileItemState[]> = {
+      processing: [],
+      review: [],
+      ready: [],
+      failed: [],
+    };
+    for (const item of fileItems) {
+      b[bucketOf(item)].push(item);
+    }
+    return b;
+  }, [fileItems]);
+
+  // Auto-switch to the first non-empty tab once processing settles.
+  // Prefer Review (needs attention), then Ready, then Failed.
+  useEffect(() => {
+    if (analyzing) return;
+    if (buckets.review.length > 0) setActiveTab('review');
+    else if (buckets.ready.length > 0) setActiveTab('ready');
+    else if (buckets.failed.length > 0) setActiveTab('failed');
+  }, [analyzing, buckets.review.length, buckets.ready.length, buckets.failed.length]);
+
+  const handleToggleAllInTab = useCallback(
+    (tab: TabKey, value: boolean) => {
+      setFileItems((prev) =>
+        prev.map((item) => {
+          const itemTab: TabKey | null =
+            bucketOf(item) === 'review'
+              ? 'review'
+              : bucketOf(item) === 'ready'
+                ? 'ready'
+                : bucketOf(item) === 'failed'
+                  ? 'failed'
+                  : null;
+          if (itemTab === tab) {
+            // Never auto-re-select Failed items (they have no data to import).
+            if (tab === 'failed') return item;
+            return { ...item, selected: value };
+          }
+          return item;
+        })
+      );
+    },
+    []
+  );
+
+  const handleImport = useCallback(async () => {
     if (importing) return;
 
-    const readyFiles = fileItems.filter(
-      (item) => item.status === 'ready' || item.status === 'partial'
+    // Only process non-failed items that the user has checked.
+    const toProcess = fileItems.filter(
+      (item) =>
+        item.selected &&
+        (item.status === 'ready' || item.status === 'partial')
     );
-    if (readyFiles.length === 0) return;
+    if (toProcess.length === 0) return;
+
+    // Clicking Import is a commitment to the current snapshot — stop the
+    // backend from chewing through any still-queued LLM calls. The cancel
+    // flag is cooperative (see processing.rs) so the currently in-flight
+    // file may still finish, but the queue past it is halted immediately.
+    if (analyzing) {
+      try {
+        await cancelProcessing();
+      } catch (error) {
+        console.error('Failed to cancel queued analysis:', error);
+      }
+    }
 
     setImporting(true);
-
     const errors: string[] = [];
 
     try {
-      for (const item of readyFiles) {
-        if (item.duplicateAction === 'Skip') continue;
+      for (const item of toProcess) {
+        if (item.duplicateAction === 'Delete') {
+          try {
+            await fileDeleteSource(item.path);
+          } catch (error) {
+            console.error(`Failed to delete source ${item.fileName}:`, error);
+            errors.push(`${item.fileName} (delete): ${String(error)}`);
+          }
+          continue;
+        }
 
         try {
           const createParams = {
@@ -363,7 +522,12 @@ export function ProcessingPipeline({
           setFileItems((prev) =>
             prev.map((f) =>
               f.path === item.path
-                ? { ...f, status: 'error' as FileStatus, error: String(error) }
+                ? {
+                    ...f,
+                    status: 'error' as FileStatus,
+                    error: String(error),
+                    selected: false,
+                  }
                 : f
             )
           );
@@ -379,144 +543,160 @@ export function ProcessingPipeline({
     } finally {
       setImporting(false);
     }
-  }, [fileItems, importing, onOpenChange, onImportComplete]);
+  }, [fileItems, importing, analyzing, onOpenChange, onImportComplete]);
 
-  const doneCount = fileItems.filter(
-    (item) => item.status === 'ready' || item.status === 'partial'
-  ).length;
-  const errorCount = fileItems.filter((item) => item.status === 'error').length;
+  const processingCount = buckets.processing.length;
   const totalFiles = fileItems.length;
-  const skipCount = fileItems.filter(
-    (item) => item.duplicateAction === 'Skip'
-  ).length;
+  const analyzedCount = totalFiles - processingCount;
 
+  const selectedToImport = fileItems.filter(
+    (item) =>
+      item.selected &&
+      (item.status === 'ready' || item.status === 'partial') &&
+      item.duplicateAction !== 'Delete'
+  ).length;
+  const selectedToDelete = fileItems.filter(
+    (item) =>
+      item.selected &&
+      (item.status === 'ready' || item.status === 'partial') &&
+      item.duplicateAction === 'Delete'
+  ).length;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-w-2xl max-h-[90vh] flex flex-col overflow-hidden"
+        className="max-w-3xl max-h-[90vh] flex flex-col overflow-hidden"
         onInteractOutside={(e) => e.preventDefault()}
         onEscapeKeyDown={(e) => e.preventDefault()}
       >
         <DialogHeader>
-          <DialogTitle>Import Files</DialogTitle>
+          <DialogTitle className="flex items-baseline gap-3">
+            <span>Import</span>
+            <span className="font-serif-italic text-sm text-muted-foreground">
+              — {totalFiles} {totalFiles === 1 ? 'file' : 'files'}
+            </span>
+          </DialogTitle>
         </DialogHeader>
 
-        {/* File list — native overflow so scrollbar is reliable and sits outside content padding */}
-        <div className="flex-1 min-h-0 -mx-6 overflow-y-auto">
-          <div className="space-y-3 py-2 px-6">
-            {fileItems.map((item) => (
-              <Card
-                key={item.path}
-                className="transition-all duration-200"
-              >
-                <CardContent className="p-3">
-                  {/* File header row — only this is clickable, so popovers in the expanded form below aren't caught by the toggle handler */}
-                  <div
-                    className="flex items-center gap-3 cursor-pointer hover:text-primary/90"
-                    onClick={() => handleToggleExpand(item.path)}
-                  >
-                    {/* Status icon */}
-                    <div className="shrink-0">
-                      {item.status === 'extracting_name' || item.status === 'analyzing_content' ? (
-                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                      ) : item.status === 'ready' ? (
-                        <CheckCircle2 className="h-4 w-4 text-green-500" />
-                      ) : item.status === 'partial' ? (
-                        <AlertTriangle className="h-4 w-4 text-amber-500" />
-                      ) : item.status === 'error' ? (
-                        <AlertCircle className="h-4 w-4 text-destructive" />
-                      ) : (
-                        <FileText className="h-4 w-4 text-muted-foreground" />
-                      )}
-                    </div>
-
-                    {/* File name */}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">{item.fileName}</p>
-                      {item.status === 'extracting_name' && (
-                        <p className="text-xs text-muted-foreground">Extracting name...</p>
-                      )}
-                      {item.status === 'analyzing_content' && (
-                        <p className="text-xs text-muted-foreground">Analyzing content...</p>
-                      )}
-                      {item.status === 'partial' && (
-                        <p className="text-xs text-amber-600">Partial extraction — please fill missing fields</p>
-                      )}
-                    </div>
-
-                    {/* Expand/collapse icon */}
-                    <div className="shrink-0 text-muted-foreground">
-                      {expandedIds.has(item.path) ? (
-                        <ChevronDown className="h-4 w-4" />
-                      ) : (
-                        <ChevronRight className="h-4 w-4" />
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Expandable form */}
-                  {expandedIds.has(item.path) && (item.status === 'ready' || item.status === 'partial') && (
-                    <div className="mt-4 pt-4 border-t border-border space-y-4">
-                      {/* Duplicate warning */}
-                      {item.preparedImport?.duplicate_of && (
-                        <DuplicateWarning
-                          duplicateInfo={item.preparedImport.duplicate_of}
-                          newProgress={item.formValues.progress ?? null}
-                          selectedAction={item.duplicateAction ?? item.preparedImport.duplicate_of.recommendation}
-                          onActionChange={(action) => handleDuplicateAction(item.path, action)}
-                        />
-                      )}
-
-                      {/* Suggested new tags */}
-                      {item.suggestedTags.length > 0 && (
-                        <div className="space-y-2">
-                          <p className="text-xs text-muted-foreground">Suggested new tags:</p>
-                          <div className="flex flex-wrap gap-1.5">
-                            {item.suggestedTags.map((tag) => (
-                              <SuggestedTagChip
-                                key={tag}
-                                name={tag}
-                                onApprove={(name) => handleApproveSuggestedTag(item.path, name)}
-                                onDismiss={(name) => handleDismissSuggestedTag(item.path, name)}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      <DynamicMetadataForm
-                        values={item.formValues}
-                        onChange={(values) => handleFormChange(item.path, values)}
-                        categories={categories}
-                        tags={tags}
-                        authors={authors}
-                        onCategoryCreated={onCategoryCreated}
-                        onTagCreate={onTagCreate}
-                        onAuthorCreate={onAuthorCreate}
-                      />
-                    </div>
-                  )}
-
-                  {/* Error message */}
-                  {item.status === 'error' && item.error && (
-                    <div className="mt-2 text-xs text-destructive">{item.error}</div>
-                  )}
-                </CardContent>
-              </Card>
-            ))}
+        {/* Streaming progress strip: visible while any file is in flight */}
+        {processingCount > 0 && (
+          <div className="flex items-center gap-2 px-1 pb-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+            <span>
+              Analyzing {analyzedCount + 1} of {totalFiles}…
+            </span>
+            <div className="flex-1 h-[3px] rounded-full bg-muted overflow-hidden ml-2">
+              <div
+                className="h-full bg-primary transition-[width] duration-300"
+                style={{ width: `${(analyzedCount / Math.max(1, totalFiles)) * 100}%` }}
+              />
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* Footer with summary and actions */}
+        <Tabs
+          value={activeTab}
+          onValueChange={(v) => setActiveTab(v as TabKey)}
+          className="flex-1 flex flex-col min-h-0"
+        >
+          <TabsList className="self-start">
+            <TabsTrigger value="review" className="gap-2">
+              Review
+              <CountBadge count={buckets.review.length} tone="warning" />
+            </TabsTrigger>
+            <TabsTrigger value="ready" className="gap-2">
+              Ready
+              <CountBadge count={buckets.ready.length} tone="success" />
+            </TabsTrigger>
+            <TabsTrigger value="failed" className="gap-2">
+              Failed
+              <CountBadge count={buckets.failed.length} tone="destructive" />
+            </TabsTrigger>
+          </TabsList>
+
+          <TabPanel
+            tabKey="review"
+            items={buckets.review}
+            emptyLabel="No files need review."
+            expandedIds={expandedIds}
+            onToggleExpand={handleToggleExpand}
+            onToggleSelected={handleToggleSelected}
+            onToggleAll={handleToggleAllInTab}
+            onFormChange={handleFormChange}
+            onApproveSuggestedTag={handleApproveSuggestedTag}
+            onDismissSuggestedTag={handleDismissSuggestedTag}
+            onDuplicateAction={handleDuplicateAction}
+            categories={categories}
+            tags={tags}
+            authors={authors}
+            onCategoryCreated={onCategoryCreated}
+            onTagCreate={onTagCreate}
+            onAuthorCreate={onAuthorCreate}
+          />
+
+          <TabPanel
+            tabKey="ready"
+            items={buckets.ready}
+            emptyLabel={
+              analyzing
+                ? 'Waiting for analysis to finish…'
+                : 'No files are ready yet.'
+            }
+            expandedIds={expandedIds}
+            onToggleExpand={handleToggleExpand}
+            onToggleSelected={handleToggleSelected}
+            onToggleAll={handleToggleAllInTab}
+            onFormChange={handleFormChange}
+            onApproveSuggestedTag={handleApproveSuggestedTag}
+            onDismissSuggestedTag={handleDismissSuggestedTag}
+            onDuplicateAction={handleDuplicateAction}
+            categories={categories}
+            tags={tags}
+            authors={authors}
+            onCategoryCreated={onCategoryCreated}
+            onTagCreate={onTagCreate}
+            onAuthorCreate={onAuthorCreate}
+          />
+
+          <TabPanel
+            tabKey="failed"
+            items={buckets.failed}
+            emptyLabel="Nothing failed."
+            expandedIds={expandedIds}
+            onToggleExpand={handleToggleExpand}
+            onToggleSelected={handleToggleSelected}
+            onToggleAll={handleToggleAllInTab}
+            onFormChange={handleFormChange}
+            onApproveSuggestedTag={handleApproveSuggestedTag}
+            onDismissSuggestedTag={handleDismissSuggestedTag}
+            onDuplicateAction={handleDuplicateAction}
+            categories={categories}
+            tags={tags}
+            authors={authors}
+            onCategoryCreated={onCategoryCreated}
+            onTagCreate={onTagCreate}
+            onAuthorCreate={onAuthorCreate}
+          />
+        </Tabs>
+
         <DialogFooter className="flex-col gap-3 sm:flex-row sm:justify-between">
-          {/* Summary */}
           <div className="text-xs text-muted-foreground">
-            {doneCount} of {totalFiles} ready to import
-            {errorCount > 0 && <span className="text-destructive ml-2">({errorCount} errors)</span>}
+            {selectedToImport > 0 && (
+              <span>
+                {selectedToImport} selected to import
+                {selectedToDelete > 0 && (
+                  <span className="ml-2">· {selectedToDelete} to delete</span>
+                )}
+              </span>
+            )}
+            {selectedToImport === 0 && selectedToDelete > 0 && (
+              <span>{selectedToDelete} to delete</span>
+            )}
+            {selectedToImport === 0 && selectedToDelete === 0 && (
+              <span>Nothing selected.</span>
+            )}
           </div>
 
-          {/* Action buttons */}
           <div className="flex gap-2">
             <Button
               variant="outline"
@@ -524,14 +704,24 @@ export function ProcessingPipeline({
             >
               {analyzing ? 'Cancel' : 'Close'}
             </Button>
-            <Button onClick={handleImportAll} disabled={analyzing || importing || doneCount === 0}>
+            <Button
+              onClick={handleImport}
+              disabled={
+                importing ||
+                (selectedToImport === 0 && selectedToDelete === 0)
+              }
+            >
               {importing ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Importing...
+                  Importing…
                 </>
+              ) : selectedToImport > 0 ? (
+                `Import ${selectedToImport}${
+                  selectedToDelete > 0 ? ` (${selectedToDelete} delete)` : ''
+                }`
               ) : (
-                `Import ${doneCount - skipCount} File${doneCount - skipCount !== 1 ? 's' : ''}${skipCount > 0 ? ` (${skipCount} skipped)` : ''}`
+                `Delete ${selectedToDelete} file${selectedToDelete !== 1 ? 's' : ''}`
               )}
             </Button>
           </div>
@@ -539,4 +729,308 @@ export function ProcessingPipeline({
       </DialogContent>
     </Dialog>
   );
+}
+
+/* ---------------- Internal helpers ---------------- */
+
+function CountBadge({
+  count,
+  tone,
+}: {
+  count: number;
+  tone: 'warning' | 'success' | 'destructive';
+}) {
+  if (count === 0) {
+    return (
+      <span className="text-xs text-muted-foreground/60 tabular-nums">0</span>
+    );
+  }
+  const variant =
+    tone === 'warning' ? 'orange' : tone === 'success' ? 'green' : 'destructive';
+  return (
+    <Badge
+      variant={variant as 'orange' | 'green' | 'destructive'}
+      className="px-1.5 py-0 h-5 text-[11px] tabular-nums"
+    >
+      {count}
+    </Badge>
+  );
+}
+
+interface TabPanelProps {
+  tabKey: TabKey;
+  items: FileItemState[];
+  emptyLabel: string;
+  expandedIds: Set<string>;
+  onToggleExpand: (path: string) => void;
+  onToggleSelected: (path: string) => void;
+  onToggleAll: (tab: TabKey, value: boolean) => void;
+  onFormChange: (path: string, values: DynamicMetadataFormValues) => void;
+  onApproveSuggestedTag: (path: string, tagName: string) => void;
+  onDismissSuggestedTag: (path: string, tagName: string) => void;
+  onDuplicateAction: (path: string, action: DuplicateAction) => void;
+  categories: Category[];
+  tags: Tag[];
+  authors: Author[];
+  onCategoryCreated: (category: Category) => void;
+  onTagCreate: (name: string) => Promise<Tag>;
+  onAuthorCreate: (name: string) => Promise<Author>;
+}
+
+function TabPanel({
+  tabKey,
+  items,
+  emptyLabel,
+  expandedIds,
+  onToggleExpand,
+  onToggleSelected,
+  onToggleAll,
+  onFormChange,
+  onApproveSuggestedTag,
+  onDismissSuggestedTag,
+  onDuplicateAction,
+  categories,
+  tags,
+  authors,
+  onCategoryCreated,
+  onTagCreate,
+  onAuthorCreate,
+}: TabPanelProps) {
+  const selectableItems = tabKey === 'failed' ? [] : items;
+  const selectedCount = items.filter((i) => i.selected).length;
+  const allSelected =
+    selectableItems.length > 0 && selectedCount === selectableItems.length;
+
+  return (
+    <TabsContent
+      value={tabKey}
+      className="flex-1 min-h-0 flex flex-col data-[state=inactive]:hidden"
+    >
+      {items.length > 0 && tabKey !== 'failed' && (
+        <div className="flex items-center justify-between px-1 pt-1 pb-2 text-xs text-muted-foreground shrink-0">
+          <span>
+            {selectedCount} of {items.length} selected
+          </span>
+          <button
+            type="button"
+            onClick={() => onToggleAll(tabKey, !allSelected)}
+            className="text-primary hover:underline"
+          >
+            {allSelected ? 'Deselect all' : 'Select all'}
+          </button>
+        </div>
+      )}
+      <div className="flex-1 min-h-0 -mx-6 overflow-y-auto">
+        <div className="space-y-2 py-1 px-6">
+          {items.length === 0 ? (
+            <div className="py-10 text-center text-sm text-muted-foreground font-serif-italic">
+              {emptyLabel}
+            </div>
+          ) : (
+            items.map((item) => (
+              <FileCardRow
+                key={item.path}
+                item={item}
+                tabKey={tabKey}
+                expanded={expandedIds.has(item.path)}
+                onToggleExpand={onToggleExpand}
+                onToggleSelected={onToggleSelected}
+                onFormChange={onFormChange}
+                onApproveSuggestedTag={onApproveSuggestedTag}
+                onDismissSuggestedTag={onDismissSuggestedTag}
+                onDuplicateAction={onDuplicateAction}
+                categories={categories}
+                tags={tags}
+                authors={authors}
+                onCategoryCreated={onCategoryCreated}
+                onTagCreate={onTagCreate}
+                onAuthorCreate={onAuthorCreate}
+              />
+            ))
+          )}
+        </div>
+      </div>
+    </TabsContent>
+  );
+}
+
+interface FileCardRowProps {
+  item: FileItemState;
+  tabKey: TabKey;
+  expanded: boolean;
+  onToggleExpand: (path: string) => void;
+  onToggleSelected: (path: string) => void;
+  onFormChange: (path: string, values: DynamicMetadataFormValues) => void;
+  onApproveSuggestedTag: (path: string, tagName: string) => void;
+  onDismissSuggestedTag: (path: string, tagName: string) => void;
+  onDuplicateAction: (path: string, action: DuplicateAction) => void;
+  categories: Category[];
+  tags: Tag[];
+  authors: Author[];
+  onCategoryCreated: (category: Category) => void;
+  onTagCreate: (name: string) => Promise<Tag>;
+  onAuthorCreate: (name: string) => Promise<Author>;
+}
+
+function FileCardRow({
+  item,
+  tabKey,
+  expanded,
+  onToggleExpand,
+  onToggleSelected,
+  onFormChange,
+  onApproveSuggestedTag,
+  onDismissSuggestedTag,
+  onDuplicateAction,
+  categories,
+  tags,
+  authors,
+  onCategoryCreated,
+  onTagCreate,
+  onAuthorCreate,
+}: FileCardRowProps) {
+  const canExpand =
+    tabKey !== 'failed' && (item.status === 'ready' || item.status === 'partial');
+  const checkboxDisabled = tabKey === 'failed';
+
+  return (
+    <Card
+      className={`transition-all duration-200 ${
+        !item.selected && tabKey !== 'failed' ? 'opacity-60' : ''
+      }`}
+    >
+      <CardContent className="p-3">
+        <div className="flex items-center gap-3">
+          {/* Checkbox */}
+          <input
+            type="checkbox"
+            checked={item.selected}
+            disabled={checkboxDisabled}
+            onChange={() => onToggleSelected(item.path)}
+            onClick={(e) => e.stopPropagation()}
+            className="h-4 w-4 shrink-0 accent-primary cursor-pointer disabled:cursor-not-allowed"
+            aria-label={`Include ${item.fileName}`}
+          />
+
+          {/* Clickable header — toggles expand (only when there's something to show) */}
+          <div
+            className={`flex-1 min-w-0 flex items-center gap-3 ${
+              canExpand ? 'cursor-pointer hover:text-primary/90' : ''
+            }`}
+            onClick={canExpand ? () => onToggleExpand(item.path) : undefined}
+          >
+            <StatusIcon status={item.status} />
+
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{item.fileName}</p>
+              <StatusSubtitle item={item} />
+            </div>
+
+            {canExpand && (
+              <div className="shrink-0 text-muted-foreground">
+                {expanded ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronRight className="h-4 w-4" />
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Expandable form */}
+        {expanded && canExpand && (
+          <div className="mt-4 pt-4 border-t border-border space-y-4">
+            {item.preparedImport?.duplicate_of && (
+              <DuplicateWarning
+                duplicateInfo={item.preparedImport.duplicate_of}
+                newProgress={item.formValues.progress ?? null}
+                selectedAction={
+                  item.duplicateAction ?? item.preparedImport.duplicate_of.recommendation
+                }
+                onActionChange={(action) => onDuplicateAction(item.path, action)}
+              />
+            )}
+
+            {item.suggestedTags.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">Suggested new tags:</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {item.suggestedTags.map((tag) => (
+                    <SuggestedTagChip
+                      key={tag}
+                      name={tag}
+                      onApprove={(name) => onApproveSuggestedTag(item.path, name)}
+                      onDismiss={(name) => onDismissSuggestedTag(item.path, name)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <DynamicMetadataForm
+              values={item.formValues}
+              onChange={(values) => onFormChange(item.path, values)}
+              categories={categories}
+              tags={tags}
+              authors={authors}
+              onCategoryCreated={onCategoryCreated}
+              onTagCreate={onTagCreate}
+              onAuthorCreate={onAuthorCreate}
+            />
+          </div>
+        )}
+
+        {/* Error message */}
+        {item.status === 'error' && item.error && (
+          <div className="mt-2 ml-7 text-xs text-destructive">{item.error}</div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function StatusIcon({ status }: { status: FileStatus }) {
+  return (
+    <div className="shrink-0">
+      {status === 'extracting_name' || status === 'analyzing_content' ? (
+        <Loader2 className="h-4 w-4 animate-spin text-primary" />
+      ) : status === 'ready' ? (
+        <CheckCircle2 className="h-4 w-4 text-notion-green" />
+      ) : status === 'partial' ? (
+        <AlertTriangle className="h-4 w-4 text-notion-orange" />
+      ) : status === 'error' ? (
+        <AlertCircle className="h-4 w-4 text-destructive" />
+      ) : (
+        <FileText className="h-4 w-4 text-muted-foreground" />
+      )}
+    </div>
+  );
+}
+
+function StatusSubtitle({ item }: { item: FileItemState }) {
+  if (item.status === 'extracting_name') {
+    return <p className="text-xs text-muted-foreground">Extracting name…</p>;
+  }
+  if (item.status === 'analyzing_content') {
+    return <p className="text-xs text-muted-foreground">Analyzing content…</p>;
+  }
+  if (item.status === 'partial') {
+    return (
+      <p className="text-xs text-notion-orange">
+        Partial extraction — please fill missing fields
+      </p>
+    );
+  }
+  if (item.preparedImport?.duplicate_of) {
+    const d = item.preparedImport.duplicate_of;
+    return (
+      <p className="text-xs text-muted-foreground">
+        Duplicate of{' '}
+        <span className="font-serif-italic">{d.existing_display_name}</span>
+        {d.existing_progress ? ` (${d.existing_progress})` : ''}
+      </p>
+    );
+  }
+  return null;
 }

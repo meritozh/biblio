@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { DynamicMetadataForm, type DynamicMetadataFormValues } from '@/components/DynamicMetadataForm';
+import { fileGet } from '@/lib/tauri';
 import type { FileEntry, Category, Tag, Author } from '@/types';
 
 interface EditFileDialogProps {
@@ -47,22 +48,52 @@ export function EditFileDialog({
     progress: '',
   });
 
-  // Populate form when file changes or dialog opens
+  // Populate form when file changes or dialog opens.
+  // Fetch full details (including the metadata array) because the file list
+  // only ships a flat `description` field — other metadata keys (e.g. comics
+  // `volume`) are only available via file_get.
   useEffect(() => {
-    if (file && open) {
-      setFormValues({
-        display_name: file.display_name,
-        category_id: file.category_id,
-        tag_ids: file.tags?.map((t) => t.id) ?? [],
-        author_ids: file.authors?.map((a) => a.id) ?? [],
-        metadata: file.metadata?.map((m) => ({
-          key: m.key,
-          value: m.value,
-          data_type: m.data_type,
-        })) ?? [],
-        progress: file.progress ?? '',
+    if (!file || !open) return;
+
+    let cancelled = false;
+
+    // Seed immediately with what we already know so the dialog doesn't
+    // flash empty while the fetch is in flight.
+    setFormValues({
+      display_name: file.display_name,
+      category_id: file.category_id,
+      tag_ids: file.tags?.map((t) => t.id) ?? [],
+      author_ids: file.authors?.map((a) => a.id) ?? [],
+      metadata:
+        file.description != null && file.description !== ''
+          ? [{ key: 'description', value: file.description, data_type: 'text' }]
+          : [],
+      progress: file.progress ?? '',
+    });
+
+    void fileGet(file.id)
+      .then((details) => {
+        if (cancelled) return;
+        setFormValues({
+          display_name: details.display_name,
+          category_id: details.category_id,
+          tag_ids: details.tags.map((t) => t.id),
+          author_ids: details.authors.map((a) => a.id),
+          metadata: details.metadata.map((m) => ({
+            key: m.key,
+            value: m.value,
+            data_type: m.data_type,
+          })),
+          progress: details.progress ?? '',
+        });
+      })
+      .catch((error) => {
+        console.error('Failed to load file details:', error);
       });
-    }
+
+    return () => {
+      cancelled = true;
+    };
   }, [file, open]);
 
   const handleSave = async () => {

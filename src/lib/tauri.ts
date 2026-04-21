@@ -85,6 +85,14 @@ export async function fileDelete(id: number): Promise<{ success: boolean }> {
   return invoke('file_delete', { id });
 }
 
+export async function fileDeleteSource(path: string): Promise<void> {
+  return invoke('file_delete_source', { path });
+}
+
+export async function listFilesInFolder(path: string): Promise<string[]> {
+  return invoke('list_files_in_folder', { path });
+}
+
 export async function fileSearch(
   params: FileSearchRequest
 ): Promise<{ files: FileEntry[]; total: number }> {

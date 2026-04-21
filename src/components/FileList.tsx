@@ -15,13 +15,23 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
-import { ChevronLeft, ChevronRight, ArrowUpDown } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ArrowUpDown, Loader2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { FileContextMenu } from '@/components/FileContextMenu';
 import type { FileEntry } from '@/types';
 
 interface FileListProps {
   files: FileEntry[];
+  /** Total rows matching the active filter in the DB. When present and larger
+   *  than `files.length`, the list auto-loads more as the user reaches the
+   *  last client-paginated page. */
+  total?: number;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
+  /** Identifier of the current DB filter (e.g. category id). When this
+   *  changes, FileList resets pagination to page 1 — load-more appends
+   *  don't. Pass `null` or a stable sentinel for "no filter". */
+  filterKey?: string | number | null;
   onFileClick?: (file: FileEntry) => void;
   onFileEdit?: (file: FileEntry) => void;
   onFileDelete?: (file: FileEntry) => void;
@@ -38,14 +48,23 @@ const SCROLLBAR_BUFFER = 10;
 const MIN_PAGE_SIZE = 10;
 const DEBOUNCE_MS = 150;
 const DEFAULT_COL_SIZES: Record<string, number> = {
-  display_name: 320,
-  created_at: 120,
-  tags: 220,
-  authors: 200,
-  progress: 140,
+  display_name: 300,
+  description: 280,
+  tags: 200,
+  authors: 180,
+  progress: 120,
 };
 
-export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileListProps) {
+export function FileList({
+  files,
+  total,
+  loadingMore = false,
+  onLoadMore,
+  filterKey = null,
+  onFileClick,
+  onFileEdit,
+  onFileDelete,
+}: FileListProps) {
   const [sorting, setSorting] = useState<{ id: string; desc: boolean }[]>([]);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -72,13 +91,22 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
       maxSize: 600,
     },
     {
-      accessorKey: 'created_at',
-      header: 'Added',
-      cell: ({ row }: { row: { original: FileEntry } }) =>
-        new Date(row.original.created_at).toLocaleDateString(),
-      size: DEFAULT_COL_SIZES.created_at,
-      minSize: 80,
-      maxSize: 200,
+      id: 'description',
+      header: 'Description',
+      cell: ({ row }: { row: { original: FileEntry } }) => {
+        const description = row.original.description;
+        if (!description) {
+          return <span className="text-muted-foreground text-sm">—</span>;
+        }
+        return (
+          <span className="text-sm block truncate" title={description}>
+            {description}
+          </span>
+        );
+      },
+      size: DEFAULT_COL_SIZES.description,
+      minSize: 120,
+      maxSize: 600,
     },
     {
       id: 'tags',
@@ -89,7 +117,6 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
           return <span className="text-muted-foreground text-sm">—</span>;
         }
         const visible = tags.slice(0, MAX_VISIBLE_TAGS);
-        const overflow = tags.length - visible.length;
         return (
           <div className="flex items-center gap-1">
             {visible.map((tag) => (
@@ -97,15 +124,6 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
                 {tag.name}
               </Badge>
             ))}
-            {overflow > 0 && (
-              <Badge
-                variant="gray"
-                className="text-xs font-normal shrink-0 opacity-60"
-                title={`${overflow} more`}
-              >
-                …
-              </Badge>
-            )}
           </div>
         );
       },
@@ -168,7 +186,47 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
     state: { sorting },
     columnResizeMode: 'onChange',
     enableColumnResizing: true,
+    // Keep the user's page position when new rows are appended by
+    // load-more. With this off, TanStack no longer snaps pageIndex to 0
+    // every time `data` changes — so the category-change reset has to be
+    // driven explicitly via `filterKey` (see effect below).
+    autoResetPageIndex: false,
   });
+
+  // Reset pagination to page 1 whenever the filter changes — category
+  // switch, search, etc. This replaces the behavior TanStack's
+  // autoResetPageIndex would give us, now that we've turned that off so
+  // load-more appends can preserve the user's position.
+  const prevFilterKeyRef = useRef<string | number | null | undefined>(filterKey);
+  useEffect(() => {
+    if (prevFilterKeyRef.current !== filterKey) {
+      table.setPageIndex(0);
+      prevFilterKeyRef.current = filterKey;
+    }
+  }, [filterKey, table]);
+
+  // Auto-load-more: when the client-side pagination reaches its last page
+  // and there are still more rows on the server, transparently fetch the
+  // next batch. The ref guards against re-firing while we stay on the last
+  // page (e.g. re-renders from loadingMore flipping or a no-op fetch).
+  // Walking away from the last page resets the guard, so the next visit
+  // can attempt again — useful if a prior fetch errored out.
+  const pageIndex = table.getState().pagination.pageIndex;
+  const pageCount = table.getPageCount();
+  const atLastPage = pageCount > 0 && pageIndex >= pageCount - 1;
+  const autoloadFiredRef = useRef(false);
+
+  useEffect(() => {
+    if (!atLastPage) {
+      autoloadFiredRef.current = false;
+      return;
+    }
+    if (autoloadFiredRef.current) return;
+    if (!onLoadMore || total == null || loadingMore) return;
+    if (files.length >= total) return;
+    autoloadFiredRef.current = true;
+    onLoadMore();
+  }, [atLastPage, loadingMore, total, files.length, onLoadMore]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -313,6 +371,15 @@ export function FileList({ files, onFileClick, onFileEdit, onFileDelete }: FileL
         role="navigation"
         aria-label="Table pagination"
       >
+        {loadingMore && (
+          <span
+            className="flex items-center gap-1.5 text-xs text-muted-foreground font-serif-italic"
+            aria-live="polite"
+          >
+            <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+            loading {total != null ? `${total - files.length} more` : 'more'}…
+          </span>
+        )}
         <Button
           variant="outline"
           size="sm"

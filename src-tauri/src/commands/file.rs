@@ -141,26 +141,28 @@ pub async fn file_list(
     let limit = limit.unwrap_or(50);
     let offset = offset.unwrap_or(0);
 
-    let mut query = String::from(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files WHERE 1=1"
-    );
-
+    // Build the WHERE clause once so both the row query and the count query
+    // see the same filter — otherwise `total` misreports what's loadable,
+    // which breaks pagination ("N remaining" stays non-zero forever).
+    let mut where_clause = String::from(" WHERE 1=1");
     if let Some(cat_id) = category_id {
-        query.push_str(&format!(" AND category_id = {}", cat_id));
+        where_clause.push_str(&format!(" AND category_id = {}", cat_id));
     }
-
     if let Some(s) = &status {
-        query.push_str(&format!(" AND file_status = '{}'", s));
+        where_clause.push_str(&format!(" AND file_status = '{}'", s));
     }
 
-    query.push_str(&format!(" ORDER BY created_at DESC LIMIT {} OFFSET {}", limit, offset));
-
-    let files: Vec<FileEntry> = sqlx::query_as(&query)
+    let row_query = format!(
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files{} ORDER BY created_at DESC LIMIT {} OFFSET {}",
+        where_clause, limit, offset
+    );
+    let files: Vec<FileEntry> = sqlx::query_as(&row_query)
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
-    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files")
+    let count_query = format!("SELECT COUNT(*) FROM files{}", where_clause);
+    let total: (i64,) = sqlx::query_as(&count_query)
         .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -185,6 +187,14 @@ pub async fn file_list(
         .await
         .map_err(|e| e.to_string())?;
 
+        let description: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM metadata WHERE file_id = ? AND key = 'description'"
+        )
+        .bind(file.id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
         file_items.push(FileListItem {
             id: file.id,
             path: file.path,
@@ -194,6 +204,7 @@ pub async fn file_list(
             in_storage: file.in_storage,
             original_path: file.original_path,
             progress: file.progress,
+            description,
             created_at: file.created_at,
             updated_at: file.updated_at,
             tags,
@@ -239,6 +250,14 @@ async fn hydrate_file_items(
         .await
         .map_err(|e| e.to_string())?;
 
+        let description: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM metadata WHERE file_id = ? AND key = 'description'",
+        )
+        .bind(file.id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
         items.push(FileListItem {
             id: file.id,
             path: file.path,
@@ -248,6 +267,7 @@ async fn hydrate_file_items(
             in_storage: file.in_storage,
             original_path: file.original_path,
             progress: file.progress,
+            description,
             created_at: file.created_at,
             updated_at: file.updated_at,
             tags,
@@ -900,6 +920,73 @@ pub struct FileUpdateResponse {
     pub success: bool,
 }
 
+/// Recursively enumerate every non-hidden file under `path`. Used by the
+/// import flow's "Choose folder…" option to expand a directory into the
+/// flat list of paths that `file_prepare_import` expects.
+///
+/// Hidden files/dirs (dotfiles) are skipped. Symlinks are followed by the
+/// default `std::fs::read_dir` + `is_dir`/`is_file` calls — acceptable for
+/// the common case of a user picking a media folder. Result is sorted so
+/// repeated folder picks produce stable ordering.
+#[tauri::command]
+pub async fn list_files_in_folder(path: String) -> Result<Vec<String>, String> {
+    let root = std::path::Path::new(&path);
+    if !root.exists() {
+        return Err("PATH_NOT_FOUND".to_string());
+    }
+    if !root.is_dir() {
+        return Err("NOT_A_DIRECTORY".to_string());
+    }
+
+    fn walk(dir: &std::path::Path, out: &mut Vec<String>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            // Skip dotfiles / dotdirs (.DS_Store, .git, etc.)
+            if name_str.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out)?;
+            } else if path.is_file() {
+                if let Some(s) = path.to_str() {
+                    out.push(s.to_string());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    walk(root, &mut files).map_err(|e| format!("Failed to walk folder: {e}"))?;
+    files.sort();
+    Ok(files)
+}
+
+/// Delete a file at an arbitrary path on disk — used for the "Delete" choice
+/// on the import duplicate dialog, where the file is NOT yet in the DB
+/// (so `file_delete`, which keys off id, doesn't apply).
+#[tauri::command]
+pub async fn file_delete_source(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        // Nothing to remove — treat as success so the UI flow doesn't error.
+        return Ok(());
+    }
+    fs::remove_file(p).map_err(|e| {
+        let err_str = e.to_string().to_lowercase();
+        if err_str.contains("permission denied") {
+            "PERMISSION_DENIED".to_string()
+        } else if err_str.contains("being used") || err_str.contains("locked") {
+            "FILE_LOCKED".to_string()
+        } else {
+            format!("Failed to delete source file: {e}")
+        }
+    })
+}
+
 #[tauri::command]
 pub async fn file_delete(
     app: AppHandle,
@@ -1057,6 +1144,40 @@ pub struct FileMoveCategoryResponse {
     pub new_path: String,
 }
 
+/// Translate a user-typed query into a safe FTS5 MATCH expression.
+///
+/// Strategy:
+///   1. Replace every FTS5 operator character (`"'`:()-+*^`) with a space
+///      so we never accidentally parse a user's punctuation as syntax.
+///   2. Split on whitespace, trim empty tokens.
+///   3. Append `*` to every token so FTS5 does a prefix match — lets a user
+///      typing "三" find a file named "三体" without learning the syntax.
+///
+/// Returns None if the query has no usable tokens after sanitization (all
+/// whitespace, all punctuation, etc.) — callers should treat that as
+/// "no filter" rather than issuing an empty MATCH (which FTS5 rejects).
+fn build_fts_query(raw: &str) -> Option<String> {
+    let sanitized: String = raw
+        .chars()
+        .map(|c| match c {
+            '"' | '\'' | ':' | '(' | ')' | '+' | '-' | '*' | '^' => ' ',
+            c => c,
+        })
+        .collect();
+
+    let terms: Vec<String> = sanitized
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("{}*", t))
+        .collect();
+
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" "))
+    }
+}
+
 #[tauri::command]
 pub async fn file_search(
     app: AppHandle,
@@ -1073,79 +1194,51 @@ pub async fn file_search(
     let limit = limit.unwrap_or(50);
     let offset = offset.unwrap_or(0);
 
-    let sql = if query.is_empty() {
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files WHERE 1=1"
-    } else {
-        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.created_at, f.updated_at
-         FROM files f
-         JOIN files_fts ON files_fts.rowid = f.id
-         WHERE files_fts MATCH ?"
+    // If the user's query sanitizes to nothing, return an empty result set
+    // with total = 0. The frontend routes empty queries to `file_list`, so
+    // this path really only covers the all-punctuation / all-whitespace
+    // edge case.
+    let Some(fts_expr) = build_fts_query(&query) else {
+        return Ok(FileListResponse { files: Vec::new(), total: 0 });
     };
 
-    let mut final_query = sql.to_string();
-
+    // Same pattern as file_list: build the WHERE once and share it between
+    // the row query and the count query so `total` matches what's loadable.
+    let mut where_tail = String::new();
     if let Some(cat_id) = category_id {
-        final_query.push_str(&format!(" AND category_id = {}", cat_id));
+        where_tail.push_str(&format!(" AND f.category_id = {}", cat_id));
     }
 
-    final_query.push_str(&format!(" ORDER BY f.created_at DESC LIMIT {} OFFSET {}", limit, offset));
+    let row_query = format!(
+        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.created_at, f.updated_at \
+         FROM files f \
+         JOIN files_fts ON files_fts.rowid = f.id \
+         WHERE files_fts MATCH ?{} \
+         ORDER BY f.created_at DESC LIMIT {} OFFSET {}",
+        where_tail, limit, offset
+    );
+    let files: Vec<FileEntry> = sqlx::query_as(&row_query)
+        .bind(&fts_expr)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    let files: Vec<FileEntry> = if query.is_empty() {
-        sqlx::query_as(&final_query)
-            .fetch_all(&pool)
-            .await
-            .map_err(|e| e.to_string())?
-    } else {
-        sqlx::query_as(&final_query)
-            .bind(&query)
-            .fetch_all(&pool)
-            .await
-            .map_err(|e| e.to_string())?
-    };
-
-    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files")
+    let count_query = format!(
+        "SELECT COUNT(*) FROM files f \
+         JOIN files_fts ON files_fts.rowid = f.id \
+         WHERE files_fts MATCH ?{}",
+        where_tail
+    );
+    let total: (i64,) = sqlx::query_as(&count_query)
+        .bind(&fts_expr)
         .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut file_items = Vec::with_capacity(files.len());
-    for file in files {
-        let tags: Vec<Tag> = sqlx::query_as(
-            "SELECT t.id, t.name, t.color, t.created_at FROM tags t
-             INNER JOIN file_tags ft ON t.id = ft.tag_id WHERE ft.file_id = ?"
-        )
-        .bind(file.id)
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        let authors: Vec<Author> = sqlx::query_as(
-            "SELECT a.id, a.name, a.created_at FROM authors a
-             INNER JOIN file_authors fa ON a.id = fa.author_id WHERE fa.file_id = ?"
-        )
-        .bind(file.id)
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        file_items.push(FileListItem {
-            id: file.id,
-            path: file.path,
-            display_name: file.display_name,
-            category_id: file.category_id,
-            file_status: file.file_status,
-            in_storage: file.in_storage,
-            original_path: file.original_path,
-            progress: file.progress,
-            created_at: file.created_at,
-            updated_at: file.updated_at,
-            tags,
-            authors,
-        });
-    }
+    let items = hydrate_file_items(&pool, files).await?;
 
     Ok(FileListResponse {
-        files: file_items,
+        files: items,
         total: total.0,
     })
 }
@@ -1328,6 +1421,36 @@ mod filename_tests {
             sanitize_filename("三体 完结 刘慈欣.txt"),
             "三体 完结 刘慈欣.txt"
         );
+    }
+
+    #[test]
+    fn test_build_fts_query_single_token_prefix_matched() {
+        assert_eq!(build_fts_query("三体").as_deref(), Some("三体*"));
+    }
+
+    #[test]
+    fn test_build_fts_query_multiple_tokens_joined_by_space() {
+        assert_eq!(
+            build_fts_query("三体 刘慈欣").as_deref(),
+            Some("三体* 刘慈欣*")
+        );
+    }
+
+    #[test]
+    fn test_build_fts_query_strips_fts5_operators() {
+        // Quotes, colon, parens, +, -, *, ^ become spaces so they can never
+        // be parsed as FTS5 syntax.
+        assert_eq!(
+            build_fts_query("foo(bar):baz").as_deref(),
+            Some("foo* bar* baz*")
+        );
+    }
+
+    #[test]
+    fn test_build_fts_query_empty_or_whitespace_returns_none() {
+        assert!(build_fts_query("").is_none());
+        assert!(build_fts_query("   ").is_none());
+        assert!(build_fts_query("\"\"()").is_none());
     }
 }
 

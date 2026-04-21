@@ -1,28 +1,16 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { useEffect, useState, useCallback } from 'react';
-import type { UnlistenFn } from '@tauri-apps/api/event';
 import { FilePicker } from '@/components/FilePicker';
+import { SearchBar } from '@/components/SearchBar';
 import { FileList } from '@/components/FileList';
 import { CategorySidebar } from '@/components/CategorySidebar';
 import { ProcessingPipeline } from '@/components/ProcessingPipeline';
-import { fetchFiles, fetchCategories } from '@/stores';
+import { fetchFiles } from '@/stores';
 import {
   fileCreate,
-  fileUpdate,
-  fileDelete,
-  authorList,
-  authorCreate,
-  tagList,
-  tagCreate,
-  tagAssign,
-  tagUnassign,
-  authorSet,
-  metadataSet,
-  metadataDelete,
   coverSet,
   storageGetPath,
   storageCheckAccess,
-  listenTagAuthorChanges,
 } from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
@@ -40,7 +28,8 @@ import {
   DynamicMetadataForm,
   type DynamicMetadataFormValues,
 } from '@/components/DynamicMetadataForm';
-import type { FileEntry, Category, Tag, Author } from '@/types';
+import { useFileActions } from '@/hooks/useFileActions';
+import type { FileEntry } from '@/types';
 
 const EMPTY_FORM_VALUES: DynamicMetadataFormValues = {
   display_name: '',
@@ -50,6 +39,10 @@ const EMPTY_FORM_VALUES: DynamicMetadataFormValues = {
   metadata: [],
 };
 
+// How many files to fetch per request. Loaded rows accumulate in memory,
+// client-side pagination (FileList) pages within whatever is loaded.
+const FILES_PAGE_SIZE = 100;
+
 export const Route = createFileRoute('/')({
   component: HomePage,
 });
@@ -58,10 +51,13 @@ function HomePage() {
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [tags, setTags] = useState<Tag[]>([]);
-  const [authors, setAuthors] = useState<Author[]>([]);
+  // `searchQuery` is the live input value; `debouncedQuery` is the effective
+  // value used for fetches, updated 300ms after the user stops typing so we
+  // don't fire one backend request per keystroke.
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -69,34 +65,65 @@ function HomePage() {
   const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
   const [storagePathAccessible, setStoragePathAccessible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [editDialogOpen, setEditDialogOpen] = useState(false);
-  const [editingFile, setEditingFile] = useState<FileEntry | null>(null);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [deletingFile, setDeletingFile] = useState<FileEntry | null>(null);
   const [pipelineOpen, setPipelineOpen] = useState(false);
 
-  const loadFiles = useCallback(async (categoryId: number | null) => {
+  // Debounce the search input. `searchQuery` reflects every keystroke;
+  // `debouncedQuery` is what actually drives fetches, so typing quickly
+  // collapses to a single request.
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const loadFiles = useCallback(async () => {
     setLoading(true);
-    const result = await fetchFiles({ category_id: categoryId });
+    const result = await fetchFiles({
+      category_id: selectedCategoryId,
+      query: debouncedQuery || undefined,
+      limit: FILES_PAGE_SIZE,
+      offset: 0,
+    });
     setFiles(result.files);
     setTotal(result.total);
     setLoading(false);
-  }, []);
+  }, [selectedCategoryId, debouncedQuery]);
 
-  const loadCategories = useCallback(async () => {
-    const result = await fetchCategories();
-    setCategories(result);
-  }, []);
+  const handleLoadMore = useCallback(async () => {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    const result = await fetchFiles({
+      category_id: selectedCategoryId,
+      query: debouncedQuery || undefined,
+      limit: FILES_PAGE_SIZE,
+      offset: files.length,
+    });
+    // Append; keep `total` in sync in case the DB changed between requests.
+    setFiles((prev) => [...prev, ...result.files]);
+    setTotal(result.total);
+    setLoadingMore(false);
+  }, [loadingMore, selectedCategoryId, debouncedQuery, files.length]);
 
-  const loadAuthors = useCallback(async () => {
-    const result = await authorList(true);
-    setAuthors(result.authors);
-  }, []);
-
-  const loadTags = useCallback(async () => {
-    const result = await tagList(true);
-    setTags(result.tags);
-  }, []);
+  // Shared dialog state + edit/delete handlers + supporting relation state.
+  // The hook also subscribes to tag/author change events and refreshes its
+  // own state plus calls `loadFiles` so tag renames/deletes flow through.
+  const {
+    categories,
+    tags,
+    authors,
+    handleCategoryCreated,
+    handleTagCreate,
+    handleAuthorCreate,
+    editingFile,
+    editDialogOpen,
+    setEditDialogOpen,
+    handleFileEdit,
+    handleFileSave,
+    deletingFile,
+    deleteDialogOpen,
+    setDeleteDialogOpen,
+    handleFileDeleteClick,
+    handleFileDeleteConfirm,
+  } = useFileActions(loadFiles);
 
   const checkStoragePath = useCallback(async () => {
     const path = await storageGetPath();
@@ -111,36 +138,9 @@ function HomePage() {
   }, []);
 
   useEffect(() => {
-    void loadCategories();
-    void loadTags();
-    void loadAuthors();
-    void loadFiles(null);
+    void loadFiles();
     void checkStoragePath();
-  }, [loadCategories, loadTags, loadAuthors, loadFiles, checkStoragePath]);
-
-  useEffect(() => {
-    void loadFiles(selectedCategoryId);
-  }, [selectedCategoryId, loadFiles]);
-
-  useEffect(() => {
-    let unlisten: UnlistenFn | null = null;
-    let cancelled = false;
-    listenTagAuthorChanges(() => {
-      void loadFiles(selectedCategoryId);
-      void loadTags();
-      void loadAuthors();
-    }).then((u) => {
-      if (cancelled) {
-        u();
-      } else {
-        unlisten = u;
-      }
-    });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [selectedCategoryId, loadFiles, loadTags, loadAuthors]);
+  }, [loadFiles, checkStoragePath]);
 
   const handleSettingsOpenChange = useCallback(
     (open: boolean) => {
@@ -188,7 +188,7 @@ function HomePage() {
       setAddDialogOpen(false);
       setSelectedFiles([]);
       setFormValues(EMPTY_FORM_VALUES);
-      void loadFiles(selectedCategoryId);
+      void loadFiles();
     } catch (error) {
       console.error('Failed to add file:', error);
       alert(`Failed to add file: ${error}`);
@@ -200,87 +200,6 @@ function HomePage() {
     console.log('File clicked:', file);
   };
 
-  const handleCategoryCreated = (newCategory: Category) => {
-    setCategories((prev) => [...prev, newCategory]);
-  };
-
-  const handleTagCreate = async (name: string): Promise<Tag> => {
-    const result = await tagCreate(name);
-    const newTag: Tag = {
-      id: result.id,
-      name,
-      color: null,
-      created_at: new Date().toISOString(),
-    };
-    setTags((prev) => [...prev, newTag]);
-    return newTag;
-  };
-
-  const handleAuthorCreate = async (name: string): Promise<Author> => {
-    const result = await authorCreate(name);
-    const newAuthor: Author = {
-      id: result.id,
-      name,
-      created_at: new Date().toISOString(),
-    };
-    setAuthors((prev) => [...prev, newAuthor]);
-    return newAuthor;
-  };
-
-  const handleFileEdit = useCallback((file: FileEntry) => {
-    setEditingFile(file);
-    setEditDialogOpen(true);
-  }, []);
-
-  const handleFileSave = useCallback(
-    async (fileId: number, values: DynamicMetadataFormValues) => {
-      await fileUpdate(fileId, {
-        display_name: values.display_name,
-        category_id: values.category_id,
-        progress: values.progress ?? null,
-      });
-
-      const currentTagIds = editingFile?.tags?.map((t) => t.id) ?? [];
-      const removedTagIds = currentTagIds.filter((id) => !values.tag_ids.includes(id));
-      if (removedTagIds.length > 0) {
-        await tagUnassign(fileId, removedTagIds);
-      }
-      await tagAssign(fileId, values.tag_ids);
-
-      await authorSet(fileId, values.author_ids);
-
-      if (editingFile?.metadata) {
-        for (const m of editingFile.metadata) {
-          await metadataDelete(fileId, m.key);
-        }
-      }
-      for (const m of values.metadata) {
-        await metadataSet(fileId, m.key, m.value, m.data_type);
-      }
-
-      void loadFiles(selectedCategoryId);
-    },
-    [editingFile, selectedCategoryId, loadFiles]
-  );
-
-  const handleFileDeleteClick = useCallback((file: FileEntry) => {
-    setDeletingFile(file);
-    setDeleteDialogOpen(true);
-  }, []);
-
-  const handleFileDeleteConfirm = useCallback(async () => {
-    if (!deletingFile) return;
-    try {
-      await fileDelete(deletingFile.id);
-      setDeleteDialogOpen(false);
-      setDeletingFile(null);
-      void loadFiles(selectedCategoryId);
-    } catch (error) {
-      console.error('Failed to delete:', error);
-      alert(`Failed to delete: ${error}`);
-    }
-  }, [deletingFile, selectedCategoryId, loadFiles]);
-
   return (
     <div className="flex h-screen bg-background">
       <CategorySidebar
@@ -291,17 +210,32 @@ function HomePage() {
       />
       <main className="flex-1 flex flex-col overflow-hidden">
         <div
-          className="flex items-center justify-between px-8 pt-14 pb-4 border-b border-border"
+          className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
           data-tauri-drag-region
         >
-          <div>
-            <h1 className="text-xl font-bold text-foreground">Library</h1>
-            <p className="text-xs text-muted-foreground mt-0.5">{total} files</p>
+          <div className="flex items-baseline gap-3">
+            <h1 className="text-3xl text-foreground">Library</h1>
+            <span
+              className="font-serif-italic text-sm text-muted-foreground"
+              aria-label={`${total} files`}
+            >
+              — {total} {total === 1 ? 'volume' : 'volumes'}
+            </span>
           </div>
-          <FilePicker
-            onFilesSelected={handleFilesSelected}
-            disabled={storagePathConfigured === false}
-          />
+          <div className="flex items-center gap-3">
+            <div className="w-64">
+              <SearchBar
+                value={searchQuery}
+                onChange={setSearchQuery}
+                onSearch={setDebouncedQuery}
+                placeholder="Search title, path…"
+              />
+            </div>
+            <FilePicker
+              onFilesSelected={handleFilesSelected}
+              disabled={storagePathConfigured === false}
+            />
+          </div>
         </div>
 
         <div className="flex-1 flex flex-col overflow-hidden px-8 py-6">
@@ -342,6 +276,10 @@ function HomePage() {
           ) : (
             <FileList
               files={files}
+              total={total}
+              loadingMore={loadingMore}
+              onLoadMore={handleLoadMore}
+              filterKey={`${selectedCategoryId ?? 'all'}::${debouncedQuery}`}
               onFileClick={handleFileClick}
               onFileEdit={handleFileEdit}
               onFileDelete={handleFileDeleteClick}
@@ -385,7 +323,7 @@ function HomePage() {
         onImportComplete={() => {
           setPipelineOpen(false);
           setSelectedFiles([]);
-          void loadFiles(selectedCategoryId);
+          void loadFiles();
         }}
       />
 

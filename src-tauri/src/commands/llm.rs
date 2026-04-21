@@ -162,6 +162,13 @@ pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String
     Ok(response)
 }
 
+/// Hard deadlines for a single LLM request. A hung local server (LM Studio
+/// under load, mis-sized context, etc.) would otherwise stall the entire
+/// import loop indefinitely — past the timeout we give up on this file and
+/// let Phase 2 continue with its error handling.
+const FILENAME_EXTRACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const CONTENT_EXTRACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
 /// Call 1: Extract display_name, authors, progress from filename only.
 /// Preamble is loaded from the active `filename` prompt in the DB.
 pub async fn extract_filename_metadata(
@@ -180,10 +187,13 @@ pub async fn extract_filename_metadata(
         .max_tokens(512)
         .build();
 
-    extractor
-        .extract(&input)
-        .await
-        .map_err(|e| format!("LLM filename extraction failed: {e}"))
+    match tokio::time::timeout(FILENAME_EXTRACTION_TIMEOUT, extractor.extract(&input)).await {
+        Ok(result) => result.map_err(|e| format!("LLM filename extraction failed: {e}")),
+        Err(_) => Err(format!(
+            "LLM filename extraction timed out after {}s",
+            FILENAME_EXTRACTION_TIMEOUT.as_secs()
+        )),
+    }
 }
 
 /// Call 2: Analyze content samples for classification.
@@ -233,9 +243,12 @@ pub async fn extract_content_metadata(
         .max_tokens(1024)
         .build();
 
-    extractor
-        .extract(&input)
-        .await
-        .map_err(|e| format!("LLM content analysis failed: {e}"))
+    match tokio::time::timeout(CONTENT_EXTRACTION_TIMEOUT, extractor.extract(&input)).await {
+        Ok(result) => result.map_err(|e| format!("LLM content analysis failed: {e}")),
+        Err(_) => Err(format!(
+            "LLM content analysis timed out after {}s",
+            CONTENT_EXTRACTION_TIMEOUT.as_secs()
+        )),
+    }
 }
 

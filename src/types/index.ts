@@ -20,6 +20,7 @@ export interface FileEntry {
   in_storage: boolean;
   original_path: string | null;
   progress?: string | null;
+  description?: string | null;
   created_at: string;
   updated_at: string;
   category?: Category | null;
@@ -149,7 +150,7 @@ export interface ExtractedField {
   data_type: string;
 }
 
-export type DuplicateAction = 'Replace' | 'Skip' | 'ImportAnyway';
+export type DuplicateAction = 'Replace' | 'Delete' | 'ImportAnyway';
 
 export interface DuplicateInfo {
   existing_file_id: number;

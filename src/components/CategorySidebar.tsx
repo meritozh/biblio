@@ -75,7 +75,7 @@ export function CategorySidebar({
       {/* Spacer for transparent title bar traffic lights */}
       <div className="h-14 flex items-end px-3 pb-1" data-tauri-drag-region>
         <h2
-          className="px-3 text-xs font-medium text-muted-foreground uppercase tracking-wider"
+          className="px-3 font-serif-italic text-[15px] text-muted-foreground"
           id="categories-heading"
         >
           Categories
@@ -127,7 +127,12 @@ export function CategorySidebar({
           ))}
         </div>
       </ScrollArea>
-      <div className="border-t border-sidebar-border">
+      <div>
+        {/* Ornamental section break between category list and utility links.
+            Doubles as the separator — no border-t on the wrapper. */}
+        <div className="ornament px-4 pt-3 pb-2" aria-hidden="true">
+          <span className="ornament-mark">❦</span>
+        </div>
         <div className="px-1 py-1">
           <Link
             to="/categories"

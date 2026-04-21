@@ -77,7 +77,8 @@ pub struct FilePreparedImport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DuplicateAction {
     Replace,
-    Skip,
+    /// Do not import; delete the new source file from disk.
+    Delete,
     ImportAnyway,
 }
 
@@ -417,8 +418,12 @@ fn extract_cover_from_archive(file_path: &Path) -> Result<(Vec<u8>, String), Str
 }
 
 /// Detect encoding and decode bytes to UTF-8.
-/// Returns None on low confidence (<0.7), unknown encoding label,
-/// or when decoding produces replacement characters (corrupted bytes).
+/// Returns None on low detection confidence (<0.7) or an unknown encoding
+/// label. Replacement characters during decode are accepted: for a large
+/// real-world text file a single stray byte (mid-stream BOM, anomalous
+/// codepoint, etc.) is common, and bailing on it would discard an
+/// otherwise-usable body of text. The content is only used for LLM
+/// sampling downstream, which is lossy anyway.
 fn decode_to_utf8(bytes: &[u8]) -> Option<String> {
     let detected = chardet::detect_bytes(bytes, chardet::EncodingEra::All, 200_000);
     if detected.confidence < 0.7 {
@@ -427,29 +432,22 @@ fn decode_to_utf8(bytes: &[u8]) -> Option<String> {
 
     let encoding_label = detected.encoding?;
     let encoding = encoding_rs::Encoding::for_label(encoding_label.as_bytes())?;
-    let (text, _, had_errors) = encoding.decode(bytes);
-    if had_errors {
-        return None;
-    }
-
+    let (text, _, _had_errors) = encoding.decode(bytes);
     Some(text.into_owned())
 }
 
-fn sample_text_content(file_path: &Path, num_samples: usize, sample_size: usize) -> Option<String> {
-    let bytes = std::fs::read(file_path).ok()?;
-    if bytes.is_empty() {
-        return None;
-    }
-    let content = decode_to_utf8(&bytes)?;
+/// Pick `num_samples` evenly-spaced chunks of `sample_size` characters from
+/// a string. Pure function — used by both .txt and .epub samplers so the
+/// downstream LLM prompt receives a consistent shape.
+fn sample_from_text(content: &str, num_samples: usize, sample_size: usize) -> Option<String> {
     let total_chars: usize = content.chars().count();
-
     if total_chars == 0 {
         return None;
     }
 
     let total_needed = num_samples * sample_size;
     if total_chars <= total_needed {
-        return Some(content);
+        return Some(content.to_string());
     }
 
     let chars: Vec<char> = content.chars().collect();
@@ -472,6 +470,100 @@ fn sample_text_content(file_path: &Path, num_samples: usize, sample_size: usize)
     }
 
     Some(result)
+}
+
+fn sample_text_content(file_path: &Path, num_samples: usize, sample_size: usize) -> Option<String> {
+    let bytes = std::fs::read(file_path).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let content = decode_to_utf8(&bytes)?;
+    sample_from_text(&content, num_samples, sample_size)
+}
+
+/// Strip HTML/XML tags and decode the most common entities. Crude but
+/// adequate for feeding EPUB body text to the content-analysis LLM — we
+/// only need readable prose, not a faithful DOM.
+fn strip_html_tags(html: &str) -> String {
+    // Remove <script> and <style> blocks wholesale (their contents aren't prose)
+    let script_re = regex::Regex::new(r"(?is)<(script|style)[^>]*>.*?</\s*(script|style)\s*>")
+        .expect("script/style regex is valid");
+    let without_scripts = script_re.replace_all(html, " ");
+
+    // Strip any remaining tag
+    let tag_re = regex::Regex::new(r"<[^>]+>").expect("tag regex is valid");
+    let no_tags = tag_re.replace_all(&without_scripts, " ");
+
+    // Decode the handful of entities that actually matter for prose sampling
+    let decoded = no_tags
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'");
+
+    // Collapse runs of whitespace the tag-stripping introduced
+    let ws_re = regex::Regex::new(r"\s+").expect("whitespace regex is valid");
+    ws_re.replace_all(&decoded, " ").trim().to_string()
+}
+
+/// Unzip an EPUB, collect the XHTML/HTML body files in archive order, strip
+/// markup, and run the result through `sample_from_text`. Archive order
+/// isn't guaranteed to be reading order, but for sampling-to-classify
+/// purposes any contiguous prose is fine — the LLM doesn't need chapter
+/// structure, just representative text.
+fn sample_epub_content(file_path: &Path, num_samples: usize, sample_size: usize) -> Option<String> {
+    let file = std::fs::File::open(file_path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+
+    let mut html_names: Vec<String> = archive
+        .file_names()
+        .filter(|n| {
+            let lower = n.to_lowercase();
+            lower.ends_with(".xhtml") || lower.ends_with(".html") || lower.ends_with(".htm")
+        })
+        .map(String::from)
+        .collect();
+    html_names.sort();
+    if html_names.is_empty() {
+        return None;
+    }
+
+    // Collect enough decoded text to sample from — cap early so we don't
+    // read the entire novel when the first couple of chapters will do.
+    let target_chars = num_samples.saturating_mul(sample_size).saturating_mul(4);
+    let mut text_buf = String::new();
+
+    for name in &html_names {
+        use std::io::Read;
+        let Ok(mut entry) = archive.by_name(name) else {
+            continue;
+        };
+        let mut raw = Vec::new();
+        if entry.read_to_end(&mut raw).is_err() {
+            continue;
+        }
+        // EPUB XHTML is usually UTF-8; fall back to lossy decode if needed.
+        let html = match String::from_utf8(raw) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(&e.into_bytes()).into_owned(),
+        };
+        let stripped = strip_html_tags(&html);
+        if !stripped.is_empty() {
+            text_buf.push_str(&stripped);
+            text_buf.push('\n');
+        }
+        if text_buf.chars().count() >= target_chars {
+            break;
+        }
+    }
+
+    if text_buf.trim().is_empty() {
+        return None;
+    }
+    sample_from_text(&text_buf, num_samples, sample_size)
 }
 
 #[tauri::command]
@@ -714,9 +806,20 @@ pub async fn file_prepare_import(
                 }
             }
 
-            // Content sampling for .txt files (only when analyze_content is enabled)
+            // Content sampling — dispatch by extension/mime so each novel-format
+            // gets the right extractor. When no sampler applies, or when content
+            // analysis is disabled, `content` stays None and Phase 2 treats that
+            // as "not applicable" rather than "failed".
             let mime = known_mime.as_deref().unwrap_or("");
-            let content = if llm_analyze_content && (mime == "text/plain" || file_path.extension().and_then(|e| e.to_str()) == Some("txt")) {
+            let ext_lower = file_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_lowercase());
+            let content = if !llm_analyze_content {
+                None
+            } else if ext_lower.as_deref() == Some("epub") || mime == "application/epub+zip" {
+                sample_epub_content(file_path, 5, 1000)
+            } else if mime == "text/plain" || ext_lower.as_deref() == Some("txt") {
                 sample_text_content(file_path, 5, 1000)
             } else {
                 None
@@ -751,6 +854,15 @@ pub async fn file_prepare_import(
     // Phase 2: LLM extraction — two-call pipeline for novels
     let llm_config = super::llm::load_config(&pool).await?;
     let mut results: Vec<FilePreparedImport> = Vec::new();
+
+    // Load existing files once so per-file DB duplicate detection can run
+    // inside the loop (instead of waiting until every file is analyzed).
+    let existing_files: Vec<crate::commands::FileEntry> = sqlx::query_as(
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| format!("Failed to load existing files: {e}"))?;
 
     for (path_str, file_name, merged_metadata, merged_authors, content, cover_data, cover_mime_type) in phase1_results {
         // Check cancellation before each file
@@ -821,34 +933,53 @@ pub async fn file_prepare_import(
             }
 
             // === Call 2: content analysis ===
-            let _ = app.emit("processing-progress", &ProcessingProgress {
-                current: results.len() + 1,
-                total,
-                current_file: file_name.clone(),
-                status: "analyzing_content".to_string(),
-            });
+            // Re-check cancellation between the two LLM calls so a cancel
+            // arriving during Call 1 doesn't pay for Call 2 too.
+            if cancelled.0.load(Ordering::Relaxed) {
+                break;
+            }
 
-            let content_result = if llm_config.analyze_content {
-                match content.as_deref() {
-                    Some(c) => {
-                        let hint = name_result.as_ref().ok()
-                            .and_then(|r| r.display_name.as_deref());
-                        super::llm::extract_content_metadata(
-                            &llm_config,
-                            &pool,
-                            c,
-                            hint,
-                            &category_names,
-                            &tag_names,
-                        ).await
+            // `content_result` distinguishes three states, which matters for
+            // the status matrix below:
+            //   - Some(Ok(_)):   Call 2 ran and succeeded
+            //   - Some(Err(_)):  Call 2 ran and the LLM failed  (→ partial)
+            //   - None:          Call 2 was not applicable (feature disabled
+            //                    or content sampling returned nothing) — NOT
+            //                    an error; the filename metadata is the
+            //                    extraction result.
+            let content_result: Option<Result<super::llm::LlmContentMetadata, String>> =
+                if !llm_config.analyze_content {
+                    None
+                } else {
+                    match content.as_deref() {
+                        Some(c) => {
+                            let _ = app.emit("processing-progress", &ProcessingProgress {
+                                current: results.len() + 1,
+                                total,
+                                current_file: file_name.clone(),
+                                status: "analyzing_content".to_string(),
+                            });
+                            let hint = name_result
+                                .as_ref()
+                                .ok()
+                                .and_then(|r| r.display_name.as_deref());
+                            Some(
+                                super::llm::extract_content_metadata(
+                                    &llm_config,
+                                    &pool,
+                                    c,
+                                    hint,
+                                    &category_names,
+                                    &tag_names,
+                                )
+                                .await,
+                            )
+                        }
+                        None => None,
                     }
-                    None => Err("No content sampled".to_string()),
-                }
-            } else {
-                Err("Content analysis disabled".to_string())
-            };
+                };
 
-            if let Ok(ref content_meta) = content_result {
+            if let Some(Ok(ref content_meta)) = content_result {
                 if let Some(ref cat) = content_meta.category {
                     // Defensive: LLM may include the parenthesized description
                     // (e.g. "h-novel (novel with sexual content)"). Strip it.
@@ -877,20 +1008,23 @@ pub async fn file_prepare_import(
                         }
                     }
                 }
-            } else if let Err(ref e) = content_result {
+            } else if let Some(Err(ref e)) = content_result {
                 eprintln!("LLM content analysis failed for {}: {}", file_name, e);
             }
 
-            // Emit final per-file status
-            // If content analysis is disabled by config, treat a missing content result
-            // as "ready" (not "partial") — partial means a real LLM failure.
-            let content_analysis_active = llm_config.analyze_content;
-            let final_status = match (&name_result, &content_result, content_analysis_active) {
-                (Ok(_), Ok(_), _) => "ready",
-                (Ok(_), Err(_), false) => "ready",
-                (Err(_), Err(_), false) => "error",
-                (Ok(_), Err(_), true) | (Err(_), Ok(_), _) => "partial",
-                (Err(_), Err(_), true) => "error",
+            // Emit final per-file status. Matrix semantics:
+            //   name ok  + content ok/absent → ready (absent = disabled or no sample, not a failure)
+            //   name ok  + content LLM-err   → partial (retriable; user can fill fields manually)
+            //   name err + content ok        → partial (filename lost but we got classification)
+            //   name err + content absent    → error  (nothing to go on)
+            //   name err + content LLM-err   → error
+            let final_status = match (&name_result, &content_result) {
+                (Ok(_), Some(Ok(_))) => "ready",
+                (Ok(_), None) => "ready",
+                (Ok(_), Some(Err(_))) => "partial",
+                (Err(_), Some(Ok(_))) => "partial",
+                (Err(_), None) => "error",
+                (Err(_), Some(Err(_))) => "error",
             };
             let _ = app.emit("processing-progress", &ProcessingProgress {
                 current: results.len() + 1,
@@ -908,6 +1042,32 @@ pub async fn file_prepare_import(
             });
         }
 
+        // Per-file DB duplicate detection — runs here so the streamed
+        // `file-prepared` event carries duplicate_of immediately.
+        // Uses prefix-similarity rather than exact-match so a newly-imported
+        // "三体 完结" is recognized as a duplicate of an existing "三体".
+        let normalized_name = final_display_name.trim().to_lowercase();
+        let duplicate_of = existing_files
+            .iter()
+            .find(|f| {
+                let existing = f.display_name.trim().to_lowercase();
+                prefix_similarity(&normalized_name, &existing) > DUPLICATE_PREFIX_THRESHOLD
+            })
+            .map(|existing| {
+                let recommendation = match (&progress_val, &existing.progress) {
+                    (Some(new_p), Some(old_p)) if new_p >= old_p => DuplicateAction::Replace,
+                    (Some(_), None) => DuplicateAction::Replace,
+                    (None, Some(_)) => DuplicateAction::Delete,
+                    _ => DuplicateAction::Replace,
+                };
+                DuplicateInfo {
+                    existing_file_id: existing.id,
+                    existing_display_name: existing.display_name.clone(),
+                    existing_progress: existing.progress.clone(),
+                    recommendation,
+                }
+            });
+
         let prepared = FilePreparedImport {
             path: path_str,
             file_name,
@@ -921,57 +1081,60 @@ pub async fn file_prepare_import(
             cover_mime_type,
             progress: progress_val,
             suggested_tags,
-            duplicate_of: None,
+            duplicate_of,
             batch_duplicate_group: None,
         };
 
         // Stream partial result to the frontend as this file finishes.
-        // duplicate_of / batch_duplicate_group are filled in Phase 3 and
-        // delivered via the final promise return value.
+        // batch_duplicate_group is filled in Phase 3 (needs all files known).
         let _ = app.emit("file-prepared", &prepared);
 
         results.push(prepared);
     }
 
-    // Phase 3: Duplicate detection
-    detect_duplicates(&pool, &mut results).await?;
+    // Phase 3: Batch-duplicate detection (same display_name across files being imported).
+    detect_batch_duplicates(&mut results);
+
+    // Diagnostic — helps pin down early-exit reports like "processing stopped
+    // at file N". If `processed < input_count` AND `cancelled=false`, the loop
+    // exited abnormally (which the code paths above can't actually produce —
+    // but log to be sure). If `cancelled=true`, the user or the Import button
+    // signalled a stop.
+    eprintln!(
+        "file_prepare_import finished — {} of {} files processed, cancelled={}",
+        results.len(),
+        total,
+        cancelled.0.load(Ordering::Relaxed)
+    );
 
     Ok(results)
 }
 
-async fn detect_duplicates(
-    pool: &sqlx::SqlitePool,
-    results: &mut Vec<FilePreparedImport>,
-) -> Result<(), String> {
-    use crate::commands::FileEntry;
+/// Minimum prefix-similarity ratio for two display names to be considered
+/// the same work. Pairs whose common prefix (measured in Unicode characters)
+/// exceeds this fraction of the shorter name's length trigger a duplicate
+/// warning. Lets "三体" match "三体 完结" while keeping genuinely different
+/// titles like "三体 第一部" / "三体 第二部" (ratio 0.6) apart.
+const DUPLICATE_PREFIX_THRESHOLD: f64 = 0.8;
 
-    let existing_files: Vec<FileEntry> = sqlx::query_as(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| format!("Failed to load existing files: {e}"))?;
-
-    for result in results.iter_mut() {
-        let normalized_name = result.display_name.trim().to_lowercase();
-
-        if let Some(existing) = existing_files.iter().find(|f| f.display_name.trim().to_lowercase() == normalized_name) {
-            let recommendation = match (&result.progress, &existing.progress) {
-                (Some(new_p), Some(old_p)) if new_p >= old_p => DuplicateAction::Replace,
-                (Some(_), None) => DuplicateAction::Replace,
-                (None, Some(_)) => DuplicateAction::Skip,
-                _ => DuplicateAction::Replace,
-            };
-
-            result.duplicate_of = Some(DuplicateInfo {
-                existing_file_id: existing.id,
-                existing_display_name: existing.display_name.clone(),
-                existing_progress: existing.progress.clone(),
-                recommendation,
-            });
-        }
+/// Prefix-similarity ratio between two already-normalized names:
+/// `common_prefix_chars / min(len_a, len_b)`. Returns 0.0 if either is empty.
+fn prefix_similarity(a: &str, b: &str) -> f64 {
+    let shorter = a.chars().count().min(b.chars().count());
+    if shorter == 0 {
+        return 0.0;
     }
+    let common = a
+        .chars()
+        .zip(b.chars())
+        .take_while(|(ca, cb)| ca == cb)
+        .count();
+    common as f64 / shorter as f64
+}
 
+/// Mark files within a single import batch that share the same display_name.
+/// DB-side duplicate detection now happens per-file in the Phase 2 loop.
+fn detect_batch_duplicates(results: &mut [FilePreparedImport]) {
     let mut name_groups: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
     for (idx, result) in results.iter().enumerate() {
         let normalized = result.display_name.trim().to_lowercase();
@@ -986,8 +1149,6 @@ async fn detect_duplicates(
             }
         }
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1019,6 +1180,92 @@ mod tests {
         assert!(type_matches(&["application/pdf"], Some("application/pdf")));
         assert!(!type_matches(&["application/pdf"], Some("image/jpeg")));
         assert!(!type_matches(&["application/pdf"], None));
+    }
+
+    #[test]
+    fn test_prefix_similarity_exact_match() {
+        assert_eq!(prefix_similarity("三体", "三体"), 1.0);
+        assert_eq!(prefix_similarity("abc", "abc"), 1.0);
+    }
+
+    #[test]
+    fn test_prefix_similarity_shorter_is_full_prefix_of_longer() {
+        // "三体" fully contained at the start of "三体 完结" →
+        // common = 2, shorter = 2, ratio = 1.0 → crosses threshold.
+        let ratio = prefix_similarity("三体", "三体 完结");
+        assert!(ratio > DUPLICATE_PREFIX_THRESHOLD);
+        assert!((ratio - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_prefix_similarity_diverges_early_below_threshold() {
+        // "三体 第一部" vs "三体 第二部" share 3 chars out of 5 → 0.6, below 0.8.
+        let ratio = prefix_similarity("三体 第一部", "三体 第二部");
+        assert!(ratio < DUPLICATE_PREFIX_THRESHOLD);
+    }
+
+    #[test]
+    fn test_prefix_similarity_empty_strings_are_not_duplicates() {
+        assert_eq!(prefix_similarity("", "三体"), 0.0);
+        assert_eq!(prefix_similarity("三体", ""), 0.0);
+        assert_eq!(prefix_similarity("", ""), 0.0);
+    }
+
+    #[test]
+    fn test_prefix_similarity_no_common_prefix() {
+        assert_eq!(prefix_similarity("abc", "xyz"), 0.0);
+    }
+
+    #[test]
+    fn test_sample_from_text_empty() {
+        assert_eq!(sample_from_text("", 5, 100), None);
+    }
+
+    #[test]
+    fn test_sample_from_text_shorter_than_target_returns_full_content() {
+        // total_chars <= num_samples * sample_size → return as-is
+        let text = "hello";
+        let result = sample_from_text(text, 5, 10);
+        assert_eq!(result.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_sample_from_text_long_content_produces_labeled_samples() {
+        // 1000 chars * 5 samples = 5000 needed; give 10_000 to force sampling
+        let text: String = "x".repeat(10_000);
+        let result = sample_from_text(&text, 5, 1000).expect("should sample");
+        // Five labeled headers, each introducing a chunk
+        assert_eq!(result.matches("[Sample ").count(), 5);
+        assert!(result.contains("Beginning"));
+        assert!(result.contains("Near End"));
+    }
+
+    #[test]
+    fn test_strip_html_tags_removes_tags() {
+        let html = "<p>Hello <em>world</em></p>";
+        assert_eq!(strip_html_tags(html), "Hello world");
+    }
+
+    #[test]
+    fn test_strip_html_tags_drops_script_and_style_bodies() {
+        let html = "<p>keep</p><script>var x = 1; if (a < b) { /* drop */ }</script><p>keep too</p>";
+        let out = strip_html_tags(html);
+        assert!(out.contains("keep"));
+        assert!(out.contains("keep too"));
+        assert!(!out.contains("var x"));
+        assert!(!out.contains("drop"));
+    }
+
+    #[test]
+    fn test_strip_html_tags_decodes_common_entities() {
+        let html = "<p>Tom &amp; Jerry &nbsp;&quot;hi&quot;</p>";
+        assert_eq!(strip_html_tags(html), "Tom & Jerry \"hi\"");
+    }
+
+    #[test]
+    fn test_strip_html_tags_collapses_whitespace() {
+        let html = "<p>line1</p>\n\n<p>line2</p>";
+        assert_eq!(strip_html_tags(html), "line1 line2");
     }
 
     #[test]
