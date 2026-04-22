@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { UnlistenFn } from '@tauri-apps/api/event';
 import {
   Dialog,
@@ -801,6 +802,16 @@ function TabPanel({
   const allSelected =
     selectableItems.length > 0 && selectedCount === selectableItems.length;
 
+  const parentRef = useRef<HTMLDivElement>(null);
+
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 72,
+    overscan: 5,
+    getItemKey: (index) => items[index]!.path,
+  });
+
   return (
     <TabsContent
       value={tabKey}
@@ -820,35 +831,57 @@ function TabPanel({
           </button>
         </div>
       )}
-      <div className="flex-1 min-h-0 -mx-6 overflow-y-auto">
-        <div className="space-y-2 py-1 px-6">
-          {items.length === 0 ? (
-            <div className="py-10 text-center text-sm text-muted-foreground font-serif-italic">
-              {emptyLabel}
-            </div>
-          ) : (
-            items.map((item) => (
-              <FileCardRow
-                key={item.path}
-                item={item}
-                tabKey={tabKey}
-                expanded={expandedIds.has(item.path)}
-                onToggleExpand={onToggleExpand}
-                onToggleSelected={onToggleSelected}
-                onFormChange={onFormChange}
-                onApproveSuggestedTag={onApproveSuggestedTag}
-                onDismissSuggestedTag={onDismissSuggestedTag}
-                onDuplicateAction={onDuplicateAction}
-                categories={categories}
-                tags={tags}
-                authors={authors}
-                onCategoryCreated={onCategoryCreated}
-                onTagCreate={onTagCreate}
-                onAuthorCreate={onAuthorCreate}
-              />
-            ))
-          )}
-        </div>
+      <div ref={parentRef} className="flex-1 min-h-0 -mx-6 overflow-y-auto">
+        {items.length === 0 ? (
+          <div className="py-10 text-center text-sm text-muted-foreground font-serif-italic">
+            {emptyLabel}
+          </div>
+        ) : (
+          <div
+            style={{
+              height: virtualizer.getTotalSize(),
+              width: '100%',
+              position: 'relative',
+            }}
+          >
+            {virtualizer.getVirtualItems().map((virtualRow) => {
+              const item = items[virtualRow.index]!;
+              return (
+                <div
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
+                  ref={virtualizer.measureElement}
+                  className="px-6 pb-2"
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                >
+                  <FileCardRow
+                    item={item}
+                    tabKey={tabKey}
+                    expanded={expandedIds.has(item.path)}
+                    onToggleExpand={onToggleExpand}
+                    onToggleSelected={onToggleSelected}
+                    onFormChange={onFormChange}
+                    onApproveSuggestedTag={onApproveSuggestedTag}
+                    onDismissSuggestedTag={onDismissSuggestedTag}
+                    onDuplicateAction={onDuplicateAction}
+                    categories={categories}
+                    tags={tags}
+                    authors={authors}
+                    onCategoryCreated={onCategoryCreated}
+                    onTagCreate={onTagCreate}
+                    onAuthorCreate={onAuthorCreate}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </TabsContent>
   );
