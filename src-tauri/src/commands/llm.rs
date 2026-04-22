@@ -169,6 +169,10 @@ pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String
 const FILENAME_EXTRACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const CONTENT_EXTRACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
+/// Prepended to every extraction preamble so model output stays in Simplified
+/// Chinese regardless of which active prompt the user has chosen.
+const LANGUAGE_INSTRUCTION: &str = "Output all Chinese text in Simplified Chinese (简体中文). Never use Traditional Chinese (繁體中文) characters.";
+
 /// Call 1: Extract display_name, authors, progress from filename only.
 /// Preamble is loaded from the active `filename` prompt in the DB.
 pub async fn extract_filename_metadata(
@@ -177,7 +181,8 @@ pub async fn extract_filename_metadata(
     file_name: &str,
 ) -> Result<LlmFilenameMetadata, String> {
     let client = build_client(config)?;
-    let preamble = crate::commands::prompts::prompt_get_active(pool, "filename").await?;
+    let user_preamble = crate::commands::prompts::prompt_get_active(pool, "filename").await?;
+    let preamble = format!("{}\n\n{}", LANGUAGE_INSTRUCTION, user_preamble);
 
     let input = format!("File name: {}", file_name);
 
@@ -223,11 +228,12 @@ pub async fn extract_content_metadata(
     };
 
     let preamble = format!(
-        "Analyze the content samples to classify this novel.\n\
+        "{}\n\n\
+        Analyze the content samples to classify this novel.\n\
         Available categories: {}\n\
         Existing tags: {}\n\n\
         Rules:\n{}",
-        categories_str, tags_str, rules
+        LANGUAGE_INSTRUCTION, categories_str, tags_str, rules
     );
 
     let mut input = String::new();
