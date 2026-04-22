@@ -1,17 +1,21 @@
 mod commands;
 mod database;
+mod pipeline;
 
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-/// Shared cancellation flag for processing pipeline
-pub struct ProcessingCancelled(pub AtomicBool);
+/// Shared cancellation flag for processing pipeline. The inner Arc lets the
+/// pipeline runner hold a private handle without also keeping an
+/// `AppHandle` alive; `cancel_processing` and the runner share one flag.
+pub struct ProcessingCancelled(pub Arc<AtomicBool>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let migrations = database::get_migrations();
 
     tauri::Builder::default()
-        .manage(ProcessingCancelled(AtomicBool::new(false)))
+        .manage(ProcessingCancelled(Arc::new(AtomicBool::new(false))))
         .plugin(
             tauri_plugin_sql::Builder::new()
                 .add_migrations("sqlite:biblio.db", migrations)
@@ -65,7 +69,6 @@ pub fn run() {
             database::recovery::db_create_backup,
             database::recovery::db_optimize,
             database::recovery::db_get_stats,
-            commands::processing::file_analyze,
             commands::processing::file_prepare_import,
             commands::processing::cancel_processing,
             commands::llm::llm_config_get,

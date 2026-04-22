@@ -1,61 +1,24 @@
-use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use std::path::Path;
+use async_trait::async_trait;
+use serde::Serialize;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tauri::Emitter;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_sql::{DbInstances, DbPool};
 
 use crate::ProcessingCancelled;
+use crate::pipeline::{
+    self, FileContext, NodeError, Phase2Node, PipelineEnv, PipelineSettings,
+};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtractedMetadata {
-    pub display_name: Option<String>,
-    pub suggested_authors: Vec<String>,
-    pub metadata: Vec<ExtractedField>,
-    pub category_hint: Option<String>,
-}
+// Re-export the pipeline types that appear in FilePreparedImport's serde
+// shape. Keeping them under this path preserves existing call sites; new
+// code can import them from crate::pipeline directly.
+pub use crate::pipeline::{DuplicateInfo, ExtractedField};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtractedField {
-    pub key: String,
-    pub value: String,
-    pub data_type: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ProcessorResult {
-    pub processor_name: String,
-    pub status: ProcessorStatus,
-    pub fields: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub enum ProcessorStatus {
-    Success,
-    Skipped,
-    Failed(String),
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct FileAnalysisResult {
-    pub path: String,
-    pub file_name: String,
-    pub display_name: String,
-    pub suggested_authors: Vec<String>,
-    pub metadata: Vec<ExtractedField>,
-    pub category_hint: Option<String>,
-    pub processor_results: Vec<ProcessorResult>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ProcessingProgress {
-    pub current: usize,
-    pub total: usize,
-    pub current_file: String,
-    pub status: String,
-}
-
+/// The per-file result returned by `file_prepare_import` and streamed to the
+/// frontend via the `file-prepared` event. Serde shape must stay stable.
 #[derive(Debug, Clone, Serialize)]
 pub struct FilePreparedImport {
     pub path: String,
@@ -74,29 +37,6 @@ pub struct FilePreparedImport {
     pub batch_duplicate_group: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DuplicateAction {
-    Replace,
-    /// Do not import; delete the new source file from disk.
-    Delete,
-    ImportAnyway,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DuplicateInfo {
-    pub existing_file_id: i64,
-    pub existing_display_name: String,
-    pub existing_progress: Option<String>,
-    pub recommendation: DuplicateAction,
-}
-
-/// Check if a file path is a novel (text-based book format).
-/// Only novels go through the two-call LLM pipeline.
-pub fn is_novel_file(path: &str) -> bool {
-    let lower = path.to_lowercase();
-    lower.ends_with(".txt") || lower.ends_with(".epub")
-}
-
 fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
     let instances_lock = instances.0.try_read().map_err(|e| e.to_string())?;
     let db_pool = instances_lock.get(db_url).ok_or("Database not found")?;
@@ -105,581 +45,17 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
     }
 }
 
-pub trait FileProcessor: Send + Sync {
-    fn name(&self) -> &str;
-    fn supported_types(&self) -> &[&str];
-    fn process(&self, file_path: &Path) -> Result<ExtractedMetadata, String>;
-}
-
-pub fn get_processors() -> Vec<Box<dyn FileProcessor>> {
-    vec![
-        Box::new(FileTypeDetector),
-        Box::new(PdfMetadataProcessor),
-        Box::new(ExifProcessor),
-    ]
-}
-
-pub struct FileTypeDetector;
-
-pub struct PdfMetadataProcessor;
-
-pub struct ExifProcessor;
-
-
-impl FileProcessor for FileTypeDetector {
-    fn name(&self) -> &str {
-        "file_type"
+async fn load_bool_setting(pool: &sqlx::SqlitePool, key: &str, default: bool) -> bool {
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM app_settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    match row {
+        Some((v,)) => matches!(v.as_str(), "1" | "true" | "True" | "TRUE"),
+        None => default,
     }
-
-    fn supported_types(&self) -> &[&str] {
-        &["*"]
-    }
-
-    fn process(&self, file_path: &Path) -> Result<ExtractedMetadata, String> {
-        let bytes = std::fs::read(file_path).map_err(|e| format!("Failed to read file: {e}"))?;
-
-        let sample = &bytes[..bytes.len().min(8192)];
-
-        let mime_type = match infer::get(sample) {
-            Some(t) => t.mime_type().to_string(),
-            None => file_path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| match ext.to_lowercase().as_str() {
-                    "pdf" => "application/pdf",
-                    "jpg" | "jpeg" => "image/jpeg",
-                    "png" => "image/png",
-                    "gif" => "image/gif",
-                    "txt" => "text/plain",
-                    "html" | "htm" => "text/html",
-                    "epub" => "application/epub+zip",
-                    _ => "application/octet-stream",
-                })
-                .unwrap_or("application/octet-stream")
-                .to_string(),
-        };
-
-        let category_hint = None;
-
-        Ok(ExtractedMetadata {
-            display_name: None,
-            suggested_authors: vec![],
-            metadata: vec![ExtractedField {
-                key: "mime_type".to_string(),
-                value: mime_type,
-                data_type: "text".to_string(),
-            }],
-            category_hint,
-        })
-    }
-}
-
-fn extract_pdf_info(dict: &lopdf::Dictionary, metadata: &mut Vec<ExtractedField>, display_name: &mut Option<String>, suggested_authors: &mut Vec<String>) {
-    let get_str = |key: &[u8]| -> Option<String> {
-        dict.get(key).ok().and_then(|v| v.as_str().ok()).map(|s| String::from_utf8_lossy(s).to_string())
-    };
-
-    if let Some(title) = get_str(b"Title") {
-        if !title.is_empty() {
-            *display_name = Some(title);
-        }
-    }
-    if let Some(author) = get_str(b"Author") {
-        if !author.is_empty() {
-            suggested_authors.push(author);
-        }
-    }
-    let fields: &[(&[u8], &str)] = &[
-        (b"Subject", "subject"),
-        (b"Keywords", "keywords"),
-        (b"Creator", "creator"),
-        (b"Producer", "producer"),
-    ];
-    for &(key, label) in fields {
-        if let Some(val) = get_str(key) {
-            if !val.is_empty() {
-                metadata.push(ExtractedField {
-                    key: label.to_string(),
-                    value: val,
-                    data_type: "text".to_string(),
-                });
-            }
-        }
-    }
-}
-
-impl FileProcessor for PdfMetadataProcessor {
-    fn name(&self) -> &str {
-        "pdf_metadata"
-    }
-
-    fn supported_types(&self) -> &[&str] {
-        &["application/pdf"]
-    }
-
-    fn process(&self, file_path: &Path) -> Result<ExtractedMetadata, String> {
-        let doc = lopdf::Document::load(file_path).map_err(|e| format!("Failed to load PDF: {e}"))?;
-
-        let page_count = doc.get_pages().len();
-
-        let mut display_name = None::<String>;
-        let mut suggested_authors = Vec::new();
-        let mut metadata = vec![ExtractedField {
-            key: "page_count".to_string(),
-            value: page_count.to_string(),
-            data_type: "text".to_string(),
-        }];
-
-        let info_ref = match doc.trailer.get(b"Info") {
-            Ok(obj) => obj,
-            Err(_) => {
-                return Ok(ExtractedMetadata {
-                    display_name,
-                    suggested_authors,
-                    metadata,
-                    category_hint: None,
-                });
-            }
-        };
-
-        match info_ref {
-            lopdf::Object::Reference(id) => {
-                if let Some(info_obj) = doc.objects.get(id) {
-                    if let Ok(info_dict) = info_obj.as_dict() {
-                        extract_pdf_info(info_dict, &mut metadata, &mut display_name, &mut suggested_authors);
-                    }
-                }
-            }
-            lopdf::Object::Dictionary(dict) => {
-                extract_pdf_info(dict, &mut metadata, &mut display_name, &mut suggested_authors);
-            }
-            _ => {}
-        }
-
-        Ok(ExtractedMetadata {
-            display_name,
-            suggested_authors,
-            metadata,
-            category_hint: None,
-        })
-    }
-}
-
-impl FileProcessor for ExifProcessor {
-    fn name(&self) -> &str {
-        "exif"
-    }
-
-    fn supported_types(&self) -> &[&str] {
-        &["image/jpeg", "image/png", "image/tiff", "image/webp"]
-    }
-
-    fn process(&self, file_path: &Path) -> Result<ExtractedMetadata, String> {
-        let file = std::fs::File::open(file_path).map_err(|e| format!("Failed to open file: {e}"))?;
-        let mut buf_reader = std::io::BufReader::new(file);
-
-        let exif_reader = exif::Reader::new();
-        let exif_data = match exif_reader.read_from_container(&mut buf_reader) {
-            Ok(data) => data,
-            Err(_) => {
-                return Ok(ExtractedMetadata {
-                    display_name: None,
-                    suggested_authors: vec![],
-                    metadata: vec![],
-                    category_hint: None,
-                });
-            }
-        };
-
-        let mut display_name = None::<String>;
-        let mut metadata = Vec::new();
-
-        if let Some(field) = exif_data.get_field(exif::Tag::ImageDescription, exif::In::PRIMARY) {
-            let val = field.display_value().to_string();
-            if !val.is_empty() {
-                display_name = Some(val);
-            }
-        }
-
-        if let Some(field) = exif_data.get_field(exif::Tag::Model, exif::In::PRIMARY) {
-            metadata.push(ExtractedField {
-                key: "camera".to_string(),
-                value: field.display_value().to_string(),
-                data_type: "text".to_string(),
-            });
-        }
-
-        if let Some(field) = exif_data.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY) {
-            metadata.push(ExtractedField {
-                key: "date_taken".to_string(),
-                value: field.display_value().to_string(),
-                data_type: "date".to_string(),
-            });
-        }
-
-        let w = exif_data.get_field(exif::Tag::PixelXDimension, exif::In::PRIMARY);
-        let h = exif_data.get_field(exif::Tag::PixelYDimension, exif::In::PRIMARY);
-        if let (Some(wf), Some(hf)) = (w, h) {
-            metadata.push(ExtractedField {
-                key: "dimensions".to_string(),
-                value: format!("{}x{}", wf.display_value(), hf.display_value()),
-                data_type: "text".to_string(),
-            });
-        }
-
-        Ok(ExtractedMetadata {
-            display_name,
-            suggested_authors: vec![],
-            metadata,
-            category_hint: None,
-        })
-    }
-}
-
-fn type_matches(processor_types: &[&str], known_mime: Option<&str>) -> bool {
-    if processor_types.contains(&"*") {
-        return true;
-    }
-    match known_mime {
-        Some(mime) => processor_types.iter().any(|t| {
-            if t.ends_with("/*") {
-                let prefix = &t[..t.len() - 2];
-                mime.starts_with(prefix)
-            } else {
-                *t == mime
-            }
-        }),
-        None => false,
-    }
-}
-
-fn extract_cover_from_archive(file_path: &Path) -> Result<(Vec<u8>, String), String> {
-    use std::io::Read;
-    use zip::ZipArchive;
-
-    let file = std::fs::File::open(file_path)
-        .map_err(|e| format!("Failed to open archive: {e}"))?;
-    let mut archive = ZipArchive::new(file)
-        .map_err(|e| format!("Failed to read ZIP archive: {e}"))?;
-
-    // Collect all image entries with their names
-    let mut image_entries: Vec<(String, usize)> = Vec::new();
-    for i in 0..archive.len() {
-        let file = archive.by_index(i).map_err(|e| format!("ZIP entry error: {e}"))?;
-        let name = file.name().to_string();
-        let lower = name.to_lowercase();
-        if lower.ends_with(".jpg")
-            || lower.ends_with(".jpeg")
-            || lower.ends_with(".png")
-            || lower.ends_with(".webp")
-            || lower.ends_with(".gif")
-        {
-            image_entries.push((name, i));
-        }
-    }
-
-    if image_entries.is_empty() {
-        return Err("No images found in archive".to_string());
-    }
-
-    // Sort by filename to find cover (alphabetical)
-    image_entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-    // Prefer files named "cover" or starting with "cover" or "000"/"001"
-    let cover_idx = image_entries
-        .iter()
-        .find(|(name, _)| {
-            let lower = name.to_lowercase();
-            lower.contains("cover") || lower.starts_with("000") || lower.starts_with("001")
-        })
-        .map(|&(_, idx)| idx)
-        .unwrap_or(image_entries[0].1);
-
-    let mut file = archive
-        .by_index(cover_idx)
-        .map_err(|e| format!("Failed to read cover entry: {e}"))?;
-    let name = file.name().to_string();
-
-    let mut data = Vec::new();
-    file.read_to_end(&mut data)
-        .map_err(|e| format!("Failed to read cover data: {e}"))?;
-
-    let mime_type = if name.to_lowercase().ends_with(".png") {
-        "image/png".to_string()
-    } else if name.to_lowercase().ends_with(".webp") {
-        "image/webp".to_string()
-    } else if name.to_lowercase().ends_with(".gif") {
-        "image/gif".to_string()
-    } else {
-        "image/jpeg".to_string()
-    };
-
-    Ok((data, mime_type))
-}
-
-/// Detect encoding and decode bytes to UTF-8.
-/// Returns None on low detection confidence (<0.7) or an unknown encoding
-/// label. Replacement characters during decode are accepted: for a large
-/// real-world text file a single stray byte (mid-stream BOM, anomalous
-/// codepoint, etc.) is common, and bailing on it would discard an
-/// otherwise-usable body of text. The content is only used for LLM
-/// sampling downstream, which is lossy anyway.
-fn decode_to_utf8(bytes: &[u8]) -> Option<String> {
-    let detected = chardet::detect_bytes(bytes, chardet::EncodingEra::All, 200_000);
-    if detected.confidence < 0.7 {
-        return None;
-    }
-
-    let encoding_label = detected.encoding?;
-    let encoding = encoding_rs::Encoding::for_label(encoding_label.as_bytes())?;
-    let (text, _, _had_errors) = encoding.decode(bytes);
-    Some(text.into_owned())
-}
-
-/// Pick `num_samples` evenly-spaced chunks of `sample_size` characters from
-/// a string. Pure function — used by both .txt and .epub samplers so the
-/// downstream LLM prompt receives a consistent shape.
-fn sample_from_text(content: &str, num_samples: usize, sample_size: usize) -> Option<String> {
-    let total_chars: usize = content.chars().count();
-    if total_chars == 0 {
-        return None;
-    }
-
-    let total_needed = num_samples * sample_size;
-    if total_chars <= total_needed {
-        return Some(content.to_string());
-    }
-
-    let chars: Vec<char> = content.chars().collect();
-    let mut result = String::new();
-    let labels = ["Beginning", "25%", "50%", "75%", "Near End"];
-
-    for i in 0..num_samples {
-        let position = if i == num_samples - 1 {
-            (total_chars as f64 * 0.95) as usize
-        } else {
-            (total_chars as f64 * (i as f64 / (num_samples - 1) as f64)) as usize
-        };
-
-        let start = position.min(total_chars.saturating_sub(sample_size));
-        let end = (start + sample_size).min(total_chars);
-        let sample: String = chars[start..end].iter().collect();
-
-        let label = labels.get(i).unwrap_or(&"Sample");
-        result.push_str(&format!("[Sample {} - {}]\n{}\n\n", i + 1, label, sample));
-    }
-
-    Some(result)
-}
-
-fn sample_text_content(file_path: &Path, num_samples: usize, sample_size: usize) -> Option<String> {
-    let bytes = std::fs::read(file_path).ok()?;
-    if bytes.is_empty() {
-        return None;
-    }
-    let content = decode_to_utf8(&bytes)?;
-    sample_from_text(&content, num_samples, sample_size)
-}
-
-/// Strip HTML/XML tags and decode the most common entities. Crude but
-/// adequate for feeding EPUB body text to the content-analysis LLM — we
-/// only need readable prose, not a faithful DOM.
-fn strip_html_tags(html: &str) -> String {
-    // Remove <script> and <style> blocks wholesale (their contents aren't prose)
-    let script_re = regex::Regex::new(r"(?is)<(script|style)[^>]*>.*?</\s*(script|style)\s*>")
-        .expect("script/style regex is valid");
-    let without_scripts = script_re.replace_all(html, " ");
-
-    // Strip any remaining tag
-    let tag_re = regex::Regex::new(r"<[^>]+>").expect("tag regex is valid");
-    let no_tags = tag_re.replace_all(&without_scripts, " ");
-
-    // Decode the handful of entities that actually matter for prose sampling
-    let decoded = no_tags
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'");
-
-    // Collapse runs of whitespace the tag-stripping introduced
-    let ws_re = regex::Regex::new(r"\s+").expect("whitespace regex is valid");
-    ws_re.replace_all(&decoded, " ").trim().to_string()
-}
-
-/// Unzip an EPUB, collect the XHTML/HTML body files in archive order, strip
-/// markup, and run the result through `sample_from_text`. Archive order
-/// isn't guaranteed to be reading order, but for sampling-to-classify
-/// purposes any contiguous prose is fine — the LLM doesn't need chapter
-/// structure, just representative text.
-fn sample_epub_content(file_path: &Path, num_samples: usize, sample_size: usize) -> Option<String> {
-    let file = std::fs::File::open(file_path).ok()?;
-    let mut archive = zip::ZipArchive::new(file).ok()?;
-
-    let mut html_names: Vec<String> = archive
-        .file_names()
-        .filter(|n| {
-            let lower = n.to_lowercase();
-            lower.ends_with(".xhtml") || lower.ends_with(".html") || lower.ends_with(".htm")
-        })
-        .map(String::from)
-        .collect();
-    html_names.sort();
-    if html_names.is_empty() {
-        return None;
-    }
-
-    // Collect enough decoded text to sample from — cap early so we don't
-    // read the entire novel when the first couple of chapters will do.
-    let target_chars = num_samples.saturating_mul(sample_size).saturating_mul(4);
-    let mut text_buf = String::new();
-
-    for name in &html_names {
-        use std::io::Read;
-        let Ok(mut entry) = archive.by_name(name) else {
-            continue;
-        };
-        let mut raw = Vec::new();
-        if entry.read_to_end(&mut raw).is_err() {
-            continue;
-        }
-        // EPUB XHTML is usually UTF-8; fall back to lossy decode if needed.
-        let html = match String::from_utf8(raw) {
-            Ok(s) => s,
-            Err(e) => String::from_utf8_lossy(&e.into_bytes()).into_owned(),
-        };
-        let stripped = strip_html_tags(&html);
-        if !stripped.is_empty() {
-            text_buf.push_str(&stripped);
-            text_buf.push('\n');
-        }
-        if text_buf.chars().count() >= target_chars {
-            break;
-        }
-    }
-
-    if text_buf.trim().is_empty() {
-        return None;
-    }
-    sample_from_text(&text_buf, num_samples, sample_size)
-}
-
-#[tauri::command]
-pub async fn file_analyze(
-    app: tauri::AppHandle,
-    paths: Vec<String>,
-) -> Result<Vec<FileAnalysisResult>, String> {
-    let total = paths.len();
-    let app_clone = app.clone();
-
-    let results = tauri::async_runtime::spawn_blocking(move || {
-        let processors = get_processors();
-        let mut results = Vec::new();
-
-        for (idx, path_str) in paths.iter().enumerate() {
-            let file_path = Path::new(path_str);
-            let file_name = file_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-
-            let progress = ProcessingProgress {
-                current: idx + 1,
-                total,
-                current_file: file_name.clone(),
-                status: "processing".to_string(),
-            };
-            let _ = app_clone.emit("processing-progress", &progress);
-
-            let mut merged_display_name = None::<String>;
-            let mut merged_authors = Vec::new();
-            let mut seen_authors = HashSet::new();
-            let mut merged_metadata: Vec<ExtractedField> = Vec::new();
-            let mut merged_category_hint = None::<String>;
-            let mut processor_results = Vec::new();
-
-            let mut known_mime: Option<String> = None;
-
-            for processor in &processors {
-                let supported = type_matches(
-                    processor.supported_types(),
-                    known_mime.as_deref(),
-                );
-
-                if !supported {
-                    processor_results.push(ProcessorResult {
-                        processor_name: processor.name().to_string(),
-                        status: ProcessorStatus::Skipped,
-                        fields: vec![],
-                    });
-                    continue;
-                }
-
-                match processor.process(file_path) {
-                    Ok(extracted) => {
-                        let field_keys: Vec<String> =
-                            extracted.metadata.iter().map(|f| f.key.clone()).collect();
-
-                        if merged_display_name.is_none() && extracted.display_name.is_some() {
-                            merged_display_name = extracted.display_name;
-                        }
-
-                        for author in extracted.suggested_authors {
-                            if seen_authors.insert(author.clone()) {
-                                merged_authors.push(author);
-                            }
-                        }
-
-                        for field in extracted.metadata {
-                            if field.key == "mime_type" {
-                                known_mime = Some(field.value.clone());
-                            }
-                            if let Some(existing) = merged_metadata.iter_mut().find(|f| f.key == field.key) {
-                                *existing = field;
-                            } else {
-                                merged_metadata.push(field);
-                            }
-                        }
-
-                        if merged_category_hint.is_none() && extracted.category_hint.is_some() {
-                            merged_category_hint = extracted.category_hint;
-                        }
-
-                        processor_results.push(ProcessorResult {
-                            processor_name: processor.name().to_string(),
-                            status: ProcessorStatus::Success,
-                            fields: field_keys,
-                        });
-                    }
-                    Err(e) => {
-                        processor_results.push(ProcessorResult {
-                            processor_name: processor.name().to_string(),
-                            status: ProcessorStatus::Failed(e),
-                            fields: vec![],
-                        });
-                    }
-                }
-            }
-
-            results.push(FileAnalysisResult {
-                path: path_str.clone(),
-                file_name: file_name.clone(),
-                display_name: merged_display_name.unwrap_or(file_name),
-                suggested_authors: merged_authors,
-                metadata: merged_metadata,
-                category_hint: merged_category_hint,
-                processor_results,
-            });
-        }
-
-        results
-    })
-    .await
-    .map_err(|e| format!("Task join error: {e}"))?;
-
-    Ok(results)
 }
 
 #[tauri::command]
@@ -693,15 +69,19 @@ pub async fn file_prepare_import(
     app: tauri::AppHandle,
     paths: Vec<String>,
 ) -> Result<Vec<FilePreparedImport>, String> {
-    use crate::commands::{Author, Category, Tag};
+    use super::{Author, Category, FileEntry, Tag};
 
-    // Reset cancellation flag
-    let cancelled = app.state::<ProcessingCancelled>();
-    cancelled.0.store(false, Ordering::Relaxed);
+    // Reset the cancellation flag at the start of every batch so a cancel
+    // from a previous import doesn't poison this one.
+    let cancelled_state = app.state::<ProcessingCancelled>();
+    cancelled_state.0.store(false, Ordering::Relaxed);
+    let cancelled: Arc<std::sync::atomic::AtomicBool> = Arc::clone(&cancelled_state.0);
 
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
+    // Fetch every piece of shared state the pipeline needs, up front, so
+    // per-file nodes don't hit the DB in their hot paths.
     let categories: Vec<Category> = sqlx::query_as(
         "SELECT id, name, description, icon, is_default, folder_name, created_at FROM categories",
     )
@@ -709,471 +89,163 @@ pub async fn file_prepare_import(
     .await
     .map_err(|e| format!("Failed to load categories: {e}"))?;
 
-    let authors: Vec<Author> = sqlx::query_as(
-        "SELECT id, name, created_at FROM authors",
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| format!("Failed to load authors: {e}"))?;
+    let authors: Vec<Author> = sqlx::query_as("SELECT id, name, created_at FROM authors")
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("Failed to load authors: {e}"))?;
 
-    let tags: Vec<Tag> = sqlx::query_as(
-        "SELECT id, name, color, created_at FROM tags",
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| format!("Failed to load tags: {e}"))?;
+    let tags: Vec<Tag> = sqlx::query_as("SELECT id, name, color, created_at FROM tags")
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("Failed to load tags: {e}"))?;
 
-    let category_map: std::collections::HashMap<String, i64> = categories
-        .iter()
-        .map(|c| (c.name.to_lowercase(), c.id))
-        .collect();
-
-    let author_map: std::collections::HashMap<String, i64> = authors
-        .iter()
-        .map(|a| (a.name.to_lowercase(), a.id))
-        .collect();
-
-    let tag_map: std::collections::HashMap<String, i64> = tags
-        .iter()
-        .map(|t| (t.name.to_lowercase(), t.id))
-        .collect();
-
-    let category_names: Vec<String> = categories.iter().map(|c| {
-        match &c.description {
-            Some(desc) if !desc.is_empty() => format!("{} ({})", c.name, desc),
-            _ => c.name.clone(),
-        }
-    }).collect();
-    let tag_names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
-
-    // Load LLM config early to check analyze_content setting
-    let llm_analyze_content = super::llm::load_config(&pool).await
-        .map(|c| c.analyze_content)
-        .unwrap_or(true);
-
-    // Phase 1: signal gathering runs per-file on the blocking pool and
-    // streams results into Phase 2 through an mpsc channel, so Phase 2 can
-    // fire its first LLM request as soon as *one* file's signals are ready
-    // — rather than waiting for the whole batch.
-    let total = paths.len();
-
-    type Phase1Item = (
-        String,
-        String,
-        Vec<ExtractedField>,
-        Vec<String>,
-        Option<String>,
-        Option<Vec<u8>>,
-        Option<String>,
-    );
-
-    // Bounded capacity = total so blocking_send never parks a worker thread.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Phase1Item>(total.max(1));
-
-    // Cap concurrent disk-bound Phase 1 work. Large imports would otherwise
-    // spawn hundreds of blocking threads simultaneously (EPUB/ZIP parsing,
-    // cover reads) and thrash the disk / spike memory.
-    const PHASE1_CONCURRENCY: usize = 8;
-    let phase1_sem = std::sync::Arc::new(tokio::sync::Semaphore::new(PHASE1_CONCURRENCY));
-
-    // Dispatch in a background task so the Phase 2 consumer below can start
-    // polling `rx` immediately. Moving dispatch off the current task also
-    // means acquire().await on the semaphore never blocks Phase 2.
-    let dispatch_app = app.clone();
-    tokio::spawn(async move {
-        for (idx, path_str) in paths.into_iter().enumerate() {
-            let Ok(permit) = phase1_sem.clone().acquire_owned().await else {
-                break;
-            };
-            let tx = tx.clone();
-            let app_clone = dispatch_app.clone();
-            let analyze_content = llm_analyze_content;
-
-            tauri::async_runtime::spawn_blocking(move || {
-                let _permit = permit; // released when this task ends
-
-                let file_path = Path::new(&path_str);
-                let file_name = file_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-
-                let _ = app_clone.emit(
-                    "processing-progress",
-                    &ProcessingProgress {
-                        current: idx + 1,
-                        total,
-                        current_file: file_name.clone(),
-                        status: "gathering_signals".to_string(),
-                    },
-                );
-
-                let processors = get_processors();
-                let mut merged_metadata: Vec<ExtractedField> = Vec::new();
-                let mut merged_authors: Vec<String> = Vec::new();
-                let mut seen_authors = HashSet::new();
-                let mut known_mime: Option<String> = None;
-
-                for processor in &processors {
-                    let supported = type_matches(
-                        processor.supported_types(),
-                        known_mime.as_deref(),
-                    );
-                    if !supported {
-                        continue;
-                    }
-                    if let Ok(extracted) = processor.process(file_path) {
-                        for author in extracted.suggested_authors {
-                            if seen_authors.insert(author.clone()) {
-                                merged_authors.push(author);
-                            }
-                        }
-                        for field in extracted.metadata {
-                            if field.key == "mime_type" {
-                                known_mime = Some(field.value.clone());
-                            }
-                            if let Some(existing) = merged_metadata.iter_mut().find(|f| f.key == field.key) {
-                                *existing = field;
-                            } else {
-                                merged_metadata.push(field);
-                            }
-                        }
-                    }
-                }
-
-                let mime = known_mime.as_deref().unwrap_or("");
-                let ext_lower = file_path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|s| s.to_lowercase());
-                let content = if !analyze_content {
-                    None
-                } else if ext_lower.as_deref() == Some("epub") || mime == "application/epub+zip" {
-                    sample_epub_content(file_path, 5, 1000)
-                } else if mime == "text/plain" || ext_lower.as_deref() == Some("txt") {
-                    sample_text_content(file_path, 5, 1000)
-                } else {
-                    None
-                };
-
-                let is_archive = mime.contains("zip") || mime.contains("cbz");
-                let is_comic_image = mime.starts_with("image/");
-                let (cover_data, cover_mime_type) = if is_archive {
-                    match extract_cover_from_archive(file_path) {
-                        Ok((data, mime)) => (Some(data), Some(mime)),
-                        Err(_) => (None, None),
-                    }
-                } else if is_comic_image {
-                    match std::fs::read(file_path) {
-                        Ok(data) => (Some(data), Some(mime.to_string())),
-                        Err(_) => (None, None),
-                    }
-                } else {
-                    (None, None)
-                };
-
-                // If Phase 2 has already dropped rx (cancellation), the send
-                // fails and we simply stop.
-                let _ = tx.blocking_send((
-                    path_str,
-                    file_name,
-                    merged_metadata,
-                    merged_authors,
-                    content,
-                    cover_data,
-                    cover_mime_type,
-                ));
-            });
-        }
-        // `tx` drops here; once all spawned tasks have finished sending,
-        // Phase 2's `rx.recv().await` returns None and the loop exits.
-    });
-
-    // Phase 2: LLM extraction — two-call pipeline for novels
-    let llm_config = super::llm::load_config(&pool).await?;
-    let mut results: Vec<FilePreparedImport> = Vec::new();
-
-    // Load existing files once so per-file DB duplicate detection can run
-    // inside the loop (instead of waiting until every file is analyzed).
-    let existing_files: Vec<crate::commands::FileEntry> = sqlx::query_as(
+    let existing_files: Vec<FileEntry> = sqlx::query_as(
         "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files",
     )
     .fetch_all(&pool)
     .await
     .map_err(|e| format!("Failed to load existing files: {e}"))?;
 
-    while let Some((path_str, file_name, merged_metadata, merged_authors, content, cover_data, cover_mime_type)) = rx.recv().await {
-        // Check cancellation before each file
-        if cancelled.0.load(Ordering::Relaxed) {
-            break;
-        }
+    let category_map: HashMap<String, i64> = categories
+        .iter()
+        .map(|c| (c.name.to_lowercase(), c.id))
+        .collect();
+    let author_map: HashMap<String, i64> =
+        authors.iter().map(|a| (a.name.to_lowercase(), a.id)).collect();
+    let tag_map: HashMap<String, i64> =
+        tags.iter().map(|t| (t.name.to_lowercase(), t.id)).collect();
 
-        let mut progress_val: Option<String> = None;
-        let mut category_id: Option<i64> = None;
-        let mut tag_ids: Vec<i64> = Vec::new();
-        let mut suggested_tags: Vec<String> = Vec::new();
-        let mut author_ids: Vec<i64> = Vec::new();
-        let mut unresolved_author_names: Vec<String> = Vec::new();
-        let mut final_display_name = file_name.clone();
-        let mut final_metadata = merged_metadata.clone();
+    let category_names: Vec<String> = categories
+        .iter()
+        .map(|c| match &c.description {
+            Some(desc) if !desc.is_empty() => format!("{} ({})", c.name, desc),
+            _ => c.name.clone(),
+        })
+        .collect();
+    let tag_names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
 
-        // Resolve processor-found authors
-        for author_name in &merged_authors {
-            if let Some(&id) = author_map.get(&author_name.to_lowercase()) {
-                if !author_ids.contains(&id) {
-                    author_ids.push(id);
-                }
-            } else if !unresolved_author_names.contains(author_name) {
-                unresolved_author_names.push(author_name.clone());
-            }
-        }
+    let llm_config = super::llm::load_config(&pool).await?;
+    let analyze_content = llm_config.analyze_content;
+    let process_novel_epub = load_bool_setting(&pool, "process_novel_epub", true).await;
+    let process_novel_pdf = load_bool_setting(&pool, "process_novel_pdf", false).await;
 
-        let is_novel = is_novel_file(&path_str);
+    let env = Arc::new(PipelineEnv {
+        pool,
+        llm_config,
+        app: app.clone(),
+        cancelled,
+        category_map,
+        author_map,
+        tag_map,
+        category_names,
+        tag_names,
+        existing_files,
+        settings: PipelineSettings {
+            process_novel_epub,
+            process_novel_pdf,
+            analyze_content,
+        },
+    });
 
-        if is_novel && llm_config.enabled {
-            // === Call 1: filename extraction ===
-            let _ = app.emit("processing-progress", &ProcessingProgress {
-                current: results.len() + 1,
-                total,
-                current_file: file_name.clone(),
-                status: "extracting_name".to_string(),
-            });
+    // EmitPreparedNode is command-layer: it knows how to convert a
+    // FileContext to the command's public FilePreparedImport shape, which
+    // the pipeline module is deliberately agnostic about.
+    let built = pipeline::nodes::novel_and_generic()
+        .add_phase2(EmitPreparedNode)
+        .build();
 
-            let name_result = super::llm::extract_filename_metadata(
-                &llm_config,
-                &pool,
-                &file_name,
-            ).await;
+    let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    let contexts = built.run_batch(path_bufs, env).await;
 
-            // Apply name result (independent fallback: if this call fails, keep defaults)
-            if let Ok(ref name_meta) = name_result {
-                if let Some(ref name) = name_meta.display_name {
-                    if !name.is_empty() {
-                        final_display_name = name.clone();
-                    }
-                }
-                if let Some(ref p) = name_meta.progress {
-                    if !p.is_empty() {
-                        progress_val = Some(p.clone());
-                    }
-                }
-                for author in &name_meta.authors {
-                    if let Some(&id) = author_map.get(&author.to_lowercase()) {
-                        if !author_ids.contains(&id) {
-                            author_ids.push(id);
-                        }
-                    } else if !unresolved_author_names.contains(author) {
-                        unresolved_author_names.push(author.clone());
-                    }
-                }
-            } else if let Err(ref e) = name_result {
-                eprintln!("LLM filename extraction failed for {}: {}", file_name, e);
-            }
+    let mut results: Vec<FilePreparedImport> =
+        contexts.into_iter().map(prepared_from_ctx).collect();
 
-            // === Call 2: content analysis ===
-            // Re-check cancellation between the two LLM calls so a cancel
-            // arriving during Call 1 doesn't pay for Call 2 too.
-            if cancelled.0.load(Ordering::Relaxed) {
-                break;
-            }
-
-            // `content_result` distinguishes three states, which matters for
-            // the status matrix below:
-            //   - Some(Ok(_)):   Call 2 ran and succeeded
-            //   - Some(Err(_)):  Call 2 ran and the LLM failed  (→ partial)
-            //   - None:          Call 2 was not applicable (feature disabled
-            //                    or content sampling returned nothing) — NOT
-            //                    an error; the filename metadata is the
-            //                    extraction result.
-            let content_result: Option<Result<super::llm::LlmContentMetadata, String>> =
-                if !llm_config.analyze_content {
-                    None
-                } else {
-                    match content.as_deref() {
-                        Some(c) => {
-                            let _ = app.emit("processing-progress", &ProcessingProgress {
-                                current: results.len() + 1,
-                                total,
-                                current_file: file_name.clone(),
-                                status: "analyzing_content".to_string(),
-                            });
-                            let hint = name_result
-                                .as_ref()
-                                .ok()
-                                .and_then(|r| r.display_name.as_deref());
-                            Some(
-                                super::llm::extract_content_metadata(
-                                    &llm_config,
-                                    &pool,
-                                    c,
-                                    hint,
-                                    &category_names,
-                                    &tag_names,
-                                )
-                                .await,
-                            )
-                        }
-                        None => None,
-                    }
-                };
-
-            if let Some(Ok(ref content_meta)) = content_result {
-                if let Some(ref cat) = content_meta.category {
-                    // Defensive: LLM may include the parenthesized description
-                    // (e.g. "h-novel (novel with sexual content)"). Strip it.
-                    let cat_clean = cat.split('(').next().unwrap_or(cat).trim().to_lowercase();
-                    category_id = category_map.get(&cat_clean).copied();
-                }
-                for tag in &content_meta.tags {
-                    if let Some(&id) = tag_map.get(&tag.to_lowercase()) {
-                        if !tag_ids.contains(&id) {
-                            tag_ids.push(id);
-                        }
-                    } else if !suggested_tags.contains(tag) {
-                        suggested_tags.push(tag.clone());
-                    }
-                }
-                if let Some(ref desc) = content_meta.description {
-                    if !desc.is_empty() {
-                        if let Some(existing) = final_metadata.iter_mut().find(|f| f.key == "description") {
-                            existing.value = desc.clone();
-                        } else {
-                            final_metadata.push(ExtractedField {
-                                key: "description".to_string(),
-                                value: desc.clone(),
-                                data_type: "text".to_string(),
-                            });
-                        }
-                    }
-                }
-            } else if let Some(Err(ref e)) = content_result {
-                eprintln!("LLM content analysis failed for {}: {}", file_name, e);
-            }
-
-            // Emit final per-file status. Matrix semantics:
-            //   name ok  + content ok/absent → ready (absent = disabled or no sample, not a failure)
-            //   name ok  + content LLM-err   → partial (retriable; user can fill fields manually)
-            //   name err + content ok        → partial (filename lost but we got classification)
-            //   name err + content absent    → error  (nothing to go on)
-            //   name err + content LLM-err   → error
-            let final_status = match (&name_result, &content_result) {
-                (Ok(_), Some(Ok(_))) => "ready",
-                (Ok(_), None) => "ready",
-                (Ok(_), Some(Err(_))) => "partial",
-                (Err(_), Some(Ok(_))) => "partial",
-                (Err(_), None) => "error",
-                (Err(_), Some(Err(_))) => "error",
-            };
-            let _ = app.emit("processing-progress", &ProcessingProgress {
-                current: results.len() + 1,
-                total,
-                current_file: file_name.clone(),
-                status: final_status.to_string(),
-            });
-        } else {
-            // Non-novel or LLM disabled: emit ready immediately (no LLM extraction)
-            let _ = app.emit("processing-progress", &ProcessingProgress {
-                current: results.len() + 1,
-                total,
-                current_file: file_name.clone(),
-                status: "ready".to_string(),
-            });
-        }
-
-        // Per-file DB duplicate detection — runs here so the streamed
-        // `file-prepared` event carries duplicate_of immediately.
-        // Uses prefix-similarity rather than exact-match so a newly-imported
-        // "三体 完结" is recognized as a duplicate of an existing "三体".
-        let normalized_name = final_display_name.trim().to_lowercase();
-        let duplicate_of = existing_files
-            .iter()
-            .find(|f| {
-                let existing = f.display_name.trim().to_lowercase();
-                prefix_similarity(&normalized_name, &existing) > DUPLICATE_PREFIX_THRESHOLD
-            })
-            .map(|existing| {
-                let recommendation = match (&progress_val, &existing.progress) {
-                    (Some(new_p), Some(old_p)) if new_p >= old_p => DuplicateAction::Replace,
-                    (Some(_), None) => DuplicateAction::Replace,
-                    (None, Some(_)) => DuplicateAction::Delete,
-                    _ => DuplicateAction::Replace,
-                };
-                DuplicateInfo {
-                    existing_file_id: existing.id,
-                    existing_display_name: existing.display_name.clone(),
-                    existing_progress: existing.progress.clone(),
-                    recommendation,
-                }
-            });
-
-        let prepared = FilePreparedImport {
-            path: path_str,
-            file_name,
-            display_name: final_display_name,
-            category_id,
-            tag_ids,
-            author_ids,
-            metadata: final_metadata,
-            unresolved_author_names,
-            cover_data,
-            cover_mime_type,
-            progress: progress_val,
-            suggested_tags,
-            duplicate_of,
-            batch_duplicate_group: None,
-        };
-
-        // Stream partial result to the frontend as this file finishes.
-        // batch_duplicate_group is filled in Phase 3 (needs all files known).
-        let _ = app.emit("file-prepared", &prepared);
-
-        results.push(prepared);
-    }
-
-    // Phase 3: Batch-duplicate detection (same display_name across files being imported).
+    // Phase 3 — batch-level duplicate detection (same display_name across
+    // files being imported together). Runs on the collected results so the
+    // grouping is stable across streaming order.
     detect_batch_duplicates(&mut results);
-
-    // Diagnostic — helps pin down early-exit reports like "processing stopped
-    // at file N". If `processed < input_count` AND `cancelled=false`, the loop
-    // exited abnormally (which the code paths above can't actually produce —
-    // but log to be sure). If `cancelled=true`, the user or the Import button
-    // signalled a stop.
-    eprintln!(
-        "file_prepare_import finished — {} of {} files processed, cancelled={}",
-        results.len(),
-        total,
-        cancelled.0.load(Ordering::Relaxed)
-    );
 
     Ok(results)
 }
 
-/// Minimum prefix-similarity ratio for two display names to be considered
-/// the same work. Pairs whose common prefix (measured in Unicode characters)
-/// exceeds this fraction of the shorter name's length trigger a duplicate
-/// warning. Lets "三体" match "三体 完结" while keeping genuinely different
-/// titles like "三体 第一部" / "三体 第二部" (ratio 0.6) apart.
-const DUPLICATE_PREFIX_THRESHOLD: f64 = 0.8;
-
-/// Prefix-similarity ratio between two already-normalized names:
-/// `common_prefix_chars / min(len_a, len_b)`. Returns 0.0 if either is empty.
-fn prefix_similarity(a: &str, b: &str) -> f64 {
-    let shorter = a.chars().count().min(b.chars().count());
-    if shorter == 0 {
-        return 0.0;
+/// Build a FilePreparedImport from an owned FileContext at the end of the
+/// batch. Also used (cloned version) by EmitPreparedNode for the per-file
+/// streaming emission.
+fn prepared_from_ctx(ctx: FileContext) -> FilePreparedImport {
+    let (cover_data, cover_mime_type) = match ctx.cover {
+        Some(c) => (Some(c.data), Some(c.mime_type)),
+        None => (None, None),
+    };
+    let display_name = ctx.display_name.unwrap_or_else(|| ctx.file_name.clone());
+    FilePreparedImport {
+        path: ctx.file_path.to_string_lossy().to_string(),
+        file_name: ctx.file_name,
+        display_name,
+        category_id: ctx.category_id,
+        tag_ids: ctx.tag_ids,
+        author_ids: ctx.author_ids,
+        metadata: ctx.extracted_metadata,
+        unresolved_author_names: ctx.unresolved_authors,
+        cover_data,
+        cover_mime_type,
+        progress: ctx.progress,
+        suggested_tags: ctx.suggested_tags,
+        duplicate_of: ctx.duplicate_of,
+        batch_duplicate_group: None,
     }
-    let common = a
-        .chars()
-        .zip(b.chars())
-        .take_while(|(ca, cb)| ca == cb)
-        .count();
-    common as f64 / shorter as f64
 }
 
-/// Mark files within a single import batch that share the same display_name.
-/// DB-side duplicate detection now happens per-file in the Phase 2 loop.
+/// Streaming-emission variant that clones the cover bytes so the
+/// FileContext can be reused downstream. Called from EmitPreparedNode.
+fn prepared_from_ctx_ref(ctx: &FileContext) -> FilePreparedImport {
+    let (cover_data, cover_mime_type) = match ctx.cover.as_ref() {
+        Some(c) => (Some(c.data.clone()), Some(c.mime_type.clone())),
+        None => (None, None),
+    };
+    let display_name = ctx
+        .display_name
+        .clone()
+        .unwrap_or_else(|| ctx.file_name.clone());
+    FilePreparedImport {
+        path: ctx.file_path.to_string_lossy().to_string(),
+        file_name: ctx.file_name.clone(),
+        display_name,
+        category_id: ctx.category_id,
+        tag_ids: ctx.tag_ids.clone(),
+        author_ids: ctx.author_ids.clone(),
+        metadata: ctx.extracted_metadata.clone(),
+        unresolved_author_names: ctx.unresolved_authors.clone(),
+        cover_data,
+        cover_mime_type,
+        progress: ctx.progress.clone(),
+        suggested_tags: ctx.suggested_tags.clone(),
+        duplicate_of: ctx.duplicate_of.clone(),
+        batch_duplicate_group: None,
+    }
+}
+
+/// Phase-2 node that emits the streaming `file-prepared` event as each
+/// file finishes. Defined in the command layer because the pipeline is
+/// intentionally agnostic of `FilePreparedImport`.
+struct EmitPreparedNode;
+
+#[async_trait]
+impl Phase2Node for EmitPreparedNode {
+    fn name(&self) -> &'static str {
+        "EmitPrepared"
+    }
+
+    async fn run(&self, ctx: &mut FileContext, env: &PipelineEnv) -> Result<(), NodeError> {
+        let prepared = prepared_from_ctx_ref(ctx);
+        let _ = env.app.emit("file-prepared", &prepared);
+        Ok(())
+    }
+}
+
+/// Tag each file in a batch that shares a display_name with another file
+/// so the frontend can group and warn about same-batch duplicates.
 fn detect_batch_duplicates(results: &mut [FilePreparedImport]) {
-    let mut name_groups: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    let mut name_groups: HashMap<String, Vec<usize>> = HashMap::new();
     for (idx, result) in results.iter().enumerate() {
         let normalized = result.display_name.trim().to_lowercase();
         name_groups.entry(normalized).or_default().push(idx);
@@ -1186,180 +258,5 @@ fn detect_batch_duplicates(results: &mut [FilePreparedImport]) {
                 results[idx].batch_duplicate_group = Some(group_id.clone());
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_processor_names() {
-        assert_eq!(FileTypeDetector.name(), "file_type");
-        assert_eq!(PdfMetadataProcessor.name(), "pdf_metadata");
-        assert_eq!(ExifProcessor.name(), "exif");
-    }
-
-    #[test]
-    fn test_processor_supported_types() {
-        assert_eq!(FileTypeDetector.supported_types(), &["*"]);
-        assert_eq!(PdfMetadataProcessor.supported_types(), &["application/pdf"]);
-        assert!(ExifProcessor.supported_types().contains(&"image/jpeg"));
-    }
-
-    #[test]
-    fn test_type_matches_wildcard() {
-        assert!(type_matches(&["*"], None));
-        assert!(type_matches(&["*"], Some("application/pdf")));
-    }
-
-    #[test]
-    fn test_type_matches_specific() {
-        assert!(type_matches(&["application/pdf"], Some("application/pdf")));
-        assert!(!type_matches(&["application/pdf"], Some("image/jpeg")));
-        assert!(!type_matches(&["application/pdf"], None));
-    }
-
-    #[test]
-    fn test_prefix_similarity_exact_match() {
-        assert_eq!(prefix_similarity("三体", "三体"), 1.0);
-        assert_eq!(prefix_similarity("abc", "abc"), 1.0);
-    }
-
-    #[test]
-    fn test_prefix_similarity_shorter_is_full_prefix_of_longer() {
-        // "三体" fully contained at the start of "三体 完结" →
-        // common = 2, shorter = 2, ratio = 1.0 → crosses threshold.
-        let ratio = prefix_similarity("三体", "三体 完结");
-        assert!(ratio > DUPLICATE_PREFIX_THRESHOLD);
-        assert!((ratio - 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_prefix_similarity_diverges_early_below_threshold() {
-        // "三体 第一部" vs "三体 第二部" share 3 chars out of 5 → 0.6, below 0.8.
-        let ratio = prefix_similarity("三体 第一部", "三体 第二部");
-        assert!(ratio < DUPLICATE_PREFIX_THRESHOLD);
-    }
-
-    #[test]
-    fn test_prefix_similarity_empty_strings_are_not_duplicates() {
-        assert_eq!(prefix_similarity("", "三体"), 0.0);
-        assert_eq!(prefix_similarity("三体", ""), 0.0);
-        assert_eq!(prefix_similarity("", ""), 0.0);
-    }
-
-    #[test]
-    fn test_prefix_similarity_no_common_prefix() {
-        assert_eq!(prefix_similarity("abc", "xyz"), 0.0);
-    }
-
-    #[test]
-    fn test_sample_from_text_empty() {
-        assert_eq!(sample_from_text("", 5, 100), None);
-    }
-
-    #[test]
-    fn test_sample_from_text_shorter_than_target_returns_full_content() {
-        // total_chars <= num_samples * sample_size → return as-is
-        let text = "hello";
-        let result = sample_from_text(text, 5, 10);
-        assert_eq!(result.as_deref(), Some("hello"));
-    }
-
-    #[test]
-    fn test_sample_from_text_long_content_produces_labeled_samples() {
-        // 1000 chars * 5 samples = 5000 needed; give 10_000 to force sampling
-        let text: String = "x".repeat(10_000);
-        let result = sample_from_text(&text, 5, 1000).expect("should sample");
-        // Five labeled headers, each introducing a chunk
-        assert_eq!(result.matches("[Sample ").count(), 5);
-        assert!(result.contains("Beginning"));
-        assert!(result.contains("Near End"));
-    }
-
-    #[test]
-    fn test_strip_html_tags_removes_tags() {
-        let html = "<p>Hello <em>world</em></p>";
-        assert_eq!(strip_html_tags(html), "Hello world");
-    }
-
-    #[test]
-    fn test_strip_html_tags_drops_script_and_style_bodies() {
-        let html = "<p>keep</p><script>var x = 1; if (a < b) { /* drop */ }</script><p>keep too</p>";
-        let out = strip_html_tags(html);
-        assert!(out.contains("keep"));
-        assert!(out.contains("keep too"));
-        assert!(!out.contains("var x"));
-        assert!(!out.contains("drop"));
-    }
-
-    #[test]
-    fn test_strip_html_tags_decodes_common_entities() {
-        let html = "<p>Tom &amp; Jerry &nbsp;&quot;hi&quot;</p>";
-        assert_eq!(strip_html_tags(html), "Tom & Jerry \"hi\"");
-    }
-
-    #[test]
-    fn test_strip_html_tags_collapses_whitespace() {
-        let html = "<p>line1</p>\n\n<p>line2</p>";
-        assert_eq!(strip_html_tags(html), "line1 line2");
-    }
-
-    #[test]
-    fn test_is_novel_file() {
-        assert!(is_novel_file("book.txt"));
-        assert!(is_novel_file("book.TXT"));
-        assert!(is_novel_file("book.epub"));
-        assert!(is_novel_file("/path/to/book.txt"));
-        assert!(!is_novel_file("book.zip"));
-        assert!(!is_novel_file("book.pdf"));
-        assert!(!is_novel_file("book"));
-    }
-
-    #[test]
-    fn test_decode_to_utf8_plain_ascii() {
-        let bytes = b"Hello, world!";
-        let result = decode_to_utf8(bytes);
-        assert_eq!(result.as_deref(), Some("Hello, world!"));
-    }
-
-    #[test]
-    fn test_decode_to_utf8_utf8_chinese() {
-        let text = "你好，世界！这是一段中文测试内容，包含足够的字符让 chardet 有信心识别为 UTF-8。三体，刘慈欣。";
-        let bytes = text.as_bytes();
-        let result = decode_to_utf8(bytes);
-        assert_eq!(result.as_deref(), Some(text));
-    }
-
-    #[test]
-    fn test_decode_to_utf8_gb18030_chinese() {
-        // Encode a realistic-length varied Chinese text to GB18030,
-        // then verify decode_to_utf8 round-trips it correctly.
-        // chardet needs enough varied bytes to reach confidence threshold.
-        let sample = "这是一段较长的中文测试内容，用于验证 GB18030 编码的文件能够被正确识别和转换为 UTF-8。内容包含了标点符号、数字 123、以及一些常见的汉字，比如：你好世界、春夏秋冬、日月星辰、山川河流。小说标题示例：三体、流浪地球、活着、平凡的世界。作者示例：刘慈欣、余华、路遥、莫言。";
-        // Repeat to ensure ~2KB of varied text, enough for chardet detection.
-        let full_text = sample.repeat(5);
-        let gb18030 = encoding_rs::GB18030;
-        let (encoded_bytes, _, had_errors) = gb18030.encode(&full_text);
-        assert!(!had_errors, "Test setup: encoding to GB18030 should not produce errors");
-
-        let result = decode_to_utf8(&encoded_bytes);
-        assert!(result.is_some(), "GB18030 bytes should decode successfully");
-        let decoded = result.unwrap();
-        // Verify round-trip produced matching Chinese content.
-        assert!(
-            decoded.contains("三体") && decoded.contains("刘慈欣"),
-            "decoded text should contain expected Chinese chars from the sample, got first 100 chars: {}",
-            &decoded.chars().take(100).collect::<String>()
-        );
-    }
-
-    #[test]
-    fn test_decode_to_utf8_garbage_returns_none() {
-        // Random non-text bytes should result in low confidence or decode errors.
-        let bytes: Vec<u8> = (0..200).map(|i| (i as u8).wrapping_mul(31)).collect();
-        let result = decode_to_utf8(&bytes);
-        assert!(result.is_none(), "Garbage bytes should return None");
     }
 }

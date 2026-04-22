@@ -1,0 +1,111 @@
+use async_trait::async_trait;
+
+use crate::pipeline::{
+    DuplicateAction, DuplicateInfo, FileContext, NodeError, Phase2Node, PipelineEnv,
+};
+
+/// Minimum prefix-similarity ratio for two display names to be considered
+/// the same work. Pairs whose common prefix (in Unicode characters) exceeds
+/// this fraction of the shorter name's length trigger a duplicate warning.
+/// Lets "三体" match "三体 完结" while keeping genuinely different titles
+/// like "三体 第一部" / "三体 第二部" (ratio 0.6) apart.
+pub(crate) const DUPLICATE_PREFIX_THRESHOLD: f64 = 0.8;
+
+/// Look up a prefix-similar display_name among already-imported files and
+/// attach a `DuplicateInfo` with a suggested `Replace`/`Delete` action.
+pub struct DbDuplicateDetectNode;
+
+#[async_trait]
+impl Phase2Node for DbDuplicateDetectNode {
+    fn name(&self) -> &'static str {
+        "DbDuplicateDetect"
+    }
+
+    async fn run(&self, ctx: &mut FileContext, env: &PipelineEnv) -> Result<(), NodeError> {
+        let display = ctx
+            .display_name
+            .as_deref()
+            .unwrap_or(&ctx.file_name)
+            .trim()
+            .to_lowercase();
+        if display.is_empty() {
+            return Ok(());
+        }
+
+        let dup = env
+            .existing_files
+            .iter()
+            .find(|f| {
+                let existing = f.display_name.trim().to_lowercase();
+                prefix_similarity(&display, &existing) > DUPLICATE_PREFIX_THRESHOLD
+            })
+            .map(|existing| {
+                let recommendation = match (&ctx.progress, &existing.progress) {
+                    (Some(new_p), Some(old_p)) if new_p >= old_p => DuplicateAction::Replace,
+                    (Some(_), None) => DuplicateAction::Replace,
+                    (None, Some(_)) => DuplicateAction::Delete,
+                    _ => DuplicateAction::Replace,
+                };
+                DuplicateInfo {
+                    existing_file_id: existing.id,
+                    existing_display_name: existing.display_name.clone(),
+                    existing_progress: existing.progress.clone(),
+                    recommendation,
+                }
+            });
+
+        ctx.duplicate_of = dup;
+        Ok(())
+    }
+}
+
+/// Prefix-similarity ratio between two already-normalized names:
+/// `common_prefix_chars / min(len_a, len_b)`. Returns 0.0 if either is empty.
+pub(crate) fn prefix_similarity(a: &str, b: &str) -> f64 {
+    let shorter = a.chars().count().min(b.chars().count());
+    if shorter == 0 {
+        return 0.0;
+    }
+    let common = a
+        .chars()
+        .zip(b.chars())
+        .take_while(|(ca, cb)| ca == cb)
+        .count();
+    common as f64 / shorter as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_match_is_full_similarity() {
+        assert_eq!(prefix_similarity("三体", "三体"), 1.0);
+        assert_eq!(prefix_similarity("abc", "abc"), 1.0);
+    }
+
+    #[test]
+    fn shorter_fully_contained_crosses_threshold() {
+        let ratio = prefix_similarity("三体", "三体 完结");
+        assert!(ratio > DUPLICATE_PREFIX_THRESHOLD);
+        assert!((ratio - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn early_divergence_stays_below_threshold() {
+        let ratio = prefix_similarity("三体 第一部", "三体 第二部");
+        assert!(ratio < DUPLICATE_PREFIX_THRESHOLD);
+    }
+
+    #[test]
+    fn empty_strings_are_never_similar() {
+        assert_eq!(prefix_similarity("", "三体"), 0.0);
+        assert_eq!(prefix_similarity("三体", ""), 0.0);
+        assert_eq!(prefix_similarity("", ""), 0.0);
+    }
+
+    #[test]
+    fn no_common_prefix_is_zero() {
+        assert_eq!(prefix_similarity("abc", "xyz"), 0.0);
+    }
+}
