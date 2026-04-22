@@ -88,6 +88,8 @@ export interface FileListResponse {
   total: number;
 }
 
+export type StorageKind = 'local' | 'remote';
+
 export interface FileCreateRequest extends Record<string, unknown> {
   path: string;
   display_name: string;
@@ -98,6 +100,7 @@ export interface FileCreateRequest extends Record<string, unknown> {
   progress?: string;
   cover_data?: string;
   cover_mime_type?: string;
+  storage_kind?: StorageKind;
 }
 
 export interface FileSearchRequest extends Record<string, unknown> {
@@ -197,6 +200,19 @@ export interface LlmConfig {
   api_key: string;
   model: string;
   analyze_content: boolean;
+}
+
+export type RemoteAuthMode = 'openlist_proxy' | 'self_app';
+
+export interface RemoteConfig {
+  enabled: boolean;
+  auth_mode: RemoteAuthMode;
+  refresh_token: string;
+  client_id: string | null;
+  client_secret: string | null;
+  access_token: string;
+  access_token_expires_at: number;
+  app_root: string;
 }
 
 export type PromptCategory = 'filename' | 'content';

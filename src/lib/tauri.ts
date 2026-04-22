@@ -15,6 +15,8 @@ import type {
   LlmConfig,
   Prompt,
   PromptCreatePayload,
+  RemoteAuthMode,
+  RemoteConfig,
 } from '@/types';
 
 export async function fileList(
@@ -46,6 +48,7 @@ export async function fileCreate(params: FileCreateRequest): Promise<{ id: numbe
       ? Array.from(atob(params.cover_data), (c) => c.charCodeAt(0))
       : null,
     coverMimeType: params.cover_mime_type || null,
+    storageKind: params.storage_kind ?? null,
   });
 }
 
@@ -67,6 +70,32 @@ export async function fileReplace(
       : null,
     coverMimeType: params.cover_mime_type || null,
   });
+}
+
+export async function remoteConfigGet(): Promise<RemoteConfig> {
+  return invoke('remote_config_get');
+}
+
+export interface RemoteLoginParams {
+  auth_mode: RemoteAuthMode;
+  refresh_token: string;
+  client_id?: string | null;
+  client_secret?: string | null;
+  app_root?: string | null;
+}
+
+export async function remoteLogin(params: RemoteLoginParams): Promise<RemoteConfig> {
+  return invoke('remote_login', {
+    authMode: params.auth_mode,
+    refreshToken: params.refresh_token,
+    clientId: params.client_id ?? null,
+    clientSecret: params.client_secret ?? null,
+    appRoot: params.app_root ?? null,
+  });
+}
+
+export async function remoteLogout(): Promise<void> {
+  return invoke('remote_logout');
 }
 
 export async function fileUpdate(

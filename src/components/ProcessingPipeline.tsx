@@ -49,6 +49,7 @@ import type {
   MetadataType,
   DuplicateAction,
   FileAnalysisStatus,
+  StorageKind,
 } from '@/types';
 
 type FileStatus = FileAnalysisStatus;
@@ -75,6 +76,73 @@ interface FileItemState {
   userEdited: boolean;
   suggestedTags: string[];
   duplicateAction: DuplicateAction | null;
+  /** Where the file ends up on commit. Comic archives default to remote
+   *  (Baidu Pan); everything else defaults to local storage. */
+  storageKind: StorageKind;
+}
+
+function defaultStorageKind(fileName: string): StorageKind {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.cbz') || lower.endsWith('.zip')) return 'remote';
+  return 'local';
+}
+
+function StorageKindToggle({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: StorageKind;
+  disabled: boolean;
+  onChange: (kind: StorageKind) => void;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Destination"
+      className={`shrink-0 inline-flex rounded-full border bg-secondary/40 text-xs ${
+        disabled ? 'opacity-40 pointer-events-none' : ''
+      }`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <StorageKindOption
+        label="Local"
+        selected={value === 'local'}
+        onClick={() => onChange('local')}
+      />
+      <StorageKindOption
+        label="Remote"
+        selected={value === 'remote'}
+        onClick={() => onChange('remote')}
+      />
+    </div>
+  );
+}
+
+function StorageKindOption({
+  label,
+  selected,
+  onClick,
+}: {
+  label: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={onClick}
+      className={`px-2.5 py-0.5 rounded-full transition-colors ${
+        selected
+          ? 'bg-primary text-primary-foreground font-medium'
+          : 'text-muted-foreground hover:text-foreground'
+      }`}
+    >
+      {label}
+    </button>
+  );
 }
 
 interface ProcessingPipelineProps {
@@ -156,6 +224,7 @@ export function ProcessingPipeline({
         userEdited: false,
         suggestedTags: [],
         duplicateAction: null,
+        storageKind: defaultStorageKind(fileName),
       };
     });
     setFileItems(initialItems);
@@ -408,6 +477,15 @@ export function ProcessingPipeline({
     );
   }, []);
 
+  const handleStorageKindChange = useCallback(
+    (path: string, kind: StorageKind) => {
+      setFileItems((prev) =>
+        prev.map((item) => (item.path === path ? { ...item, storageKind: kind } : item))
+      );
+    },
+    []
+  );
+
   // Bucket all items once per render.
   const buckets = useMemo(() => {
     const b: Record<Bucket, FileItemState[]> = {
@@ -504,6 +582,7 @@ export function ProcessingPipeline({
             progress: item.formValues.progress,
             cover_data: item.formValues.cover_data,
             cover_mime_type: item.formValues.cover_mime_type,
+            storage_kind: item.storageKind,
           };
 
           if (
@@ -627,6 +706,7 @@ export function ProcessingPipeline({
             onApproveSuggestedTag={handleApproveSuggestedTag}
             onDismissSuggestedTag={handleDismissSuggestedTag}
             onDuplicateAction={handleDuplicateAction}
+            onStorageKindChange={handleStorageKindChange}
             categories={categories}
             tags={tags}
             authors={authors}
@@ -651,6 +731,7 @@ export function ProcessingPipeline({
             onApproveSuggestedTag={handleApproveSuggestedTag}
             onDismissSuggestedTag={handleDismissSuggestedTag}
             onDuplicateAction={handleDuplicateAction}
+            onStorageKindChange={handleStorageKindChange}
             categories={categories}
             tags={tags}
             authors={authors}
@@ -671,6 +752,7 @@ export function ProcessingPipeline({
             onApproveSuggestedTag={handleApproveSuggestedTag}
             onDismissSuggestedTag={handleDismissSuggestedTag}
             onDuplicateAction={handleDuplicateAction}
+            onStorageKindChange={handleStorageKindChange}
             categories={categories}
             tags={tags}
             authors={authors}
@@ -770,6 +852,7 @@ interface TabPanelProps {
   onApproveSuggestedTag: (path: string, tagName: string) => void;
   onDismissSuggestedTag: (path: string, tagName: string) => void;
   onDuplicateAction: (path: string, action: DuplicateAction) => void;
+  onStorageKindChange: (path: string, kind: StorageKind) => void;
   categories: Category[];
   tags: Tag[];
   authors: Author[];
@@ -790,6 +873,7 @@ function TabPanel({
   onApproveSuggestedTag,
   onDismissSuggestedTag,
   onDuplicateAction,
+  onStorageKindChange,
   categories,
   tags,
   authors,
@@ -870,6 +954,7 @@ function TabPanel({
                     onApproveSuggestedTag={onApproveSuggestedTag}
                     onDismissSuggestedTag={onDismissSuggestedTag}
                     onDuplicateAction={onDuplicateAction}
+                    onStorageKindChange={onStorageKindChange}
                     categories={categories}
                     tags={tags}
                     authors={authors}
@@ -897,6 +982,7 @@ interface FileCardRowProps {
   onApproveSuggestedTag: (path: string, tagName: string) => void;
   onDismissSuggestedTag: (path: string, tagName: string) => void;
   onDuplicateAction: (path: string, action: DuplicateAction) => void;
+  onStorageKindChange: (path: string, kind: StorageKind) => void;
   categories: Category[];
   tags: Tag[];
   authors: Author[];
@@ -915,6 +1001,7 @@ function FileCardRow({
   onApproveSuggestedTag,
   onDismissSuggestedTag,
   onDuplicateAction,
+  onStorageKindChange,
   categories,
   tags,
   authors,
@@ -925,6 +1012,7 @@ function FileCardRow({
   const canExpand =
     tabKey !== 'failed' && (item.status === 'ready' || item.status === 'partial');
   const checkboxDisabled = tabKey === 'failed';
+  const toggleDisabled = tabKey === 'failed' || !item.selected;
 
   return (
     <Card
@@ -958,6 +1046,12 @@ function FileCardRow({
               <p className="text-sm font-medium truncate">{item.fileName}</p>
               <StatusSubtitle item={item} />
             </div>
+
+            <StorageKindToggle
+              value={item.storageKind}
+              disabled={toggleDisabled}
+              onChange={(kind) => onStorageKindChange(item.path, kind)}
+            />
 
             {canExpand && (
               <div className="shrink-0 text-muted-foreground">

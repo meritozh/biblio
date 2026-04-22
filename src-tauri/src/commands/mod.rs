@@ -9,6 +9,7 @@ pub mod settings;
 pub mod processing;
 pub mod llm;
 pub mod prompts;
+pub mod remote;
 
 #[cfg(test)]
 pub mod test_helpers;

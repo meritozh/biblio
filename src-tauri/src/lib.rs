@@ -1,6 +1,7 @@
 mod commands;
 mod database;
 mod pipeline;
+mod providers;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -79,6 +80,9 @@ pub fn run() {
             commands::prompts::prompt_update,
             commands::prompts::prompt_delete,
             commands::prompts::prompt_set_default,
+            commands::remote::remote_config_get,
+            commands::remote::remote_login,
+            commands::remote::remote_logout,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

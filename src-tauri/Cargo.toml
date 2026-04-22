@@ -34,8 +34,10 @@ encoding_rs = "0.8"
 zip = "2"
 tokio = { version = "1", features = ["time"] }
 async-trait = "0.1"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+md-5 = "0.10"
+urlencoding = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
