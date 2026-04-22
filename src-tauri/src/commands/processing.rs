@@ -751,105 +751,143 @@ pub async fn file_prepare_import(
         .map(|c| c.analyze_content)
         .unwrap_or(true);
 
-    // Phase 1: Run Rust processors (signal gathering)
+    // Phase 1: signal gathering runs per-file on the blocking pool and
+    // streams results into Phase 2 through an mpsc channel, so Phase 2 can
+    // fire its first LLM request as soon as *one* file's signals are ready
+    // — rather than waiting for the whole batch.
     let total = paths.len();
-    let app_clone = app.clone();
 
-    let phase1_results = tauri::async_runtime::spawn_blocking(move || {
-        let processors = get_processors();
-        let mut results = Vec::new();
+    type Phase1Item = (
+        String,
+        String,
+        Vec<ExtractedField>,
+        Vec<String>,
+        Option<String>,
+        Option<Vec<u8>>,
+        Option<String>,
+    );
 
-        for (idx, path_str) in paths.iter().enumerate() {
-            let file_path = Path::new(path_str);
-            let file_name = file_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
+    // Bounded capacity = total so blocking_send never parks a worker thread.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Phase1Item>(total.max(1));
 
-            let progress = ProcessingProgress {
-                current: idx + 1,
-                total,
-                current_file: file_name.clone(),
-                status: "gathering_signals".to_string(),
+    // Cap concurrent disk-bound Phase 1 work. Large imports would otherwise
+    // spawn hundreds of blocking threads simultaneously (EPUB/ZIP parsing,
+    // cover reads) and thrash the disk / spike memory.
+    const PHASE1_CONCURRENCY: usize = 8;
+    let phase1_sem = std::sync::Arc::new(tokio::sync::Semaphore::new(PHASE1_CONCURRENCY));
+
+    // Dispatch in a background task so the Phase 2 consumer below can start
+    // polling `rx` immediately. Moving dispatch off the current task also
+    // means acquire().await on the semaphore never blocks Phase 2.
+    let dispatch_app = app.clone();
+    tokio::spawn(async move {
+        for (idx, path_str) in paths.into_iter().enumerate() {
+            let Ok(permit) = phase1_sem.clone().acquire_owned().await else {
+                break;
             };
-            let _ = app_clone.emit("processing-progress", &progress);
+            let tx = tx.clone();
+            let app_clone = dispatch_app.clone();
+            let analyze_content = llm_analyze_content;
 
-            let mut merged_metadata: Vec<ExtractedField> = Vec::new();
-            let mut merged_authors = Vec::new();
-            let mut seen_authors = HashSet::new();
-            let mut known_mime: Option<String> = None;
+            tauri::async_runtime::spawn_blocking(move || {
+                let _permit = permit; // released when this task ends
 
-            for processor in &processors {
-                let supported = type_matches(
-                    processor.supported_types(),
-                    known_mime.as_deref(),
+                let file_path = Path::new(&path_str);
+                let file_name = file_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                let _ = app_clone.emit(
+                    "processing-progress",
+                    &ProcessingProgress {
+                        current: idx + 1,
+                        total,
+                        current_file: file_name.clone(),
+                        status: "gathering_signals".to_string(),
+                    },
                 );
-                if !supported {
-                    continue;
-                }
-                if let Ok(extracted) = processor.process(file_path) {
-                    for author in extracted.suggested_authors {
-                        if seen_authors.insert(author.clone()) {
-                            merged_authors.push(author);
+
+                let processors = get_processors();
+                let mut merged_metadata: Vec<ExtractedField> = Vec::new();
+                let mut merged_authors: Vec<String> = Vec::new();
+                let mut seen_authors = HashSet::new();
+                let mut known_mime: Option<String> = None;
+
+                for processor in &processors {
+                    let supported = type_matches(
+                        processor.supported_types(),
+                        known_mime.as_deref(),
+                    );
+                    if !supported {
+                        continue;
+                    }
+                    if let Ok(extracted) = processor.process(file_path) {
+                        for author in extracted.suggested_authors {
+                            if seen_authors.insert(author.clone()) {
+                                merged_authors.push(author);
+                            }
+                        }
+                        for field in extracted.metadata {
+                            if field.key == "mime_type" {
+                                known_mime = Some(field.value.clone());
+                            }
+                            if let Some(existing) = merged_metadata.iter_mut().find(|f| f.key == field.key) {
+                                *existing = field;
+                            } else {
+                                merged_metadata.push(field);
+                            }
                         }
                     }
-                    for field in extracted.metadata {
-                        if field.key == "mime_type" {
-                            known_mime = Some(field.value.clone());
-                        }
-                        if let Some(existing) = merged_metadata.iter_mut().find(|f| f.key == field.key) {
-                            *existing = field;
-                        } else {
-                            merged_metadata.push(field);
-                        }
+                }
+
+                let mime = known_mime.as_deref().unwrap_or("");
+                let ext_lower = file_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_lowercase());
+                let content = if !analyze_content {
+                    None
+                } else if ext_lower.as_deref() == Some("epub") || mime == "application/epub+zip" {
+                    sample_epub_content(file_path, 5, 1000)
+                } else if mime == "text/plain" || ext_lower.as_deref() == Some("txt") {
+                    sample_text_content(file_path, 5, 1000)
+                } else {
+                    None
+                };
+
+                let is_archive = mime.contains("zip") || mime.contains("cbz");
+                let is_comic_image = mime.starts_with("image/");
+                let (cover_data, cover_mime_type) = if is_archive {
+                    match extract_cover_from_archive(file_path) {
+                        Ok((data, mime)) => (Some(data), Some(mime)),
+                        Err(_) => (None, None),
                     }
-                }
-            }
+                } else if is_comic_image {
+                    match std::fs::read(file_path) {
+                        Ok(data) => (Some(data), Some(mime.to_string())),
+                        Err(_) => (None, None),
+                    }
+                } else {
+                    (None, None)
+                };
 
-            // Content sampling — dispatch by extension/mime so each novel-format
-            // gets the right extractor. When no sampler applies, or when content
-            // analysis is disabled, `content` stays None and Phase 2 treats that
-            // as "not applicable" rather than "failed".
-            let mime = known_mime.as_deref().unwrap_or("");
-            let ext_lower = file_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|s| s.to_lowercase());
-            let content = if !llm_analyze_content {
-                None
-            } else if ext_lower.as_deref() == Some("epub") || mime == "application/epub+zip" {
-                sample_epub_content(file_path, 5, 1000)
-            } else if mime == "text/plain" || ext_lower.as_deref() == Some("txt") {
-                sample_text_content(file_path, 5, 1000)
-            } else {
-                None
-            };
-
-            // Cover extraction for archives/images
-            let is_archive = mime.contains("zip") || mime.contains("cbz");
-            let is_comic_image = mime.starts_with("image/");
-
-            let (cover_data, cover_mime_type) = if is_archive {
-                match extract_cover_from_archive(file_path) {
-                    Ok((data, mime)) => (Some(data), Some(mime)),
-                    Err(_) => (None, None),
-                }
-            } else if is_comic_image {
-                match std::fs::read(file_path) {
-                    Ok(data) => (Some(data), Some(mime.to_string())),
-                    Err(_) => (None, None),
-                }
-            } else {
-                (None, None)
-            };
-
-            results.push((path_str.clone(), file_name, merged_metadata, merged_authors, content, cover_data, cover_mime_type));
+                // If Phase 2 has already dropped rx (cancellation), the send
+                // fails and we simply stop.
+                let _ = tx.blocking_send((
+                    path_str,
+                    file_name,
+                    merged_metadata,
+                    merged_authors,
+                    content,
+                    cover_data,
+                    cover_mime_type,
+                ));
+            });
         }
-
-        results
-    })
-    .await
-    .map_err(|e| format!("Task join error: {e}"))?;
+        // `tx` drops here; once all spawned tasks have finished sending,
+        // Phase 2's `rx.recv().await` returns None and the loop exits.
+    });
 
     // Phase 2: LLM extraction — two-call pipeline for novels
     let llm_config = super::llm::load_config(&pool).await?;
@@ -864,7 +902,7 @@ pub async fn file_prepare_import(
     .await
     .map_err(|e| format!("Failed to load existing files: {e}"))?;
 
-    for (path_str, file_name, merged_metadata, merged_authors, content, cover_data, cover_mime_type) in phase1_results {
+    while let Some((path_str, file_name, merged_metadata, merged_authors, content, cover_data, cover_mime_type)) = rx.recv().await {
         // Check cancellation before each file
         if cancelled.0.load(Ordering::Relaxed) {
             break;
