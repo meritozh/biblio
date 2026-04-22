@@ -57,6 +57,14 @@ pub struct LlmContentMetadata {
     pub description: Option<String>,
 }
 
+/// Comic-path Call 1: LLM ranks up to 5 filenames most likely to be the
+/// cover image of an archive based on their names (no image data).
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct LlmCoverCandidates {
+    /// Filenames chosen verbatim from the input, ranked best-first.
+    pub candidates: Vec<String>,
+}
+
 async fn read_setting(pool: &sqlx::SqlitePool, key: &str) -> Option<String> {
     let result: Option<(String,)> = sqlx::query_as(
         "SELECT value FROM app_settings WHERE key = ?",
@@ -168,6 +176,7 @@ pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String
 /// let Phase 2 continue with its error handling.
 const FILENAME_EXTRACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const CONTENT_EXTRACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+const VISION_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Prepended to every extraction preamble so model output stays in Simplified
 /// Chinese regardless of which active prompt the user has chosen.
@@ -254,6 +263,135 @@ pub async fn extract_content_metadata(
         Err(_) => Err(format!(
             "LLM content analysis timed out after {}s",
             CONTENT_EXTRACTION_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+/// Comic-path Call 1: given the list of image filenames inside an archive,
+/// ask the LLM to rank up to 5 most likely to be the cover. The model is
+/// explicitly allowed to return them in confidence order.
+pub async fn extract_cover_candidates(
+    config: &LlmConfig,
+    entry_names: &[&str],
+) -> Result<Vec<String>, String> {
+    let client = build_client(config)?;
+
+    let preamble = format!(
+        "{}\n\n\
+         You are picking the cover image of a comic archive given the list \
+         of image filenames inside it. Rules:\n\
+         - Return up to 5 filenames from the input list, ordered best-first.\n\
+         - The first file in the input (often named 000.jpg, 001.png, cover.jpg, \
+           cover01.jpg) is usually the cover — rank it first when plausible.\n\
+         - Return the filenames verbatim — do not invent entries.\n\
+         - If nothing looks like a cover, return an empty list.",
+        LANGUAGE_INSTRUCTION
+    );
+
+    let input = format!("Filenames (archive order):\n{}", entry_names.join("\n"));
+
+    let extractor = client
+        .extractor::<LlmCoverCandidates>(&config.model)
+        .preamble(&preamble)
+        .max_tokens(512)
+        .build();
+
+    match tokio::time::timeout(FILENAME_EXTRACTION_TIMEOUT, extractor.extract(&input)).await {
+        Ok(result) => result
+            .map(|r| r.candidates)
+            .map_err(|e| format!("LLM cover-candidates failed: {e}")),
+        Err(_) => Err(format!(
+            "LLM cover-candidates timed out after {}s",
+            FILENAME_EXTRACTION_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+/// Comic-path Call 2: ask the LLM whether a given image is a cover. Uses a
+/// raw OpenAI-compatible multimodal POST because `rig`'s extractor is
+/// text-only; any OpenAI-compatible endpoint with a multimodal model will
+/// accept this format. Returns `true` / `false` / `Err` (text-only model
+/// or network failure → caller should fall back to the first candidate).
+pub async fn check_is_cover(
+    config: &LlmConfig,
+    image_bytes: &[u8],
+    mime_type: &str,
+) -> Result<bool, String> {
+    use base64::Engine;
+
+    let data_url = format!(
+        "data:{};base64,{}",
+        mime_type,
+        base64::engine::general_purpose::STANDARD.encode(image_bytes)
+    );
+
+    // Endpoint: {base_url}/chat/completions. `base_url` already ends in /v1 in
+    // typical configs so we avoid double-slashing by trimming trailing /.
+    let base = config.base_url.trim_end_matches('/');
+    let endpoint = format!("{base}/chat/completions");
+
+    let body = serde_json::json!({
+        "model": config.model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Is this image the cover of a book or comic? Reply strictly as JSON: {\"is_cover\": true} or {\"is_cover\": false}. Covers typically show the title, art prominently featuring the main subject, and no panel/page numbers."
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": data_url}
+                }
+            ]
+        }],
+        "max_tokens": 64,
+        "response_format": {"type": "json_object"}
+    });
+
+    let mut req = reqwest::Client::new().post(&endpoint).json(&body);
+    if !config.api_key.is_empty() {
+        req = req.bearer_auth(&config.api_key);
+    }
+
+    let fut = async move {
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("Vision request failed: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            return Err(format!("Vision endpoint returned {status}: {err}"));
+        }
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Vision response parse failed: {e}"))?;
+        let content = json
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .ok_or_else(|| "Vision response missing choices[0].message.content".to_string())?;
+
+        let parsed: serde_json::Value = serde_json::from_str(content)
+            .map_err(|e| format!("Vision content is not valid JSON: {e} — got: {content}"))?;
+        let is_cover = parsed
+            .get("is_cover")
+            .and_then(|v| v.as_bool())
+            .ok_or_else(|| {
+                format!("Vision response missing 'is_cover' bool field — got: {content}")
+            })?;
+        Ok::<bool, String>(is_cover)
+    };
+
+    match tokio::time::timeout(VISION_CALL_TIMEOUT, fut).await {
+        Ok(r) => r,
+        Err(_) => Err(format!(
+            "LLM vision check timed out after {}s",
+            VISION_CALL_TIMEOUT.as_secs()
         )),
     }
 }

@@ -19,11 +19,19 @@ impl Phase2Node for FilenameLlmNode {
         if !env.llm_config.enabled {
             return false;
         }
-        is_novel_file(
-            &ctx.file_path.to_string_lossy(),
+        let path_str = ctx.file_path.to_string_lossy();
+        if is_novel_file(
+            &path_str,
             env.settings.process_novel_epub,
             env.settings.process_novel_pdf,
-        )
+        ) {
+            return true;
+        }
+        // Archive filenames also carry useful metadata (e.g. "[作者]
+        // 标题 第01-10话.cbz") — comic imports need display_name / author /
+        // progress extraction the same way novels do.
+        let mime = ctx.mime.as_deref().unwrap_or("");
+        mime.contains("zip") || mime.contains("cbz")
     }
 
     async fn run(&self, ctx: &mut FileContext, env: &PipelineEnv) -> Result<(), NodeError> {

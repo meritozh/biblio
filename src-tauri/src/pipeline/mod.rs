@@ -15,6 +15,6 @@ mod types;
 pub use env::{PipelineEnv, PipelineSettings};
 pub use traits::{Phase1Node, Phase2Node};
 pub use types::{
-    Cover, DuplicateAction, DuplicateInfo, ExtractedField, FileContext, NodeError, NodeStatus,
-    ProcessingProgress,
+    ArchiveEntry, Cover, DuplicateAction, DuplicateInfo, ExtractedField, FileContext, NodeError,
+    NodeStatus,
 };
