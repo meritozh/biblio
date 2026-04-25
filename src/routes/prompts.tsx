@@ -29,7 +29,51 @@ import {
   promptDelete,
   promptSetDefault,
 } from '@/lib/tauri';
-import type { Prompt, PromptCategory } from '@/types';
+import type { Prompt, PromptMimeGroup, PromptStep } from '@/types';
+
+interface PromptFormState {
+  mimeGroup: PromptMimeGroup;
+  step: PromptStep;
+}
+
+const STEPS_BY_GROUP: Record<PromptMimeGroup, ReadonlyArray<{ step: PromptStep; label: string }>> = {
+  text: [
+    { step: 'filename', label: 'Filename extraction' },
+    { step: 'content', label: 'Content analysis' },
+  ],
+  archive: [
+    { step: 'filename', label: 'Filename extraction' },
+    { step: 'cover_pick', label: 'Cover detection' },
+  ],
+};
+
+const GROUP_LABEL: Record<PromptMimeGroup, string> = {
+  text: 'Novel',
+  archive: 'Comic',
+};
+
+const STEP_LABEL: Record<PromptStep, string> = {
+  filename: 'filename',
+  content: 'content',
+  cover_pick: 'cover',
+};
+
+function isValidStep(group: PromptMimeGroup, step: PromptStep): boolean {
+  return STEPS_BY_GROUP[group].some((s) => s.step === step);
+}
+
+function promptHelpText(group: PromptMimeGroup, step: PromptStep): string {
+  if (group === 'text' && step === 'content') {
+    return 'Categories, tags, and authors from your library are automatically appended at runtime.';
+  }
+  if (group === 'text' && step === 'filename') {
+    return 'Filename extraction has no runtime context — this prompt is used verbatim.';
+  }
+  if (group === 'archive' && step === 'filename') {
+    return 'Used for comic archive filenames (.zip / .cbz). No runtime context appended.';
+  }
+  return 'Used to rank candidate cover filenames inside a comic archive. No runtime context appended.';
+}
 
 export const Route = createFileRoute('/prompts')({
   component: PromptsPage,
@@ -42,7 +86,10 @@ function PromptsPage() {
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [newPromptName, setNewPromptName] = useState('');
   const [newPromptContent, setNewPromptContent] = useState('');
-  const [newPromptCategory, setNewPromptCategory] = useState<PromptCategory>('content');
+  const [newPromptForm, setNewPromptForm] = useState<PromptFormState>({
+    mimeGroup: 'text',
+    step: 'content',
+  });
   const [saving, setSaving] = useState(false);
   const [editingPrompt, setEditingPrompt] = useState<Prompt | null>(null);
   const [editName, setEditName] = useState('');
@@ -69,12 +116,13 @@ function PromptsPage() {
       await promptCreate({
         name: newPromptName.trim(),
         content: newPromptContent.trim(),
-        category: newPromptCategory,
+        mime_group: newPromptForm.mimeGroup,
+        step: newPromptForm.step,
       });
       setCreateDialogOpen(false);
       setNewPromptName('');
       setNewPromptContent('');
-      setNewPromptCategory('content');
+      setNewPromptForm({ mimeGroup: 'text', step: 'content' });
       void loadPrompts();
     } catch (error) {
       console.error('Failed to create prompt:', error);
@@ -97,7 +145,8 @@ function PromptsPage() {
       await promptUpdate(editingPrompt.id, {
         name: editName.trim(),
         content: editContent.trim(),
-        category: editingPrompt.category,
+        mime_group: editingPrompt.mime_group,
+        step: editingPrompt.step,
       });
       setEditDialogOpen(false);
       setEditingPrompt(null);
@@ -179,7 +228,9 @@ function PromptsPage() {
           <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 mb-6">
             <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
             <p className="text-xs text-muted-foreground">
-              Two active prompts run during file import: one extracts metadata from the filename, the other classifies content. Your categories, existing tags, and known authors are automatically appended to the content-analysis prompt at runtime.
+              Prompts are grouped by mime type. Novels (.txt / .epub / .pdf) use a filename
+              and a content prompt; comics (.zip / .cbz) use a filename and a cover-detection
+              prompt. The active prompt within each (group, step) bucket runs at import time.
             </p>
           </div>
 
@@ -209,7 +260,7 @@ function PromptsPage() {
                           {prompt.name}
                         </h3>
                         <Badge variant="gray" className="text-xs">
-                          {prompt.category === 'filename' ? 'filename' : 'content'}
+                          {GROUP_LABEL[prompt.mime_group]} · {STEP_LABEL[prompt.step]}
                         </Badge>
                         {prompt.is_default && (
                           <Badge variant="green" className="text-xs">
@@ -264,29 +315,46 @@ function PromptsPage() {
             <DialogTitle>Create Prompt</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
-            <div>
-              <label className="text-sm font-medium mb-2 block">Type</label>
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="new-prompt-category"
-                    checked={newPromptCategory === 'content'}
-                    onChange={() => setNewPromptCategory('content')}
-                    className="accent-primary"
-                  />
-                  <span className="text-sm">Content analysis</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="new-prompt-category"
-                    checked={newPromptCategory === 'filename'}
-                    onChange={() => setNewPromptCategory('filename')}
-                    className="accent-primary"
-                  />
-                  <span className="text-sm">Filename extraction</span>
-                </label>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm font-medium mb-2 block">Mime group</label>
+                <div className="flex flex-col gap-2">
+                  {(Object.keys(GROUP_LABEL) as PromptMimeGroup[]).map((g) => (
+                    <label key={g} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="new-prompt-mime-group"
+                        checked={newPromptForm.mimeGroup === g}
+                        onChange={() => {
+                          // Reset step to the first valid one for the new group.
+                          const firstStep = STEPS_BY_GROUP[g][0]!.step;
+                          setNewPromptForm({ mimeGroup: g, step: firstStep });
+                        }}
+                        className="accent-primary"
+                      />
+                      <span className="text-sm">{GROUP_LABEL[g]}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-2 block">Step</label>
+                <div className="flex flex-col gap-2">
+                  {STEPS_BY_GROUP[newPromptForm.mimeGroup].map(({ step, label }) => (
+                    <label key={step} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="new-prompt-step"
+                        checked={newPromptForm.step === step}
+                        onChange={() =>
+                          setNewPromptForm((prev) => ({ ...prev, step }))
+                        }
+                        className="accent-primary"
+                      />
+                      <span className="text-sm">{label}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
             </div>
             <div>
@@ -306,9 +374,7 @@ function PromptsPage() {
                 className="w-full min-h-[200px] px-3 py-2 text-sm rounded-xl border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
               />
               <p className="text-xs text-muted-foreground mt-1.5">
-                {newPromptCategory === 'content'
-                  ? 'Categories, tags, and authors from your library are automatically appended at runtime.'
-                  : 'Filename extraction has no runtime context — this prompt is used verbatim.'}
+                {promptHelpText(newPromptForm.mimeGroup, newPromptForm.step)}
               </p>
             </div>
           </div>
@@ -318,7 +384,12 @@ function PromptsPage() {
             </Button>
             <Button
               onClick={handleCreate}
-              disabled={saving || !newPromptName.trim() || !newPromptContent.trim()}
+              disabled={
+                saving ||
+                !newPromptName.trim() ||
+                !newPromptContent.trim() ||
+                !isValidStep(newPromptForm.mimeGroup, newPromptForm.step)
+              }
             >
               {saving ? 'Creating...' : 'Create'}
             </Button>
@@ -335,7 +406,13 @@ function PromptsPage() {
             <div>
               <label className="text-sm font-medium mb-2 block">Type</label>
               <p className="text-sm text-muted-foreground">
-                {editingPrompt?.category === 'filename' ? 'Filename extraction' : 'Content analysis'}
+                {editingPrompt
+                  ? `${GROUP_LABEL[editingPrompt.mime_group]} · ${
+                      STEPS_BY_GROUP[editingPrompt.mime_group].find(
+                        (s) => s.step === editingPrompt.step
+                      )?.label ?? editingPrompt.step
+                    }`
+                  : ''}
               </p>
             </div>
             <div>
@@ -355,9 +432,9 @@ function PromptsPage() {
                 className="w-full min-h-[200px] px-3 py-2 text-sm rounded-xl border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
               />
               <p className="text-xs text-muted-foreground mt-1.5">
-                {editingPrompt?.category === 'content'
-                  ? 'Categories, tags, and authors from your library are automatically appended at runtime.'
-                  : 'Filename extraction has no runtime context — this prompt is used verbatim.'}
+                {editingPrompt
+                  ? promptHelpText(editingPrompt.mime_group, editingPrompt.step)
+                  : ''}
               </p>
             </div>
           </div>

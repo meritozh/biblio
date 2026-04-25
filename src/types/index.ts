@@ -215,13 +215,25 @@ export interface RemoteConfig {
   app_root: string;
 }
 
-export type PromptCategory = 'filename' | 'content';
+/** Mime-type group a prompt applies to. */
+export type PromptMimeGroup = 'text' | 'archive';
+
+/** Step within a mime group. text supports filename + content; archive supports
+ *  filename + cover_pick. The (group, step) pair is the unique discriminator. */
+export type PromptStep = 'filename' | 'content' | 'cover_pick';
+
+/** Legacy free-text label kept on rows for back-compat readers. New code
+ *  should switch on `mime_group` + `step` instead. */
+export type PromptCategory = string;
 
 export interface Prompt {
   id: number;
   name: string;
   content: string;
-  category: PromptCategory;
+  /** Legacy label from before v3 — kept for back-compat. */
+  category: PromptCategory | null;
+  mime_group: PromptMimeGroup;
+  step: PromptStep;
   is_default: boolean;
   created_at: string;
   updated_at: string;
@@ -230,5 +242,6 @@ export interface Prompt {
 export interface PromptCreatePayload {
   name: string;
   content: string;
-  category: PromptCategory;
+  mime_group: PromptMimeGroup;
+  step: PromptStep;
 }

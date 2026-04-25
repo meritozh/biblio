@@ -183,14 +183,18 @@ const VISION_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 const LANGUAGE_INSTRUCTION: &str = "Output all Chinese text in Simplified Chinese (简体中文). Never use Traditional Chinese (繁體中文) characters.";
 
 /// Call 1: Extract display_name, authors, progress from filename only.
-/// Preamble is loaded from the active `filename` prompt in the DB.
+/// Preamble is loaded from the active `(mime_group, 'filename')` prompt
+/// in the DB — `'text'` for novels (.txt/.epub/.pdf), `'archive'` for
+/// comics (.zip/.cbz). Lets the user customize each independently.
 pub async fn extract_filename_metadata(
     config: &LlmConfig,
     pool: &sqlx::SqlitePool,
     file_name: &str,
+    mime_group: &str,
 ) -> Result<LlmFilenameMetadata, String> {
     let client = build_client(config)?;
-    let user_preamble = crate::commands::prompts::prompt_get_active(pool, "filename").await?;
+    let user_preamble =
+        crate::commands::prompts::prompt_get_active(pool, mime_group, "filename").await?;
     let preamble = format!("{}\n\n{}", LANGUAGE_INSTRUCTION, user_preamble);
 
     let input = format!("File name: {}", file_name);
@@ -223,7 +227,7 @@ pub async fn extract_content_metadata(
     tags: &[String],
 ) -> Result<LlmContentMetadata, String> {
     let client = build_client(config)?;
-    let rules = crate::commands::prompts::prompt_get_active(pool, "content").await?;
+    let rules = crate::commands::prompts::prompt_get_active(pool, "text", "content").await?;
 
     let categories_str = if categories.is_empty() {
         "None defined yet".to_string()
@@ -268,25 +272,18 @@ pub async fn extract_content_metadata(
 }
 
 /// Comic-path Call 1: given the list of image filenames inside an archive,
-/// ask the LLM to rank up to 5 most likely to be the cover. The model is
-/// explicitly allowed to return them in confidence order.
+/// ask the LLM to rank up to 5 most likely to be the cover. Rules come
+/// from the active `(archive, cover_pick)` prompt so the user can tune
+/// the heuristics without recompiling.
 pub async fn extract_cover_candidates(
     config: &LlmConfig,
+    pool: &sqlx::SqlitePool,
     entry_names: &[&str],
 ) -> Result<Vec<String>, String> {
     let client = build_client(config)?;
-
-    let preamble = format!(
-        "{}\n\n\
-         You are picking the cover image of a comic archive given the list \
-         of image filenames inside it. Rules:\n\
-         - Return up to 5 filenames from the input list, ordered best-first.\n\
-         - The first file in the input (often named 000.jpg, 001.png, cover.jpg, \
-           cover01.jpg) is usually the cover — rank it first when plausible.\n\
-         - Return the filenames verbatim — do not invent entries.\n\
-         - If nothing looks like a cover, return an empty list.",
-        LANGUAGE_INSTRUCTION
-    );
+    let user_preamble =
+        crate::commands::prompts::prompt_get_active(pool, "archive", "cover_pick").await?;
+    let preamble = format!("{}\n\n{}", LANGUAGE_INSTRUCTION, user_preamble);
 
     let input = format!("Filenames (archive order):\n{}", entry_names.join("\n"));
 

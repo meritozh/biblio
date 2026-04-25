@@ -402,8 +402,14 @@ export async function llmTestConnection(): Promise<string> {
   return invoke('llm_test_connection');
 }
 
-export async function promptList(category?: string): Promise<Prompt[]> {
-  return invoke('prompt_list', { category: category ?? null });
+export async function promptList(filter?: {
+  mime_group?: string;
+  step?: string;
+}): Promise<Prompt[]> {
+  return invoke('prompt_list', {
+    mimeGroup: filter?.mime_group ?? null,
+    step: filter?.step ?? null,
+  });
 }
 
 export async function promptCreate(payload: PromptCreatePayload): Promise<Prompt> {

@@ -34,7 +34,7 @@ impl Phase2Node for LlmCoverCandidatesNode {
             .map(|e| e.basename.as_str())
             .collect();
 
-        match crate::commands::llm::extract_cover_candidates(&env.llm_config, &names).await {
+        match crate::commands::llm::extract_cover_candidates(&env.llm_config, &env.pool, &names).await {
             Ok(mut candidates) => {
                 // Defensive: the LLM may hallucinate filenames. Keep only
                 // names that actually appear in archive_entries.
