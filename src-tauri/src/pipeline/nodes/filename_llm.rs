@@ -47,7 +47,7 @@ impl Phase2Node for FilenameLlmNode {
                 env.settings.process_novel_pdf,
             );
         }
-        // archive: dispatcher already routed only zip/cbz here.
+        // archive: dispatcher already routed only zip/cbz/rar/cbr here.
         true
     }
 

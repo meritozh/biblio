@@ -57,7 +57,7 @@ export interface KindSchema {
 
 export const KIND_REGISTRY: Readonly<Record<FileKind, KindSchema>> = {
   comic: {
-    extensions: ['cbz', 'zip'],
+    extensions: ['cbz', 'zip', 'cbr', 'rar'],
     defaultStorage: 'remote',
     columns: {
       cover: true,

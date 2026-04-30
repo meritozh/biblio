@@ -1,8 +1,6 @@
 use async_trait::async_trait;
-use std::io::Read;
-use std::path::Path;
 
-use super::archive_list::guess_image_mime;
+use crate::pipeline::archive::{guess_image_mime, read_entry_bytes};
 use crate::pipeline::runner::emit_progress;
 use crate::pipeline::{Cover, FileContext, NodeError, Phase2Node, PipelineEnv};
 
@@ -15,10 +13,10 @@ use crate::pipeline::{Cover, FileContext, NodeError, Phase2Node, PipelineEnv};
 /// abandon the vision check entirely and use the first candidate directly
 /// — a degraded but still-useful result.
 ///
-/// Reads bytes lazily by re-opening the source archive and indexing into
-/// it via the basename → archive_index map captured by
-/// `ArchiveListImagesNode` in Phase 1. Avoids extracting every image to a
-/// temp dir up-front when only ≤5 are ever consumed.
+/// Reads bytes lazily via `archive::read_entry_bytes`, which dispatches to
+/// the right backend (ZIP central-directory random access or RAR linear
+/// walk). Avoids extracting every image up-front when only ≤5 are ever
+/// consumed.
 pub struct LlmVisionCoverCheckNode;
 
 #[async_trait]
@@ -53,7 +51,7 @@ impl Phase2Node for LlmVisionCoverCheckNode {
                 continue;
             };
 
-            let Ok(bytes) = read_archive_entry(&ctx.file_path, entry.archive_index) else {
+            let Ok(bytes) = read_entry_bytes(&ctx.file_path, entry.archive_index) else {
                 continue;
             };
             let mime = guess_image_mime(&entry.basename);
@@ -99,7 +97,7 @@ impl Phase2Node for LlmVisionCoverCheckNode {
                     .iter()
                     .find(|e| &e.basename == first)
                 {
-                    if let Ok(bytes) = read_archive_entry(&ctx.file_path, entry.archive_index) {
+                    if let Ok(bytes) = read_entry_bytes(&ctx.file_path, entry.archive_index) {
                         let mime = guess_image_mime(&entry.basename);
                         ctx.cover = Some(Cover {
                             data: bytes,
@@ -112,20 +110,4 @@ impl Phase2Node for LlmVisionCoverCheckNode {
 
         Ok(())
     }
-}
-
-/// Re-open the ZIP and read just the entry at `index`. Cheap because the
-/// central directory at the tail of the file is what governs open cost,
-/// and we then random-access exactly one entry.
-fn read_archive_entry(path: &Path, index: usize) -> Result<Vec<u8>, String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("open archive: {e}"))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("read archive: {e}"))?;
-    let mut entry = archive
-        .by_index(index)
-        .map_err(|e| format!("zip entry {index}: {e}"))?;
-    let mut bytes = Vec::with_capacity(entry.size() as usize);
-    entry
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("read entry: {e}"))?;
-    Ok(bytes)
 }

@@ -8,6 +8,7 @@
 //! appear in both compositions; that overlap is expressed at the call
 //! site rather than hidden behind per-node `applies()` gates.
 
+mod archive;
 mod env;
 pub mod nodes;
 pub mod runner;

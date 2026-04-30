@@ -4,7 +4,7 @@
 //! the import flow. There are two stock pipelines, dispatched by the
 //! command layer based on file extension: `novel_pipeline()` for text
 //! files (.txt / .epub / .pdf) and `comic_pipeline()` for archives
-//! (.cbz / .zip). Many nodes (mime detect, filename LLM, author resolve,
+//! (.cbz / .zip / .cbr / .rar). Many nodes (mime detect, filename LLM, author resolve,
 //! duplicate detect, status emit) appear in both — keeping them as
 //! separate compositions makes the per-type node list explicit at the
 //! call site instead of hidden behind per-node `applies()` gates.
@@ -52,7 +52,7 @@ pub enum FileKind {
     Novel,
 }
 
-const COMIC_EXTS: &[&str] = &["cbz", "zip"];
+const COMIC_EXTS: &[&str] = &["cbz", "zip", "cbr", "rar"];
 const NOVEL_EXTS: &[&str] = &["txt", "epub", "pdf"];
 
 /// Pick the pipeline kind for a path. Anything that isn't a recognized
@@ -92,11 +92,11 @@ pub fn novel_pipeline() -> PipelineBuilder {
         .add_phase2(StatusEmitNode)
 }
 
-/// Pipeline for archive files (.cbz / .zip). Adds the list → LLM-ranked
-/// candidates → vision check chain on top of the shared filename /
-/// author / dedupe stack. The vision node reads candidate bytes lazily
-/// from the source archive, so no temp-dir extraction or cleanup is
-/// needed.
+/// Pipeline for archive files (.cbz / .zip / .cbr / .rar). Adds the
+/// list → LLM-ranked candidates → vision check chain on top of the
+/// shared filename / author / dedupe stack. The vision node reads
+/// candidate bytes lazily from the source archive, so no temp-dir
+/// extraction or cleanup is needed.
 pub fn comic_pipeline() -> PipelineBuilder {
     Pipeline::builder()
         // ── Phase 1 — disk / CPU ─────────────────────────────────────
