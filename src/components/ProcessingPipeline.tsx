@@ -32,6 +32,7 @@ import {
   listenProcessingProgress,
   listenFilePrepared,
 } from '@/lib/tauri';
+import { schemaForPath, kindForPath, defaultCategoryIdForKind } from '@/lib/fileKind';
 import {
   ChevronDown,
   ChevronRight,
@@ -82,9 +83,7 @@ interface FileItemState {
 }
 
 function defaultStorageKind(fileName: string): StorageKind {
-  const lower = fileName.toLowerCase();
-  if (lower.endsWith('.cbz') || lower.endsWith('.zip')) return 'remote';
-  return 'local';
+  return schemaForPath(fileName).defaultStorage;
 }
 
 function StorageKindToggle({
@@ -279,11 +278,17 @@ export function ProcessingPipeline({
             prev.map((item) => {
               if (item.path !== result.path) return item;
 
+              // When the LLM didn't pick a category, fall back to the
+              // kind's default (e.g. comics → "comic" category) so the
+              // user doesn't have to set it manually for every import.
+              const resolvedCategoryId =
+                result.category_id ??
+                defaultCategoryIdForKind(kindForPath(item.path), categories);
               const formValues: DynamicMetadataFormValues = item.userEdited
                 ? item.formValues
                 : {
                     display_name: result.display_name || result.file_name,
-                    category_id: result.category_id,
+                    category_id: resolvedCategoryId,
                     tag_ids: result.tag_ids,
                     author_ids: allAuthorIds,
                     metadata: result.metadata.map((m) => ({
@@ -696,6 +701,7 @@ export function ProcessingPipeline({
 
           <TabPanel
             tabKey="review"
+            isActive={activeTab === 'review'}
             items={buckets.review}
             emptyLabel="No files need review."
             expandedIds={expandedIds}
@@ -717,6 +723,7 @@ export function ProcessingPipeline({
 
           <TabPanel
             tabKey="ready"
+            isActive={activeTab === 'ready'}
             items={buckets.ready}
             emptyLabel={
               analyzing
@@ -742,6 +749,7 @@ export function ProcessingPipeline({
 
           <TabPanel
             tabKey="failed"
+            isActive={activeTab === 'failed'}
             items={buckets.failed}
             emptyLabel="Nothing failed."
             expandedIds={expandedIds}
@@ -842,6 +850,7 @@ function CountBadge({
 
 interface TabPanelProps {
   tabKey: TabKey;
+  isActive: boolean;
   items: FileItemState[];
   emptyLabel: string;
   expandedIds: Set<string>;
@@ -863,6 +872,7 @@ interface TabPanelProps {
 
 function TabPanel({
   tabKey,
+  isActive,
   items,
   emptyLabel,
   expandedIds,
@@ -888,8 +898,13 @@ function TabPanel({
 
   const parentRef = useRef<HTMLDivElement>(null);
 
+  // `enabled: isActive` is load-bearing: the scroll element sits inside a
+  // `data-[state=inactive]:hidden` ancestor, so its ResizeObserver rect stays
+  // at 0×0 while inactive. Toggling enabled on activation forces the
+  // virtualizer to re-subscribe the observer against the now-visible element.
   const virtualizer = useVirtualizer({
     count: items.length,
+    enabled: isActive,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 72,
     overscan: 5,
@@ -899,6 +914,7 @@ function TabPanel({
   return (
     <TabsContent
       value={tabKey}
+      forceMount
       className="flex-1 min-h-0 flex flex-col data-[state=inactive]:hidden"
     >
       {items.length > 0 && tabKey !== 'failed' && (
@@ -1098,6 +1114,7 @@ function FileCardRow({
             <DynamicMetadataForm
               values={item.formValues}
               onChange={(values) => onFormChange(item.path, values)}
+              fields={schemaForPath(item.path).formFields}
               categories={categories}
               tags={tags}
               authors={authors}

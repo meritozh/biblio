@@ -35,6 +35,7 @@ pub fn run() {
             commands::file::file_move_category,
             commands::file::file_search,
             commands::file::file_check_status,
+            commands::file::recategorize_uncategorized_as_novel,
             commands::file::file_replace,
             commands::file::file_list_by_tag,
             commands::file::file_list_by_author,

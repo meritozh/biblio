@@ -304,88 +304,85 @@ pub async fn extract_cover_candidates(
     }
 }
 
-/// Comic-path Call 2: ask the LLM whether a given image is a cover. Uses a
-/// raw OpenAI-compatible multimodal POST because `rig`'s extractor is
-/// text-only; any OpenAI-compatible endpoint with a multimodal model will
-/// accept this format. Returns `true` / `false` / `Err` (text-only model
-/// or network failure → caller should fall back to the first candidate).
+/// Schema for the comic-path vision call: a single boolean from the LLM.
+/// Rig serializes this as `response_format: {type: "json_schema", ...}`
+/// via the OpenAI provider — matching what every other LLM call here
+/// already does, and what most OpenAI-compatible endpoints (DashScope,
+/// Doubao, OpenRouter, vLLM, llama.cpp) accept.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct LlmIsCover {
+    /// True if the image looks like a book / comic cover (prominent title,
+    /// main subject, no page or panel numbers).
+    pub is_cover: bool,
+}
+
+/// Map our existing `image/...` mime strings onto rig's `ImageMediaType`.
+/// Defaults to JPEG when the extension is unknown — most comic dumps use
+/// JPEG, and providers that need an explicit type to accept a base64
+/// image will treat JPEG as a safe fallback.
+fn image_media_type_for(mime: &str) -> rig::completion::message::ImageMediaType {
+    use rig::completion::message::ImageMediaType;
+    match mime.to_lowercase().as_str() {
+        "image/jpeg" | "image/jpg" => ImageMediaType::JPEG,
+        "image/png" => ImageMediaType::PNG,
+        "image/webp" => ImageMediaType::WEBP,
+        "image/gif" => ImageMediaType::GIF,
+        _ => ImageMediaType::JPEG,
+    }
+}
+
+/// Comic-path Call 2: ask the LLM whether a given image is a cover. Goes
+/// through `client.extractor()` so the request shape (json_schema,
+/// schema-validated retry) matches the other three extractor calls in
+/// this module. Returns `true` / `false` / `Err` — caller falls back to
+/// the first candidate on Err (text-only model, endpoint refusal, etc.).
 pub async fn check_is_cover(
     config: &LlmConfig,
     image_bytes: &[u8],
     mime_type: &str,
 ) -> Result<bool, String> {
     use base64::Engine;
+    use rig::OneOrMany;
+    use rig::completion::Message;
+    use rig::completion::message::UserContent;
 
+    let preamble = format!(
+        "{}\n\n{}",
+        LANGUAGE_INSTRUCTION,
+        "Decide whether the supplied image is the cover of a book or comic. \
+         Covers typically show the title prominently and feature the main \
+         subject without panel or page numbers. Reply with the structured \
+         schema only."
+    );
+
+    // Send the image as a `data:` URL via `image_url`. Rig's OpenAI
+    // provider strictly requires `ImageDetail` for the `image_base64`
+    // path (providers/openai/completion/mod.rs:473) but applies a default
+    // for the URL path (line 459). The wire payload is identical — both
+    // serialize to `{type:"image_url", image_url:{url:"data:..."}}`.
     let data_url = format!(
         "data:{};base64,{}",
         mime_type,
         base64::engine::general_purpose::STANDARD.encode(image_bytes)
     );
+    let contents = OneOrMany::many([
+        UserContent::text("Is this image a cover?"),
+        UserContent::image_url(data_url, Some(image_media_type_for(mime_type)), None),
+    ])
+    .map_err(|e| format!("Vision message build failed: {e}"))?;
+    let message: Message = contents.into();
 
-    // Endpoint: {base_url}/chat/completions. `base_url` already ends in /v1 in
-    // typical configs so we avoid double-slashing by trimming trailing /.
-    let base = config.base_url.trim_end_matches('/');
-    let endpoint = format!("{base}/chat/completions");
+    let client = build_client(config)?;
+    let extractor = client
+        .extractor::<LlmIsCover>(&config.model)
+        .preamble(&preamble)
+        .max_tokens(64)
+        .build();
 
-    let body = serde_json::json!({
-        "model": config.model,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "Is this image the cover of a book or comic? Reply strictly as JSON: {\"is_cover\": true} or {\"is_cover\": false}. Covers typically show the title, art prominently featuring the main subject, and no panel/page numbers."
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {"url": data_url}
-                }
-            ]
-        }],
-        "max_tokens": 64,
-        "response_format": {"type": "json_object"}
-    });
-
-    let mut req = reqwest::Client::new().post(&endpoint).json(&body);
-    if !config.api_key.is_empty() {
-        req = req.bearer_auth(&config.api_key);
-    }
-
-    let fut = async move {
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format!("Vision request failed: {e}"))?;
-        let status = resp.status();
-        if !status.is_success() {
-            let err = resp.text().await.unwrap_or_default();
-            return Err(format!("Vision endpoint returned {status}: {err}"));
-        }
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("Vision response parse failed: {e}"))?;
-        let content = json
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c| c.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_str())
-            .ok_or_else(|| "Vision response missing choices[0].message.content".to_string())?;
-
-        let parsed: serde_json::Value = serde_json::from_str(content)
-            .map_err(|e| format!("Vision content is not valid JSON: {e} — got: {content}"))?;
-        let is_cover = parsed
-            .get("is_cover")
-            .and_then(|v| v.as_bool())
-            .ok_or_else(|| {
-                format!("Vision response missing 'is_cover' bool field — got: {content}")
-            })?;
-        Ok::<bool, String>(is_cover)
-    };
-
-    match tokio::time::timeout(VISION_CALL_TIMEOUT, fut).await {
-        Ok(r) => r,
+    match tokio::time::timeout(VISION_CALL_TIMEOUT, extractor.extract(message)).await {
+        Ok(result) => result
+            .map(|r| r.is_cover)
+            .map_err(|e| format!("LLM vision check failed: {e}")),
         Err(_) => Err(format!(
             "LLM vision check timed out after {}s",
             VISION_CALL_TIMEOUT.as_secs()

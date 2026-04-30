@@ -29,7 +29,10 @@ pub struct FilePreparedImport {
     pub author_ids: Vec<i64>,
     pub metadata: Vec<ExtractedField>,
     pub unresolved_author_names: Vec<String>,
-    pub cover_data: Option<Vec<u8>>,
+    /// Base64-encoded cover bytes. Serialized as a string so the frontend
+    /// can drop it straight into a `data:` URL without converting a
+    /// JS-side number array first.
+    pub cover_data: Option<String>,
     pub cover_mime_type: Option<String>,
     pub progress: Option<String>,
     pub suggested_tags: Vec<String>,
@@ -150,15 +153,43 @@ pub async fn file_prepare_import(
     // EmitPreparedNode is command-layer: it knows how to convert a
     // FileContext to the command's public FilePreparedImport shape, which
     // the pipeline module is deliberately agnostic about.
-    let built = pipeline::nodes::novel_and_generic()
+    //
+    // Two pipelines, one dispatcher: extension picks novel vs comic.
+    // We still want streaming `file-prepared` events ordered by completion,
+    // so EmitPreparedNode is appended to BOTH compositions.
+    let novel_pipeline = pipeline::nodes::novel_pipeline()
+        .add_phase2(EmitPreparedNode)
+        .build();
+    let comic_pipeline = pipeline::nodes::comic_pipeline()
         .add_phase2(EmitPreparedNode)
         .build();
 
-    let path_bufs: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    let contexts = built.run_batch(path_bufs, env).await;
+    let mut novel_paths: Vec<PathBuf> = Vec::new();
+    let mut comic_paths: Vec<PathBuf> = Vec::new();
+    for raw in paths {
+        let pb = PathBuf::from(raw);
+        match pipeline::nodes::kind_for_path(&pb) {
+            pipeline::nodes::FileKind::Comic => comic_paths.push(pb),
+            pipeline::nodes::FileKind::Novel => novel_paths.push(pb),
+        }
+    }
 
-    let mut results: Vec<FilePreparedImport> =
-        contexts.into_iter().map(prepared_from_ctx).collect();
+    // Run sequentially: both pipelines emit `processed_ordinal` starting
+    // from 1, so concurrent execution would surface two interleaved
+    // counters in the UI. Empty path lists short-circuit `run_batch`, so
+    // the common single-type import pays nothing for the unused branch.
+    let novel_ctxs = novel_pipeline
+        .run_batch(novel_paths, Arc::clone(&env))
+        .await;
+    let comic_ctxs = comic_pipeline
+        .run_batch(comic_paths, Arc::clone(&env))
+        .await;
+
+    let mut results: Vec<FilePreparedImport> = novel_ctxs
+        .into_iter()
+        .chain(comic_ctxs.into_iter())
+        .map(prepared_from_ctx)
+        .collect();
 
     // Phase 3 — batch-level duplicate detection (same display_name across
     // files being imported together). Runs on the collected results so the
@@ -172,8 +203,12 @@ pub async fn file_prepare_import(
 /// batch. Also used (cloned version) by EmitPreparedNode for the per-file
 /// streaming emission.
 fn prepared_from_ctx(ctx: FileContext) -> FilePreparedImport {
+    use base64::Engine;
     let (cover_data, cover_mime_type) = match ctx.cover {
-        Some(c) => (Some(c.data), Some(c.mime_type)),
+        Some(c) => (
+            Some(base64::engine::general_purpose::STANDARD.encode(&c.data)),
+            Some(c.mime_type),
+        ),
         None => (None, None),
     };
     let display_name = ctx.display_name.unwrap_or_else(|| ctx.file_name.clone());
@@ -198,8 +233,12 @@ fn prepared_from_ctx(ctx: FileContext) -> FilePreparedImport {
 /// Streaming-emission variant that clones the cover bytes so the
 /// FileContext can be reused downstream. Called from EmitPreparedNode.
 fn prepared_from_ctx_ref(ctx: &FileContext) -> FilePreparedImport {
+    use base64::Engine;
     let (cover_data, cover_mime_type) = match ctx.cover.as_ref() {
-        Some(c) => (Some(c.data.clone()), Some(c.mime_type.clone())),
+        Some(c) => (
+            Some(base64::engine::general_purpose::STANDARD.encode(&c.data)),
+            Some(c.mime_type.clone()),
+        ),
         None => (None, None),
     };
     let display_name = ctx

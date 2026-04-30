@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { CategorySelect } from '@/components/CategorySelect';
@@ -15,7 +15,8 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
-import { getFieldsForCategory } from '@/config/categoryFields';
+import { coverGet } from '@/lib/tauri';
+import type { FormFieldKey } from '@/lib/fileKind';
 import type { Category, Tag, Author, MetadataType } from '@/types';
 
 export interface DynamicMetadataFormValues {
@@ -24,14 +25,52 @@ export interface DynamicMetadataFormValues {
   tag_ids: number[];
   author_ids: number[];
   metadata: Array<{ key: string; value: string; data_type: MetadataType }>;
+  /** When set, the user uploaded a replacement cover and these bytes
+   *  should be written to the DB on save. */
   cover_data?: string;
   cover_mime_type?: string;
+  /** When true, the user clicked Remove and the existing DB cover should
+   *  be deleted on save. Mutually exclusive with `cover_data`. */
+  cover_removed?: boolean;
   progress?: string;
+}
+
+/** Self-fetches the existing cover from the DB by file id, mirroring the
+ *  grid card's CardCover so we don't relay bytes through formValues state.
+ *  Renders nothing on rejection (no cover row) or while loading. */
+function ExistingCoverPreview({ fileId }: { fileId: number }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    coverGet(fileId)
+      .then(({ data, mime_type }) => {
+        if (!cancelled) setSrc(`data:${mime_type};base64,${data}`);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId]);
+  return src ? (
+    <img
+      src={src}
+      alt="Cover preview"
+      className="h-24 w-16 object-cover rounded-md border"
+    />
+  ) : (
+    <div className="h-24 w-16 rounded-md border border-dashed flex items-center justify-center text-xs text-muted-foreground">
+      …
+    </div>
+  );
 }
 
 interface DynamicMetadataFormProps {
   values: DynamicMetadataFormValues;
   onChange: (values: DynamicMetadataFormValues) => void;
+  /** Sections to render, in order. Resolved from the file's kind via the
+   *  KIND_REGISTRY at the call site so this component stays a pure
+   *  renderer. */
+  fields: ReadonlyArray<FormFieldKey>;
   categories: Category[];
   tags: Tag[];
   authors: Author[];
@@ -46,6 +85,7 @@ interface DynamicMetadataFormProps {
 export function DynamicMetadataForm({
   values,
   onChange,
+  fields,
   categories,
   tags,
   authors,
@@ -59,13 +99,6 @@ export function DynamicMetadataForm({
   // State for category change confirmation dialog
   const [pendingCategoryId, setPendingCategoryId] = useState<number | null>(null);
   const [isMoving, setIsMoving] = useState(false);
-
-  // Get the selected category name
-  const selectedCategory = categories.find((c) => c.id === values.category_id);
-  const categoryName = selectedCategory?.name || null;
-
-  // Get fields for the selected category
-  const dynamicFields = getFieldsForCategory(categoryName);
 
   // Helper to get metadata value by key
   const getMetadataValue = (key: string): string => {
@@ -142,19 +175,37 @@ export function DynamicMetadataForm({
     onChange({ ...values, metadata: newMetadata });
   };
 
-  // Render dynamic field based on type
-  const renderDynamicField = (field: {
-    key: string;
-    label: string;
-    type: string;
-    placeholder?: string;
-    options?: string[];
-  }) => {
-    switch (field.type) {
+  const renderField = (key: FormFieldKey) => {
+    switch (key) {
+      case 'display_name':
+        return (
+          <div className="space-y-2" key={key}>
+            <Label className="text-sm font-medium">Display Name</Label>
+            <Input
+              value={values.display_name}
+              onChange={(e) => handleDisplayNameChange(e.target.value)}
+              placeholder="File name"
+            />
+          </div>
+        );
+
+      case 'category':
+        return (
+          <div className="space-y-2" key={key}>
+            <Label className="text-sm font-medium">Category</Label>
+            <CategorySelect
+              categories={categories}
+              value={values.category_id}
+              onValueChange={handleCategoryChange}
+              onCategoryCreated={onCategoryCreated}
+            />
+          </div>
+        );
+
       case 'authors':
         return (
-          <div className="space-y-2" key={field.key}>
-            <Label className="text-sm font-medium">{field.label}</Label>
+          <div className="space-y-2" key={key}>
+            <Label className="text-sm font-medium">Authors</Label>
             <AuthorManager
               authors={authors}
               selectedAuthorIds={values.author_ids}
@@ -166,8 +217,8 @@ export function DynamicMetadataForm({
 
       case 'tags':
         return (
-          <div className="space-y-2" key={field.key}>
-            <Label className="text-sm font-medium">{field.label}</Label>
+          <div className="space-y-2" key={key}>
+            <Label className="text-sm font-medium">Tags</Label>
             <TagManager
               tags={tags}
               selectedTagIds={values.tag_ids}
@@ -177,46 +228,141 @@ export function DynamicMetadataForm({
           </div>
         );
 
-      case 'text':
+      case 'progress':
         return (
-          <div className="space-y-2" key={field.key}>
-            <Label className="text-sm font-medium">{field.label}</Label>
+          <div className="space-y-2" key={key}>
+            <Label htmlFor="progress" className="text-sm font-medium">
+              Progress
+            </Label>
             <Input
-              type="text"
-              value={getMetadataValue(field.key)}
-              onChange={(e) => handleMetadataFieldChange(field.key, e.target.value, 'text')}
-              placeholder={field.placeholder}
+              id="progress"
+              value={values.progress ?? ''}
+              onChange={(e) => handleProgressChange(e.target.value)}
+              placeholder="e.g. 50%, Chapter 5, Reading..."
+              className="text-sm"
             />
           </div>
         );
 
-      case 'number':
+      case 'description':
         return (
-          <div className="space-y-2" key={field.key}>
-            <Label className="text-sm font-medium">{field.label}</Label>
+          <div className="space-y-2" key={key}>
+            <Label htmlFor="description" className="text-sm font-medium">
+              Description
+            </Label>
+            <textarea
+              id="description"
+              value={getMetadataValue('description')}
+              onChange={(e) =>
+                handleMetadataFieldChange('description', e.target.value, 'text')
+              }
+              placeholder="Short plot summary (auto-filled by content analysis)"
+              className="w-full min-h-[80px] px-3 py-2 text-sm rounded-xl border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
+            />
+          </div>
+        );
+
+      case 'volume':
+        return (
+          <div className="space-y-2" key={key}>
+            <Label className="text-sm font-medium">Volume</Label>
             <Input
               type="number"
-              value={getMetadataValue(field.key)}
-              onChange={(e) => handleMetadataFieldChange(field.key, e.target.value, 'number')}
+              value={getMetadataValue('volume')}
+              onChange={(e) =>
+                handleMetadataFieldChange('volume', e.target.value, 'number')
+              }
             />
           </div>
         );
 
-      case 'date':
+      case 'cover': {
+        // Three-state cover intent:
+        //   1. user uploaded a replacement → render the new bytes
+        //   2. user clicked Remove → render "None" placeholder
+        //   3. neither (default) → fetch the existing DB cover via
+        //      ExistingCoverPreview, mirroring the grid card pattern
+        //      that's known to work
+        const userBlobUrl = values.cover_data
+          ? `data:${values.cover_mime_type ?? 'image/jpeg'};base64,${values.cover_data}`
+          : null;
+        const showExisting =
+          !values.cover_data && !values.cover_removed && fileId !== undefined;
+
+        const handleCoverPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result;
+            if (typeof result !== 'string') return;
+            // result = "data:<mime>;base64,<data>". Split off the prefix.
+            const comma = result.indexOf(',');
+            if (comma < 0) return;
+            const data = result.slice(comma + 1);
+            onChange({
+              ...values,
+              cover_data: data,
+              cover_mime_type: file.type || 'image/jpeg',
+              cover_removed: false,
+            });
+          };
+          reader.readAsDataURL(file);
+        };
+        const handleCoverClear = () => {
+          const next = { ...values, cover_removed: true };
+          delete next.cover_data;
+          delete next.cover_mime_type;
+          onChange(next);
+        };
+
+        const hasPreview = !!userBlobUrl || showExisting;
+
         return (
-          <div className="space-y-2" key={field.key}>
-            <Label className="text-sm font-medium">{field.label}</Label>
-            <Input
-              type="date"
-              value={getMetadataValue(field.key)}
-              onChange={(e) => handleMetadataFieldChange(field.key, e.target.value, 'date')}
-            />
+          <div className="space-y-2" key={key}>
+            <Label className="text-sm font-medium">Cover</Label>
+            <div className="flex items-center gap-3">
+              {userBlobUrl ? (
+                <img
+                  src={userBlobUrl}
+                  alt="Cover preview"
+                  className="h-24 w-16 object-cover rounded-md border"
+                />
+              ) : showExisting ? (
+                <ExistingCoverPreview fileId={fileId!} />
+              ) : (
+                <div className="h-24 w-16 rounded-md border border-dashed flex items-center justify-center text-xs text-muted-foreground">
+                  None
+                </div>
+              )}
+              <div className="flex flex-col gap-2">
+                <label className="inline-flex">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleCoverPick}
+                  />
+                  <span className="cursor-pointer inline-flex items-center px-3 py-1.5 text-xs rounded-lg bg-secondary hover:bg-secondary/80 transition-colors">
+                    {hasPreview ? 'Replace' : 'Upload'}
+                  </span>
+                </label>
+                {hasPreview && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs h-auto py-1"
+                    onClick={handleCoverClear}
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+            </div>
           </div>
         );
-
-      case 'image':
-        // For now, skip image field in the simplified version
-        return null;
+      }
 
       default:
         return null;
@@ -225,69 +371,7 @@ export function DynamicMetadataForm({
 
   return (
     <div className="space-y-4">
-      {/* Display Name */}
-      <div className="space-y-2">
-        <Label className="text-sm font-medium">Display Name</Label>
-        <Input
-          value={values.display_name}
-          onChange={(e) => handleDisplayNameChange(e.target.value)}
-          placeholder="File name"
-        />
-      </div>
-
-      {/* Category */}
-      <div className="space-y-2">
-        <Label className="text-sm font-medium">Category</Label>
-        <CategorySelect
-          categories={categories}
-          value={values.category_id}
-          onValueChange={handleCategoryChange}
-          onCategoryCreated={onCategoryCreated}
-        />
-      </div>
-
-      {/* Tags */}
-      <div className="space-y-2">
-        <Label className="text-sm font-medium">Tags</Label>
-        <TagManager
-          tags={tags}
-          selectedTagIds={values.tag_ids}
-          onTagAssign={handleTagChange}
-          onTagCreate={onTagCreate}
-        />
-      </div>
-
-      {/* Progress */}
-      <div className="space-y-2">
-        <Label htmlFor="progress" className="text-sm font-medium">
-          Progress
-        </Label>
-        <Input
-          id="progress"
-          value={values.progress ?? ''}
-          onChange={(e) => handleProgressChange(e.target.value)}
-          placeholder="e.g. 50%, Chapter 5, Reading..."
-          className="text-sm"
-        />
-      </div>
-
-      {/* Description — mirrors the metadata key "description" (populated by
-          the LLM content-analysis call and persisted in the metadata table). */}
-      <div className="space-y-2">
-        <Label htmlFor="description" className="text-sm font-medium">
-          Description
-        </Label>
-        <textarea
-          id="description"
-          value={getMetadataValue('description')}
-          onChange={(e) => handleMetadataFieldChange('description', e.target.value, 'text')}
-          placeholder="Short plot summary (auto-filled by content analysis)"
-          className="w-full min-h-[80px] px-3 py-2 text-sm rounded-xl border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
-        />
-      </div>
-
-      {/* Dynamic Fields */}
-      {dynamicFields.map((field) => renderDynamicField(field))}
+      {fields.map((field) => renderField(field))}
 
       {/* Category Change Confirmation Dialog */}
       <AlertDialog

@@ -17,12 +17,8 @@ impl Phase1Node for ArchiveUnzipNode {
         "ArchiveUnzip"
     }
 
-    fn applies(&self, ctx: &FileContext, env: &PipelineEnv) -> bool {
-        if !env.llm_config.enabled {
-            return false;
-        }
-        let mime = ctx.mime.as_deref().unwrap_or("");
-        mime.contains("zip") || mime.contains("cbz")
+    fn applies(&self, _ctx: &FileContext, env: &PipelineEnv) -> bool {
+        env.llm_config.enabled
     }
 
     fn run(&self, ctx: &mut FileContext, _env: &PipelineEnv) -> Result<(), NodeError> {

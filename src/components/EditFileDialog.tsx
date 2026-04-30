@@ -8,6 +8,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { DynamicMetadataForm, type DynamicMetadataFormValues } from '@/components/DynamicMetadataForm';
+import { schemaForPath } from '@/lib/fileKind';
 import { fileGet } from '@/lib/tauri';
 import type { FileEntry, Category, Tag, Author } from '@/types';
 
@@ -71,6 +72,10 @@ export function EditFileDialog({
       progress: file.progress ?? '',
     });
 
+    // Cover is no longer loaded here — DynamicMetadataForm's
+    // `ExistingCoverPreview` self-fetches via fileId, mirroring the grid
+    // card's pattern. This keeps "user hasn't touched the cover" distinct
+    // from "user removed the cover" without overloading cover_data.
     void fileGet(file.id)
       .then((details) => {
         if (cancelled) return;
@@ -122,6 +127,7 @@ export function EditFileDialog({
         <DynamicMetadataForm
           values={formValues}
           onChange={setFormValues}
+          fields={schemaForPath(file?.path).formFields}
           categories={categories}
           tags={tags}
           authors={authors}

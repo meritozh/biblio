@@ -20,7 +20,6 @@ interface CategorySelectProps {
   placeholder?: string;
 }
 
-const NONE_VALUE = 'none';
 const CREATE_NEW_VALUE = '__create_new__';
 
 export function CategorySelect({
@@ -39,7 +38,7 @@ export function CategorySelect({
       setIsCreating(true);
       return;
     }
-    onValueChange(v === NONE_VALUE ? null : parseInt(v, 10));
+    onValueChange(parseInt(v, 10));
   };
 
   const handleCreateCategory = async () => {
@@ -102,22 +101,20 @@ export function CategorySelect({
 
   return (
     <Select
-      value={value?.toString() ?? NONE_VALUE}
+      value={value != null ? value.toString() : undefined}
       onValueChange={handleValueChange}
     >
       <SelectTrigger>
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value={NONE_VALUE}>Uncategorized</SelectItem>
-        {categories.length > 0 && <SelectSeparator />}
         {categories.map((category) => (
           <SelectItem key={category.id} value={category.id.toString()}>
             {category.icon && <span className="mr-2">{category.icon}</span>}
             {category.name}
           </SelectItem>
         ))}
-        <SelectSeparator />
+        {categories.length > 0 && <SelectSeparator />}
         <SelectItem value={CREATE_NEW_VALUE}>+ Create new category</SelectItem>
       </SelectContent>
     </Select>

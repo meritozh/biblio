@@ -1,10 +1,13 @@
 //! Node implementations and the stock pipeline compositions.
 //!
 //! Each node is a small, self-contained unit responsible for one step of
-//! the import flow. The `novel_and_generic` composition reproduces the
-//! behavior of the old monolithic `file_prepare_import` exactly; the
-//! comic and remote variants add their own nodes on top of the shared
-//! Phase-1 set.
+//! the import flow. There are two stock pipelines, dispatched by the
+//! command layer based on file extension: `novel_pipeline()` for text
+//! files (.txt / .epub / .pdf) and `comic_pipeline()` for archives
+//! (.cbz / .zip). Many nodes (mime detect, filename LLM, author resolve,
+//! duplicate detect, status emit) appear in both — keeping them as
+//! separate compositions makes the per-type node list explicit at the
+//! call site instead of hidden behind per-node `applies()` gates.
 
 mod archive_cover;
 mod archive_unzip;
@@ -38,32 +41,74 @@ pub use pdf_meta::PdfMetaNode;
 pub use status_emit::StatusEmitNode;
 pub use vision_cover_llm::LlmVisionCoverCheckNode;
 
+use std::path::Path;
+
 use super::runner::{Pipeline, PipelineBuilder};
 
-/// Default composition that handles every category biblio imports today —
-/// novels, generic files, single-image comics, and archive comics — via
-/// per-node `applies()` gates. Comic archives follow the same order but
-/// pick up additional nodes (unzip → LLM-ranked candidates → vision check
-/// → compress → cleanup). Returns a `PipelineBuilder` so callers can
-/// append command-layer nodes (e.g. a "file-prepared" event emitter)
-/// before building.
-pub fn default_pipeline() -> PipelineBuilder {
+/// File-type kinds the dispatcher routes between. Determined from the
+/// path extension, not the MIME magic bytes — magic-byte detection is
+/// the pipeline's job once the file is on the right path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    Comic,
+    Novel,
+}
+
+const COMIC_EXTS: &[&str] = &["cbz", "zip"];
+const NOVEL_EXTS: &[&str] = &["txt", "epub", "pdf"];
+
+/// Pick the pipeline kind for a path. Anything that isn't a recognized
+/// archive falls into the novel/generic pipeline — single images, plain
+/// text, etc. — which matches the pre-split behavior.
+pub fn kind_for_path(path: &Path) -> FileKind {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    if COMIC_EXTS.iter().any(|e| *e == ext) {
+        FileKind::Comic
+    } else if NOVEL_EXTS.iter().any(|e| *e == ext) {
+        FileKind::Novel
+    } else {
+        FileKind::Novel
+    }
+}
+
+/// Pipeline for text files (.txt / .epub / .pdf) and other non-archive
+/// inputs. Skips every archive-specific node.
+pub fn novel_pipeline() -> PipelineBuilder {
     Pipeline::builder()
         // ── Phase 1 — disk / CPU ─────────────────────────────────────
         .add_phase1(MimeDetectNode)
         .add_phase1(PdfMetaNode)
         .add_phase1(ExifNode)
         .add_phase1(ContentSampleNode)
-        // Archive fallback cover (first image alphabetically) runs first
-        // so it provides a baseline; the Phase-2 vision path may override.
+        .add_phase1(SingleImageCoverNode)
+        // ── Phase 2 — LLM / DB ───────────────────────────────────────
+        .add_phase2(FilenameLlmNode::text())
+        .add_phase2(ContentLlmNode)
+        .add_phase2(CoverCompressNode)
+        .add_phase2(AuthorResolveNode)
+        .add_phase2(DbDuplicateDetectNode)
+        .add_phase2(StatusEmitNode)
+}
+
+/// Pipeline for archive files (.cbz / .zip). Adds the unzip → LLM-ranked
+/// candidates → vision check → cleanup chain on top of the shared
+/// filename / author / dedupe stack.
+pub fn comic_pipeline() -> PipelineBuilder {
+    Pipeline::builder()
+        // ── Phase 1 — disk / CPU ─────────────────────────────────────
+        .add_phase1(MimeDetectNode)
+        // Fallback cover (alphabetical first image) runs first so it
+        // provides a baseline; the Phase-2 vision path may override.
         .add_phase1(ArchiveFirstImageCoverNode)
         // Unzips archive images to a temp dir only when LLM is enabled —
         // enabling the vision-ranking path downstream.
         .add_phase1(ArchiveUnzipNode)
-        .add_phase1(SingleImageCoverNode)
         // ── Phase 2 — LLM / DB ───────────────────────────────────────
-        .add_phase2(FilenameLlmNode)
-        .add_phase2(ContentLlmNode)
+        .add_phase2(FilenameLlmNode::archive())
         .add_phase2(LlmCoverCandidatesNode)
         .add_phase2(LlmVisionCoverCheckNode)
         .add_phase2(CoverCompressNode)
@@ -71,10 +116,4 @@ pub fn default_pipeline() -> PipelineBuilder {
         .add_phase2(DbDuplicateDetectNode)
         .add_phase2(CleanupTempDirNode)
         .add_phase2(StatusEmitNode)
-}
-
-/// Backwards-compatible alias — kept so callers written during Phase 0
-/// continue to work. New code should use `default_pipeline`.
-pub fn novel_and_generic() -> PipelineBuilder {
-    default_pipeline()
 }

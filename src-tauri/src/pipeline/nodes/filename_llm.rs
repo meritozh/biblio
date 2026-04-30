@@ -1,32 +1,34 @@
 use async_trait::async_trait;
 
 use super::content_sample::is_novel_file;
-use crate::pipeline::{FileContext, NodeError, Phase2Node, PipelineEnv};
 use crate::pipeline::runner::emit_progress;
-
-/// Resolve which prompt group applies to this file: `text` for novels,
-/// `archive` for comic-style zip/cbz, or `None` if FilenameLlmNode
-/// shouldn't run at all (e.g. a bare image).
-fn mime_group_for(ctx: &FileContext, env: &PipelineEnv) -> Option<&'static str> {
-    let path_str = ctx.file_path.to_string_lossy();
-    if is_novel_file(
-        &path_str,
-        env.settings.process_novel_epub,
-        env.settings.process_novel_pdf,
-    ) {
-        return Some("text");
-    }
-    let mime = ctx.mime.as_deref().unwrap_or("");
-    if mime.contains("zip") || mime.contains("cbz") {
-        return Some("archive");
-    }
-    None
-}
+use crate::pipeline::{FileContext, NodeError, Phase2Node, PipelineEnv};
 
 /// LLM Call 1: extract display_name / authors / progress from the filename.
-/// Runs only for novel-like files when the LLM is enabled. The actual
-/// network call is gated by a 60 s timeout inside `extract_filename_metadata`.
-pub struct FilenameLlmNode;
+/// The prompt group is fixed at construction time — `"text"` for the novel
+/// pipeline, `"archive"` for the comic pipeline — so the dispatcher decides
+/// which prompt to use, not the runtime MIME check.
+///
+/// For the `"text"` variant we still gate on `is_novel_file` so the per-
+/// format toggles (`process_novel_epub` / `process_novel_pdf`) take effect
+/// even when the file made it past the frontend filter.
+///
+/// The actual network call is gated by a 60 s timeout inside
+/// `extract_filename_metadata`.
+pub struct FilenameLlmNode {
+    mime_group: &'static str,
+}
+
+impl FilenameLlmNode {
+    pub fn text() -> Self {
+        Self { mime_group: "text" }
+    }
+    pub fn archive() -> Self {
+        Self {
+            mime_group: "archive",
+        }
+    }
+}
 
 #[async_trait]
 impl Phase2Node for FilenameLlmNode {
@@ -38,7 +40,15 @@ impl Phase2Node for FilenameLlmNode {
         if !env.llm_config.enabled {
             return false;
         }
-        mime_group_for(ctx, env).is_some()
+        if self.mime_group == "text" {
+            return is_novel_file(
+                &ctx.file_path.to_string_lossy(),
+                env.settings.process_novel_epub,
+                env.settings.process_novel_pdf,
+            );
+        }
+        // archive: dispatcher already routed only zip/cbz here.
+        true
     }
 
     async fn run(&self, ctx: &mut FileContext, env: &PipelineEnv) -> Result<(), NodeError> {
@@ -50,24 +60,20 @@ impl Phase2Node for FilenameLlmNode {
             "extracting_name",
         );
 
-        // Pick the matching prompt group: text for novels, archive for
-        // comics. `applies()` already gated this so unwrap is safe — but
-        // fall back to `text` if a future caller adds a new path without
-        // updating the dispatcher, so we don't hard-fail on an unknown
-        // mime.
-        let mime_group = mime_group_for(ctx, env).unwrap_or("text");
-
         let meta = crate::commands::llm::extract_filename_metadata(
             &env.llm_config,
             &env.pool,
             &ctx.file_name,
-            mime_group,
+            self.mime_group,
         )
         .await
         .map_err(|e| {
             // Keep the log path identical to the old monolith so ops-style
             // grepping for "LLM filename extraction failed" still works.
-            eprintln!("LLM filename extraction failed for {}: {}", ctx.file_name, e);
+            eprintln!(
+                "LLM filename extraction failed for {}: {}",
+                ctx.file_name, e
+            );
             NodeError(e)
         })?;
 

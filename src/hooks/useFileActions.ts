@@ -5,6 +5,8 @@ import {
   authorCreate,
   authorList,
   authorSet,
+  coverDelete,
+  coverSet,
   fileDelete,
   fileUpdate,
   listenTagAuthorChanges,
@@ -136,6 +138,21 @@ export function useFileActions(reload: () => void | Promise<void>) {
       }
       for (const m of values.metadata) {
         await metadataSet(fileId, m.key, m.value, m.data_type);
+      }
+
+      // Cover: tri-state intent
+      //   • cover_data set → user uploaded a replacement, write it
+      //   • cover_removed === true → user clicked Remove, delete DB row
+      //   • neither → user didn't touch the cover, leave the DB row alone
+      // The unconditional delete that lived here previously would silently
+      // wipe the cover on every Save where the user hadn't touched it.
+      if (values.cover_data) {
+        const binary = atob(values.cover_data);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        await coverSet(fileId, Array.from(bytes), values.cover_mime_type);
+      } else if (values.cover_removed) {
+        await coverDelete(fileId);
       }
 
       await reload();

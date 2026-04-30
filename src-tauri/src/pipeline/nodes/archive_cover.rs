@@ -4,19 +4,13 @@ use super::mime::mime_matches;
 use crate::pipeline::{Cover, FileContext, NodeError, Phase1Node, PipelineEnv};
 
 /// Extract the first/alphabetically-first image out of a ZIP/CBZ archive
-/// and use it as the file's cover. The current placeholder heuristic for
-/// comics; Phase 1 of the remote feature replaces it with an LLM-driven
-/// candidate picker.
+/// and use it as the file's cover. Acts as a baseline fallback for
+/// comics; the Phase-2 LLM vision path may override it.
 pub struct ArchiveFirstImageCoverNode;
 
 impl Phase1Node for ArchiveFirstImageCoverNode {
     fn name(&self) -> &'static str {
         "ArchiveFirstImageCover"
-    }
-
-    fn applies(&self, ctx: &FileContext, _env: &PipelineEnv) -> bool {
-        let mime = ctx.mime.as_deref().unwrap_or("");
-        mime.contains("zip") || mime.contains("cbz")
     }
 
     fn run(&self, ctx: &mut FileContext, _env: &PipelineEnv) -> Result<(), NodeError> {

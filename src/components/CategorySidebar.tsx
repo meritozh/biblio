@@ -3,7 +3,7 @@ import { Link } from '@tanstack/react-router';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
-import { FolderOpen, Settings, GripVertical, Tag, User, MessageSquare, LayoutGrid } from 'lucide-react';
+import { Settings, GripVertical, Tag, User, MessageSquare, LayoutGrid } from 'lucide-react';
 import type { Category } from '@/types';
 
 interface CategorySidebarProps {
@@ -83,21 +83,6 @@ export function CategorySidebar({
       </div>
       <ScrollArea className="flex-1">
         <div className="px-2 pb-2" role="list" aria-labelledby="categories-heading">
-          <button
-            onClick={() => onCategorySelect(null)}
-            className={`w-full text-left px-3 py-1.5 rounded flex items-center justify-between transition-colors duration-100 ${
-              selectedCategoryId === null
-                ? 'bg-secondary text-foreground'
-                : 'hover:bg-secondary/60 text-sidebar-foreground'
-            }`}
-            role="listitem"
-            aria-current={selectedCategoryId === null ? 'page' : undefined}
-          >
-            <span className="flex items-center gap-2 text-sm">
-              <FolderOpen className="h-4 w-4 shrink-0" aria-hidden="true" />
-              All Files
-            </span>
-          </button>
           {categories.map((category) => (
             <button
               key={category.id}

@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router';
+import { createFileRoute, Link } from '@tanstack/react-router';
 import { useEffect, useState, useCallback } from 'react';
 import { FilePicker } from '@/components/FilePicker';
 import { SearchBar } from '@/components/SearchBar';
@@ -11,6 +11,7 @@ import {
   coverSet,
   storageGetPath,
   storageCheckAccess,
+  settingsGet,
 } from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
@@ -28,6 +29,7 @@ import {
   DynamicMetadataForm,
   type DynamicMetadataFormValues,
 } from '@/components/DynamicMetadataForm';
+import { schemaForPath } from '@/lib/fileKind';
 import { useFileActions } from '@/hooks/useFileActions';
 import type { FileEntry } from '@/types';
 
@@ -76,6 +78,12 @@ function HomePage() {
   }, [searchQuery]);
 
   const loadFiles = useCallback(async () => {
+    if (selectedCategoryId === null) {
+      setFiles([]);
+      setTotal(0);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     const result = await fetchFiles({
       category_id: selectedCategoryId,
@@ -125,6 +133,24 @@ function HomePage() {
     handleFileDeleteConfirm,
   } = useFileActions(loadFiles);
 
+  // Snap to a real category whenever the list changes:
+  // - On first load, pick the first category (replaces the old "All Files"
+  //   default of null).
+  // - If the currently-selected category disappears (deletion, rename), fall
+  //   back to the first remaining one. Empty list → null, the empty state
+  //   handles it.
+  useEffect(() => {
+    if (categories.length === 0) {
+      if (selectedCategoryId !== null) setSelectedCategoryId(null);
+      return;
+    }
+    const stillExists = categories.some((c) => c.id === selectedCategoryId);
+    if (!stillExists) {
+      const first = categories[0];
+      if (first) setSelectedCategoryId(first.id);
+    }
+  }, [categories, selectedCategoryId]);
+
   const checkStoragePath = useCallback(async () => {
     const path = await storageGetPath();
     if (path && path !== '') {
@@ -153,7 +179,39 @@ function HomePage() {
   );
 
   const handleFilesSelected = async (paths: string[]) => {
-    setSelectedFiles(paths);
+    const [epubRaw, pdfRaw] = await Promise.all([
+      settingsGet('process_novel_epub'),
+      settingsGet('process_novel_pdf'),
+    ]);
+    const parse = (v: string | null, fallback: boolean) =>
+      v === null ? fallback : v === '1' || v.toLowerCase() === 'true';
+    const allowEpub = parse(epubRaw, true);
+    const allowPdf = parse(pdfRaw, false);
+
+    const skipped: string[] = [];
+    const kept = paths.filter((p) => {
+      const lower = p.toLowerCase();
+      if (!allowEpub && lower.endsWith('.epub')) {
+        skipped.push(p);
+        return false;
+      }
+      if (!allowPdf && lower.endsWith('.pdf')) {
+        skipped.push(p);
+        return false;
+      }
+      return true;
+    });
+
+    if (skipped.length > 0) {
+      alert(
+        `Skipped ${skipped.length} file${skipped.length === 1 ? '' : 's'} ` +
+          `because their format is disabled in Settings → Behavior.`
+      );
+    }
+
+    if (kept.length === 0) return;
+
+    setSelectedFiles(kept);
     setFormValues(EMPTY_FORM_VALUES);
     setAddDialogOpen(false);
     setPipelineOpen(true);
@@ -269,7 +327,24 @@ function HomePage() {
             </div>
           )}
 
-          {loading ? (
+          {categories.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center">
+              <div className="max-w-sm text-center space-y-3">
+                <p className="text-sm font-medium text-foreground">
+                  No categories yet
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Create a category to start organizing your library — comics,
+                  novels, or anything else.
+                </p>
+                <Link to="/categories">
+                  <Button size="sm" variant="secondary">
+                    Manage Categories
+                  </Button>
+                </Link>
+              </div>
+            </div>
+          ) : loading ? (
             <div className="flex items-center justify-center h-32">
               <p className="text-sm text-muted-foreground">Loading...</p>
             </div>
@@ -279,7 +354,7 @@ function HomePage() {
               total={total}
               loadingMore={loadingMore}
               onLoadMore={handleLoadMore}
-              filterKey={`${selectedCategoryId ?? 'all'}::${debouncedQuery}`}
+              filterKey={`${selectedCategoryId ?? 'none'}::${debouncedQuery}`}
               onFileClick={handleFileClick}
               onFileEdit={handleFileEdit}
               onFileDelete={handleFileDeleteClick}
@@ -336,6 +411,7 @@ function HomePage() {
             <DynamicMetadataForm
               values={formValues}
               onChange={setFormValues}
+              fields={schemaForPath(selectedFiles[0]).formFields}
               categories={categories}
               tags={tags}
               authors={authors}
@@ -350,6 +426,7 @@ function HomePage() {
                 <DynamicMetadataForm
                   values={formValues}
                   onChange={setFormValues}
+                  fields={schemaForPath(selectedFiles[0]).formFields}
                   categories={categories}
                   tags={tags}
                   authors={authors}
