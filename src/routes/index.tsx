@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { FilePicker } from '@/components/FilePicker';
 import { SearchBar } from '@/components/SearchBar';
 import { FileList } from '@/components/FileList';
@@ -68,6 +69,7 @@ function HomePage() {
   const [storagePathAccessible, setStoragePathAccessible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pipelineOpen, setPipelineOpen] = useState(false);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
 
   // Debounce the search input. `searchQuery` reflects every keystroke;
   // `debouncedQuery` is what actually drives fetches, so typing quickly
@@ -258,6 +260,41 @@ function HomePage() {
     console.log('File clicked:', file);
   };
 
+  // Tauri webview drag-drop. The HTML5 DnD API doesn't surface real OS file
+  // paths inside a Tauri webview, so we listen at the window level and route
+  // dropped paths through the same import flow as FilePicker.
+  const handleFilesSelectedRef = useRef(handleFilesSelected);
+  handleFilesSelectedRef.current = handleFilesSelected;
+  const storageReadyRef = useRef(storagePathConfigured !== false);
+  storageReadyRef.current = storagePathConfigured !== false;
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === 'enter' || p.type === 'over') {
+          if (storageReadyRef.current) setIsDraggingFiles(true);
+        } else if (p.type === 'leave') {
+          setIsDraggingFiles(false);
+        } else if (p.type === 'drop') {
+          setIsDraggingFiles(false);
+          if (storageReadyRef.current && p.paths.length > 0) {
+            void handleFilesSelectedRef.current(p.paths);
+          }
+        }
+      })
+      .then((un) => {
+        if (cancelled) un();
+        else unlisten = un;
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   return (
     <div className="flex h-screen bg-background">
       <CategorySidebar
@@ -266,7 +303,17 @@ function HomePage() {
         onCategorySelect={setSelectedCategoryId}
         onOpenSettings={() => setSettingsOpen(true)}
       />
-      <main className="flex-1 flex flex-col overflow-hidden">
+      <main className="flex-1 flex flex-col overflow-hidden relative">
+        {isDraggingFiles && (
+          <div
+            className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-primary/5 border-2 border-dashed border-primary rounded-lg m-4"
+            aria-hidden="true"
+          >
+            <p className="text-sm font-medium text-primary">
+              Drop files to import
+            </p>
+          </div>
+        )}
         <div
           className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
           data-tauri-drag-region

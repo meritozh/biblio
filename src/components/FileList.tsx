@@ -552,7 +552,7 @@ export function FileList({
                           </div>
                           <div className="space-y-0.5 min-w-0 px-0.5">
                             <p
-                              className="text-sm font-medium leading-tight line-clamp-2"
+                              className="text-sm font-medium leading-tight truncate"
                               title={file.display_name}
                             >
                               {file.display_name}
