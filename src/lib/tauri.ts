@@ -141,13 +141,6 @@ export async function fileCheckStatus(
   return invoke('file_check_status', { fileIds: file_ids });
 }
 
-/** One-time data migration: bulk-reassigns every `category_id IS NULL` row
- *  to the user's "novel" category and physically moves files out of the
- *  retired `_uncategorized` folder. Returns the count of rows updated. */
-export async function recategorizeUncategorizedAsNovel(): Promise<number> {
-  return invoke('recategorize_uncategorized_as_novel');
-}
-
 export async function categoryList(): Promise<Category[]> {
   return invoke('category_list');
 }

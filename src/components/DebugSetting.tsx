@@ -1,18 +1,11 @@
 import { useState, useEffect } from 'react';
-import {
-  settingsGet,
-  settingsSet,
-  recategorizeUncategorizedAsNovel,
-} from '@/lib/tauri';
+import { settingsGet, settingsSet } from '@/lib/tauri';
 import { Separator } from '@/components/ui/separator';
-import { Button } from '@/components/ui/button';
 
 export function DebugSetting() {
   const [importMode, setImportMode] = useState<'move' | 'copy'>('move');
   const [remoteUpload, setRemoteUpload] = useState(true);
   const [loading, setLoading] = useState(true);
-  const [migrating, setMigrating] = useState(false);
-  const [migrateResult, setMigrateResult] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -35,29 +28,6 @@ export function DebugSetting() {
   const handleRemoteUploadChange = async (enabled: boolean) => {
     setRemoteUpload(enabled);
     await settingsSet('debug_remote_upload_enabled', enabled ? 'true' : 'false');
-  };
-
-  const handleRecategorize = async () => {
-    if (migrating) return;
-    setMigrating(true);
-    setMigrateResult(null);
-    try {
-      const count = await recategorizeUncategorizedAsNovel();
-      setMigrateResult(
-        count === 0
-          ? 'No uncategorized files to migrate.'
-          : `Moved ${count} file${count === 1 ? '' : 's'} to the novel category.`
-      );
-    } catch (e) {
-      const msg = String(e);
-      setMigrateResult(
-        msg.includes('NOVEL_CATEGORY_NOT_FOUND')
-          ? 'Create a category named "novel" first, then try again.'
-          : `Migration failed: ${msg}`
-      );
-    } finally {
-      setMigrating(false);
-    }
   };
 
   if (loading) {
@@ -126,32 +96,6 @@ export function DebugSetting() {
             ? 'Files with remote storage will be uploaded to Baidu Netdisk.'
             : 'Remote upload is skipped; files are saved locally regardless of storage kind.'}
         </p>
-      </div>
-
-      <Separator />
-
-      <div className="space-y-3">
-        <div>
-          <h3 className="text-sm font-semibold">Migrate Uncategorized → Novel</h3>
-          <p className="text-xs text-muted-foreground">
-            One-time cleanup: re-assigns every file with no category to the
-            "novel" category and moves them out of the retired
-            {' '}<code>_uncategorized</code> folder.
-          </p>
-        </div>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={handleRecategorize}
-          disabled={migrating}
-        >
-          {migrating ? 'Migrating…' : 'Run migration'}
-        </Button>
-        {migrateResult && (
-          <p className="text-xs text-muted-foreground" aria-live="polite">
-            {migrateResult}
-          </p>
-        )}
       </div>
     </div>
   );

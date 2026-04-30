@@ -907,6 +907,77 @@ pub struct FileCreateResponse {
     pub id: i64,
 }
 
+/// Physically move a file into the target category's folder and update
+/// `files.path`. No category-equality or in_storage guards — the caller
+/// decides whether the move should be attempted. Returns `Ok(true)` when
+/// the file was actually moved, `Ok(false)` when it was already in the
+/// destination folder.
+async fn relocate_file_to_category_folder(
+    pool: &sqlx::SqlitePool,
+    file_id: i64,
+    current_path: &str,
+    target_category_id: i64,
+) -> Result<bool, String> {
+    let storage_row: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM app_settings WHERE key = 'storage_path'",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let storage_path = match storage_row {
+        Some((p,)) if !p.is_empty() => PathBuf::from(&p),
+        _ => return Err("STORAGE_PATH_NOT_CONFIGURED".to_string()),
+    };
+    let storage_canonical = storage_path
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve storage path: {}", e))?;
+
+    let cat_row: Option<(Option<String>, String)> = sqlx::query_as(
+        "SELECT folder_name, name FROM categories WHERE id = ?",
+    )
+    .bind(target_category_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let folder_name = match cat_row {
+        Some((Some(folder), _)) => folder,
+        Some((None, name)) => sanitize_folder_name(&name),
+        None => return Err("CATEGORY_NOT_FOUND".to_string()),
+    };
+
+    let dest_folder = storage_canonical.join(&folder_name);
+    if !dest_folder.exists() {
+        fs::create_dir_all(&dest_folder)
+            .map_err(|e| format!("Failed to create folder: {}", e))?;
+    }
+
+    let current_pb = PathBuf::from(current_path);
+    if let Some(parent) = current_pb.parent() {
+        if parent == dest_folder {
+            return Ok(false);
+        }
+    }
+
+    let filename = current_pb
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("Invalid filename")?;
+
+    let dest_path = dest_folder.join(filename);
+    let final_path = move_file(&current_pb, &dest_path)?;
+    let final_path_str = final_path.to_string_lossy().to_string();
+
+    sqlx::query("UPDATE files SET path = ? WHERE id = ?")
+        .bind(&final_path_str)
+        .bind(file_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(true)
+}
+
 /// Move a file to the folder of a different category when category_id changes.
 /// Updates files.path in the DB to match. No-op when the file isn't in storage,
 /// the category hasn't actually changed, or the file is already in the target
@@ -932,64 +1003,8 @@ async fn move_file_to_category_folder(
         return Ok(());
     }
 
-    let storage_row: Option<(String,)> = sqlx::query_as(
-        "SELECT value FROM app_settings WHERE key = 'storage_path'",
-    )
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let storage_path = match storage_row {
-        Some((p,)) if !p.is_empty() => PathBuf::from(&p),
-        _ => return Err("STORAGE_PATH_NOT_CONFIGURED".to_string()),
-    };
-    let storage_canonical = storage_path
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve storage path: {}", e))?;
-
     let cat_id = new_category_id.ok_or_else(|| "CATEGORY_REQUIRED".to_string())?;
-    let cat_row: Option<(Option<String>, String)> = sqlx::query_as(
-        "SELECT folder_name, name FROM categories WHERE id = ?",
-    )
-    .bind(cat_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-    let folder_name = match cat_row {
-        Some((Some(folder), _)) => folder,
-        Some((None, name)) => sanitize_folder_name(&name),
-        None => return Err("CATEGORY_NOT_FOUND".to_string()),
-    };
-
-    let dest_folder = storage_canonical.join(&folder_name);
-    if !dest_folder.exists() {
-        fs::create_dir_all(&dest_folder)
-            .map_err(|e| format!("Failed to create folder: {}", e))?;
-    }
-
-    let current_pb = PathBuf::from(&current_path);
-    if let Some(parent) = current_pb.parent() {
-        if parent == dest_folder {
-            return Ok(()); // already in correct folder
-        }
-    }
-
-    let filename = current_pb
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or("Invalid filename")?;
-
-    let dest_path = dest_folder.join(filename);
-    let final_path = move_file(&current_pb, &dest_path)?;
-    let final_path_str = final_path.to_string_lossy().to_string();
-
-    sqlx::query("UPDATE files SET path = ? WHERE id = ?")
-        .bind(&final_path_str)
-        .bind(file_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
+    relocate_file_to_category_folder(pool, file_id, &current_path, cat_id).await?;
     Ok(())
 }
 
@@ -1537,62 +1552,6 @@ pub async fn file_replace(
     }
 
     file_create(app, path, display_name, category_id, tag_ids, author_ids, metadata, progress, cover_data, cover_mime_type, None).await
-}
-
-/// One-time migration helper for the Debug section: re-assigns every file
-/// with `category_id IS NULL` to the user's "novel" category (case-
-/// insensitive name match), and physically moves on-disk files out of the
-/// `_uncategorized` folder into the novel folder. Returns the number of
-/// rows that were updated.
-///
-/// Errors out if no "novel" category exists — caller is expected to create
-/// one first.
-#[tauri::command]
-pub async fn recategorize_uncategorized_as_novel(
-    app: AppHandle,
-) -> Result<usize, String> {
-    let instances = app.state::<DbInstances>();
-    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-
-    let novel_id: Option<(i64,)> = sqlx::query_as(
-        "SELECT id FROM categories WHERE LOWER(name) = 'novel' LIMIT 1",
-    )
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let novel_id = match novel_id {
-        Some((id,)) => id,
-        None => return Err("NOVEL_CATEGORY_NOT_FOUND".to_string()),
-    };
-
-    // Snapshot the rows we're about to migrate so we can move on-disk
-    // files one by one — UPDATE alone wouldn't shuffle the bytes off the
-    // _uncategorized folder, only the metadata.
-    let rows: Vec<(i64,)> = sqlx::query_as(
-        "SELECT id FROM files WHERE category_id IS NULL",
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
-    let count = rows.len();
-
-    sqlx::query("UPDATE files SET category_id = ?, updated_at = CURRENT_TIMESTAMP WHERE category_id IS NULL")
-        .bind(novel_id)
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // On-disk move per file. Best-effort — DB is the source of truth, a
-    // physical-move failure is logged but doesn't fail the command since
-    // the row is already pointing at the new category.
-    for (file_id,) in rows {
-        if let Err(e) = move_file_to_category_folder(&pool, file_id, Some(novel_id)).await {
-            eprintln!("recategorize: file {} move failed: {}", file_id, e);
-        }
-    }
-
-    Ok(count)
 }
 
 #[cfg(test)]
