@@ -10,9 +10,8 @@
 //! call site instead of hidden behind per-node `applies()` gates.
 
 mod archive_cover;
-mod archive_unzip;
+mod archive_list;
 mod author_resolve;
-mod cleanup_temp_dir;
 mod content_llm;
 mod content_sample;
 mod cover_candidates_llm;
@@ -26,9 +25,8 @@ mod status_emit;
 mod vision_cover_llm;
 
 pub use archive_cover::{ArchiveFirstImageCoverNode, SingleImageCoverNode};
-pub use archive_unzip::ArchiveUnzipNode;
+pub use archive_list::ArchiveListImagesNode;
 pub use author_resolve::AuthorResolveNode;
-pub use cleanup_temp_dir::CleanupTempDirNode;
 pub use content_llm::ContentLlmNode;
 pub use content_sample::ContentSampleNode;
 pub use cover_candidates_llm::LlmCoverCandidatesNode;
@@ -94,9 +92,11 @@ pub fn novel_pipeline() -> PipelineBuilder {
         .add_phase2(StatusEmitNode)
 }
 
-/// Pipeline for archive files (.cbz / .zip). Adds the unzip → LLM-ranked
-/// candidates → vision check → cleanup chain on top of the shared
-/// filename / author / dedupe stack.
+/// Pipeline for archive files (.cbz / .zip). Adds the list → LLM-ranked
+/// candidates → vision check chain on top of the shared filename /
+/// author / dedupe stack. The vision node reads candidate bytes lazily
+/// from the source archive, so no temp-dir extraction or cleanup is
+/// needed.
 pub fn comic_pipeline() -> PipelineBuilder {
     Pipeline::builder()
         // ── Phase 1 — disk / CPU ─────────────────────────────────────
@@ -104,9 +104,10 @@ pub fn comic_pipeline() -> PipelineBuilder {
         // Fallback cover (alphabetical first image) runs first so it
         // provides a baseline; the Phase-2 vision path may override.
         .add_phase1(ArchiveFirstImageCoverNode)
-        // Unzips archive images to a temp dir only when LLM is enabled —
-        // enabling the vision-ranking path downstream.
-        .add_phase1(ArchiveUnzipNode)
+        // Records (basename, archive_index) for every image entry only
+        // when the LLM is enabled — the vision node reads bytes on
+        // demand.
+        .add_phase1(ArchiveListImagesNode)
         // ── Phase 2 — LLM / DB ───────────────────────────────────────
         .add_phase2(FilenameLlmNode::archive())
         .add_phase2(LlmCoverCandidatesNode)
@@ -114,6 +115,5 @@ pub fn comic_pipeline() -> PipelineBuilder {
         .add_phase2(CoverCompressNode)
         .add_phase2(AuthorResolveNode)
         .add_phase2(DbDuplicateDetectNode)
-        .add_phase2(CleanupTempDirNode)
         .add_phase2(StatusEmitNode)
 }

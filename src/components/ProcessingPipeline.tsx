@@ -31,6 +31,7 @@ import {
   cancelProcessing,
   listenProcessingProgress,
   listenFilePrepared,
+  settingsGet,
 } from '@/lib/tauri';
 import { schemaForPath, kindForPath, defaultCategoryIdForKind } from '@/lib/fileKind';
 import {
@@ -82,8 +83,10 @@ interface FileItemState {
   storageKind: StorageKind;
 }
 
-function defaultStorageKind(fileName: string): StorageKind {
-  return schemaForPath(fileName).defaultStorage;
+function defaultStorageKind(fileName: string, remoteEnabled: boolean): StorageKind {
+  const schemaDefault = schemaForPath(fileName).defaultStorage;
+  if (schemaDefault === 'remote' && !remoteEnabled) return 'local';
+  return schemaDefault;
 }
 
 function StorageKindToggle({
@@ -212,28 +215,34 @@ export function ProcessingPipeline({
     if (analysisStarted.current) return;
     analysisStarted.current = true;
 
-    const initialItems: FileItemState[] = paths.map((path) => {
-      const fileName = path.substring(Math.max(0, path.lastIndexOf('/') + 1)) || path;
-      return {
-        path,
-        fileName,
-        status: 'pending' as FileStatus,
-        selected: true, // default-include; Failed items will be auto-unchecked on transition
-        formValues: { ...EMPTY_FORM_VALUES, display_name: fileName },
-        userEdited: false,
-        suggestedTags: [],
-        duplicateAction: null,
-        storageKind: defaultStorageKind(fileName),
-      };
-    });
-    setFileItems(initialItems);
-    setImporting(false);
-    setExpandedIds(new Set()); // start all collapsed; Review items auto-expand on arrival
-
     const createdAuthorIds: Record<string, number> = {};
 
     const runAnalysis = async () => {
       setAnalyzing(true);
+
+      // Comic schema defaults to remote, but the user may have disabled
+      // remote uploads in Debug Settings. Honor that override at import
+      // time so dropped/picked comics start out as `local` instead.
+      const remoteRaw = await settingsGet('debug_remote_upload_enabled');
+      const remoteEnabled = remoteRaw !== 'false';
+
+      const initialItems: FileItemState[] = paths.map((path) => {
+        const fileName = path.substring(Math.max(0, path.lastIndexOf('/') + 1)) || path;
+        return {
+          path,
+          fileName,
+          status: 'pending' as FileStatus,
+          selected: true, // default-include; Failed items will be auto-unchecked on transition
+          formValues: { ...EMPTY_FORM_VALUES, display_name: fileName },
+          userEdited: false,
+          suggestedTags: [],
+          duplicateAction: null,
+          storageKind: defaultStorageKind(fileName, remoteEnabled),
+        };
+      });
+      setFileItems(initialItems);
+      setImporting(false);
+      setExpandedIds(new Set()); // start all collapsed; Review items auto-expand on arrival
 
       let unlistenProgress: UnlistenFn | null = null;
       let unlistenPrepared: UnlistenFn | null = null;

@@ -44,12 +44,13 @@ pub struct Cover {
     pub mime_type: String,
 }
 
-/// One image entry extracted from a comic archive. The LLM sees `basename`
-/// when ranking cover candidates; vision calls read from `extracted_path`.
+/// One image entry inside a comic archive. The LLM sees `basename` when
+/// ranking cover candidates; the vision node reads bytes lazily by re-
+/// opening the archive and indexing into it via `archive_index`.
 #[derive(Debug, Clone)]
 pub struct ArchiveEntry {
     pub basename: String,
-    pub extracted_path: PathBuf,
+    pub archive_index: usize,
 }
 
 /// Per-node outcome recorded on the `FileContext`. StatusEmitNode reads
@@ -120,11 +121,9 @@ pub struct FileContext {
     pub cover: Option<Cover>,
 
     // ── Comic / archive state ────────────────────────────────────────
-    /// Temp directory holding the unzipped image entries. Owned by the
-    /// pipeline run; `CleanupTempDirNode` removes it after Phase 2.
-    pub archive_temp_dir: Option<PathBuf>,
-    /// Image entries extracted from the archive, preserving zip order so
-    /// "first = cover" heuristics match what readers display.
+    /// Image entries enumerated from the archive (basename + zip index),
+    /// preserving zip order so "first = cover" heuristics match what
+    /// readers display. Bytes are read on demand by the vision node.
     pub archive_entries: Vec<ArchiveEntry>,
     /// LLM-ranked filenames (best first, up to 5) from the archive entries.
     /// Filled by `LlmCoverCandidatesNode` and consumed by the vision node.
@@ -166,7 +165,6 @@ impl FileContext {
             suggested_author_names: Vec::new(),
             content_sample: None,
             cover: None,
-            archive_temp_dir: None,
             archive_entries: Vec::new(),
             cover_candidates: Vec::new(),
             display_name: None,
