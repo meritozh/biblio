@@ -39,10 +39,13 @@ impl Default for LlmConfig {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct LlmFilenameMetadata {
     /// Clean title extracted from filename
+    #[serde(default, deserialize_with = "lenient_opt_string")]
     pub display_name: Option<String>,
     /// Author names from filename patterns (e.g. "作者：xxx" or "xxx - title")
+    #[serde(default, deserialize_with = "lenient_string_vec")]
     pub authors: Vec<String>,
     /// Reading progress from filename, e.g. "第1-45章 未完结", "完结", "连载中"
+    #[serde(default, deserialize_with = "lenient_opt_string")]
     pub progress: Option<String>,
 }
 
@@ -50,10 +53,13 @@ pub struct LlmFilenameMetadata {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct LlmContentMetadata {
     /// Category from the available list
+    #[serde(default, deserialize_with = "lenient_opt_string")]
     pub category: Option<String>,
     /// Genre/theme tags
+    #[serde(default, deserialize_with = "lenient_string_vec")]
     pub tags: Vec<String>,
     /// Brief description based on content
+    #[serde(default, deserialize_with = "lenient_opt_string")]
     pub description: Option<String>,
 }
 
@@ -62,7 +68,43 @@ pub struct LlmContentMetadata {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct LlmCoverCandidates {
     /// Filenames chosen verbatim from the input, ranked best-first.
+    #[serde(default, deserialize_with = "lenient_string_vec")]
     pub candidates: Vec<String>,
+}
+
+/// Coerce `null`, missing keys, non-string values, and empty strings to
+/// `None`. The LLM extractor's strict deserializer otherwise rejects an
+/// entire response when one nullable field comes back as JSON `null` — a
+/// common shape for prompts where the model has nothing to extract.
+fn lenient_opt_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(deserializer)?;
+    Ok(match v {
+        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s),
+        _ => None,
+    })
+}
+
+/// Coerce `null`, missing keys, non-array values, and `null`/empty
+/// elements to a clean `Vec<String>`. A single `null` element inside an
+/// `authors`/`tags` array would otherwise sink the whole extraction.
+fn lenient_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(deserializer)?;
+    Ok(match v {
+        serde_json::Value::Array(arr) => arr
+            .into_iter()
+            .filter_map(|item| match item {
+                serde_json::Value::String(s) if !s.trim().is_empty() => Some(s),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 async fn read_setting(pool: &sqlx::SqlitePool, key: &str) -> Option<String> {
@@ -390,3 +432,52 @@ pub async fn check_is_cover(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: a single null element inside `authors` used to fail the
+    /// whole extraction with "invalid type: null, expected a string",
+    /// causing the folder-name cleanup to fall back to the raw `[作者]`.
+    #[test]
+    fn filename_metadata_tolerates_null_array_element() {
+        let raw = r#"{"display_name":"系列","authors":[null,"作者"],"progress":null}"#;
+        let meta: LlmFilenameMetadata = serde_json::from_str(raw).expect("should deserialize");
+        assert_eq!(meta.display_name.as_deref(), Some("系列"));
+        assert_eq!(meta.authors, vec!["作者".to_string()]);
+        assert!(meta.progress.is_none());
+    }
+
+    #[test]
+    fn filename_metadata_tolerates_null_optional_string() {
+        let raw = r#"{"display_name":null,"authors":["作者"],"progress":null}"#;
+        let meta: LlmFilenameMetadata = serde_json::from_str(raw).expect("should deserialize");
+        assert!(meta.display_name.is_none());
+        assert_eq!(meta.authors, vec!["作者".to_string()]);
+    }
+
+    #[test]
+    fn filename_metadata_tolerates_missing_fields() {
+        let raw = r#"{"authors":["作者"]}"#;
+        let meta: LlmFilenameMetadata = serde_json::from_str(raw).expect("should deserialize");
+        assert!(meta.display_name.is_none());
+        assert!(meta.progress.is_none());
+        assert_eq!(meta.authors, vec!["作者".to_string()]);
+    }
+
+    #[test]
+    fn filename_metadata_tolerates_null_array() {
+        let raw = r#"{"display_name":"系列","authors":null}"#;
+        let meta: LlmFilenameMetadata = serde_json::from_str(raw).expect("should deserialize");
+        assert!(meta.authors.is_empty());
+    }
+
+    #[test]
+    fn filename_metadata_strips_empty_strings() {
+        let raw = r#"{"display_name":"  ","authors":["","作者","   "],"progress":""}"#;
+        let meta: LlmFilenameMetadata = serde_json::from_str(raw).expect("should deserialize");
+        assert!(meta.display_name.is_none());
+        assert!(meta.progress.is_none());
+        assert_eq!(meta.authors, vec!["作者".to_string()]);
+    }
+}

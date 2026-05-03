@@ -19,8 +19,14 @@ fn contains_bidirectional_override(s: &str) -> bool {
 }
 
 fn normalize_unicode(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    // NFC fold so combining sequences (NFD `フ` + `゙` from APFS-derived
+    // filenames) collide with the precomposed form (NFC `ブ`) the LLM
+    // typically emits. Without this, the same author name from a folder
+    // path vs the LLM extraction creates two distinct DB rows.
     s.chars()
         .filter(|c| !c.is_control())
+        .nfc()
         .collect::<String>()
         .trim()
         .to_string()

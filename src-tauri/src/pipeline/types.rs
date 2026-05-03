@@ -103,18 +103,13 @@ pub struct FileContext {
     // ── Inputs (set once, never mutated) ─────────────────────────────
     pub file_path: PathBuf,
     pub file_name: String,
-    /// Basename of the folder the user picked, when the batch was launched
-    /// via the folder dialog. Retained for diagnostics; the per-file author
-    /// hint goes through `parent_author_candidates` after LLM cleanup.
-    /// `None` for single-file picks, drag-drop, and the trivial folder-to-zip
-    /// pick where the picked folder IS the comic.
-    #[allow(dead_code)]
-    pub folder_root_name: Option<String>,
     /// LLM-cleaned author candidates derived from the user-picked folder
-    /// name (e.g. `[作者] 系列` → `["作者"]`). Filled once per batch in
-    /// `file_prepare_import` and consumed by `ParentDirAuthorHintNode`.
-    /// Empty when there is no folder context, the LLM is disabled, or the
-    /// extractor returned nothing.
+    /// name (e.g. `[作者] 系列` → `["作者"]`). Filled per file in
+    /// `file_prepare_import` (one LLM call per unique folder root, fanned
+    /// out across files) and consumed by `ParentDirAuthorHintNode`. Empty
+    /// for single-file picks, drag-drop, the trivial folder-to-zip case
+    /// (the picked folder IS the comic), or when the LLM is disabled and
+    /// the extractor produced nothing.
     pub parent_author_candidates: Vec<String>,
     /// Original position in the batch input. Retained for future nodes that
     /// need input-order correlation (e.g. progress reporting that runs
@@ -166,7 +161,6 @@ impl FileContext {
         file_path: PathBuf,
         input_index: usize,
         total: usize,
-        folder_root_name: Option<String>,
         parent_author_candidates: Vec<String>,
     ) -> Self {
         let file_name = file_path
@@ -177,7 +171,6 @@ impl FileContext {
         Self {
             file_path,
             file_name,
-            folder_root_name,
             parent_author_candidates,
             input_index,
             total,

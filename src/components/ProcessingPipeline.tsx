@@ -159,7 +159,12 @@ interface ProcessingPipelineProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   paths: string[];
-  folderRoot?: string;
+  /** Per-path map of source folder. Keys are entries in `paths`; values
+   *  are the folders the user picked. Empty for non-folder picks. The
+   *  set of unique values gives the list of roots to clean up after
+   *  import; per-path values let the backend group comics by root for
+   *  the parent-dir author hint. */
+  pathFolderRoots?: Record<string, string>;
   categories: Category[];
   tags: Tag[];
   authors: Author[];
@@ -200,7 +205,7 @@ export function ProcessingPipeline({
   open,
   onOpenChange,
   paths,
-  folderRoot,
+  pathFolderRoots,
   categories,
   tags,
   authors,
@@ -358,7 +363,7 @@ export function ProcessingPipeline({
       }
 
       try {
-        const results = await filePrepareImport(paths, folderRoot);
+        const results = await filePrepareImport(paths, pathFolderRoots);
 
         // Final sync: backfill anything the streaming events missed + mark
         // items that never produced a result as errored.
@@ -400,7 +405,7 @@ export function ProcessingPipeline({
     };
 
     runAnalysis();
-  }, [open, paths, folderRoot, onAuthorCreate]);
+  }, [open, paths, pathFolderRoots, onAuthorCreate]);
 
   // Auto-deselect items that transitioned to error after initial analysis.
   // (The streaming path can mark a file ready → we then import it and it
@@ -645,18 +650,30 @@ export function ProcessingPipeline({
 
       if (errors.length === 0) {
         // Best-effort cleanup of empty subdirs left behind by
-        // folder-to-zip imports under the picked root. Backend gates
-        // on copy-mode and `had_folder_imports`; failures are logged
-        // and never block the close.
-        if (folderRoot) {
-          const hadFolderImports = toProcess.some(
-            (i) => i.preparedImport?.source_is_directory ?? false
-          );
-          try {
-            await importFinalize(folderRoot, hadFolderImports);
-          } catch (error) {
-            console.error('Import finalize failed:', error);
+        // folder-to-zip imports. One finalize call per picked root;
+        // backend gates on copy-mode and `had_folder_imports`. We scope
+        // `had_folder_imports` per root so a root with only archive
+        // files (and no auto-zip) keeps its source tree untouched.
+        if (pathFolderRoots && Object.keys(pathFolderRoots).length > 0) {
+          const importedDirsByRoot = new Map<string, boolean>();
+          for (const item of toProcess) {
+            const root = pathFolderRoots[item.path];
+            if (!root) continue;
+            if (item.preparedImport?.source_is_directory) {
+              importedDirsByRoot.set(root, true);
+            } else if (!importedDirsByRoot.has(root)) {
+              importedDirsByRoot.set(root, false);
+            }
           }
+          await Promise.all(
+            Array.from(importedDirsByRoot.entries()).map(async ([root, hadFolderImports]) => {
+              try {
+                await importFinalize(root, hadFolderImports);
+              } catch (error) {
+                console.error(`Import finalize failed for ${root}:`, error);
+              }
+            })
+          );
         }
         onOpenChange(false);
         onImportComplete();
@@ -666,7 +683,7 @@ export function ProcessingPipeline({
     } finally {
       setImporting(false);
     }
-  }, [fileItems, importing, analyzing, folderRoot, onOpenChange, onImportComplete]);
+  }, [fileItems, importing, analyzing, pathFolderRoots, onOpenChange, onImportComplete]);
 
   const processingCount = buckets.processing.length;
   const totalFiles = fileItems.length;

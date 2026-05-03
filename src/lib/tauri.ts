@@ -362,9 +362,14 @@ export function translateError(error: string): string {
 
 export async function filePrepareImport(
   paths: string[],
-  folderRoot?: string
+  pathFolderRoots?: Record<string, string>
 ): Promise<FilePreparedImport[]> {
-  return invoke('file_prepare_import', { paths, folderRoot: folderRoot ?? null });
+  return invoke('file_prepare_import', {
+    paths,
+    pathFolderRoots: pathFolderRoots && Object.keys(pathFolderRoots).length > 0
+      ? pathFolderRoots
+      : null,
+  });
 }
 
 export async function cancelProcessing(): Promise<void> {

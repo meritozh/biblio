@@ -58,11 +58,19 @@ pub async fn cancel_processing(app: tauri::AppHandle) {
     cancelled.0.store(true, Ordering::Relaxed);
 }
 
+/// Prepare a batch of paths for import: run both pipelines, stream
+/// per-file `file-prepared` events, and return the final list.
+///
+/// `path_folder_roots` is a per-path map of source folder — keys are
+/// entries in `paths`, values are the absolute folder paths the user
+/// picked. Empty/None for non-folder picks. Drives per-comic parent-dir
+/// author hints; each unique folder root gets one LLM cleanup call
+/// regardless of how many comics were scanned out of it.
 #[tauri::command]
 pub async fn file_prepare_import(
     app: tauri::AppHandle,
     paths: Vec<String>,
-    folder_root: Option<String>,
+    path_folder_roots: Option<HashMap<String, String>>,
 ) -> Result<Vec<FilePreparedImport>, String> {
     use super::{Author, Category, FileEntry, Tag};
 
@@ -105,8 +113,14 @@ pub async fn file_prepare_import(
         .iter()
         .map(|c| (c.name.to_lowercase(), c.id))
         .collect();
-    let author_map: HashMap<String, i64> =
-        authors.iter().map(|a| (a.name.to_lowercase(), a.id)).collect();
+    // Author lookup keys are NFC-normalized + lowercased so suggestions
+    // sourced from APFS file paths (often NFD) collide with the same name
+    // sourced from the LLM (typically NFC). Without this, NFD/NFC variants
+    // of the same name slip past resolution and become duplicate authors.
+    let author_map: HashMap<String, i64> = authors
+        .iter()
+        .map(|a| (normalize_author_key(&a.name), a.id))
+        .collect();
     let tag_map: HashMap<String, i64> =
         tags.iter().map(|t| (t.name.to_lowercase(), t.id)).collect();
 
@@ -165,84 +179,72 @@ pub async fn file_prepare_import(
         }
     }
 
+    // Per-path parent-dir author candidates. For every unique folder root
+    // in `path_folder_roots`, derive an author candidate from the picked
+    // folder name and fan it out across every comic scanned from that
+    // root. Non-folder picks and novels get an empty candidate list.
+    //
+    // Cleanup is a static rule (`[author]` → `author`, see
+    // `clean_folder_author_name`), not an LLM call — folder authors
+    // overwhelmingly follow the bracket convention, the LLM round-trip
+    // was both slow and brittle (one malformed JSON response sank the
+    // whole batch).
+    //
+    // Trivial-pick suppression is per root: when a root contributes
+    // exactly one comic AND that comic IS the root directory itself
+    // (image-folder pick that auto-zips on commit), the basename would
+    // duplicate the comic's own name as its author — skip it.
+    let path_folder_roots = path_folder_roots.unwrap_or_default();
+    let mut comics_per_root: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for path in &comic_paths {
+        let key = path.to_string_lossy().to_string();
+        if let Some(root) = path_folder_roots.get(&key) {
+            comics_per_root.entry(root.clone()).or_default().push(path.clone());
+        }
+    }
+
+    let mut parent_author_candidates_by_path: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    for (root, comics_in_root) in comics_per_root {
+        let root_path = std::path::PathBuf::from(&root);
+        let Some(name) = root_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+        else {
+            continue;
+        };
+
+        // Skip when the only comic from this root IS the root directory
+        // (folder-as-comic auto-zip). Canonicalize both sides so trailing
+        // slashes / symlinks don't produce false negatives.
+        let suppress = matches!(
+            comics_in_root.as_slice(),
+            [single] if single.is_dir()
+                && root_path.canonicalize().ok() == single.canonicalize().ok()
+        );
+        if suppress {
+            continue;
+        }
+
+        let cleaned = clean_folder_author_name(&name);
+        if cleaned.is_empty() {
+            continue;
+        }
+        let candidates = vec![cleaned];
+
+        for path in comics_in_root {
+            parent_author_candidates_by_path.insert(path, candidates.clone());
+        }
+    }
+
     // Run sequentially: both pipelines emit `processed_ordinal` starting
     // from 1, so concurrent execution would surface two interleaved
     // counters in the UI. Empty path lists short-circuit `run_batch`, so
     // the common single-type import pays nothing for the unused branch.
-    //
-    // The folder-root basename (when the batch came from a folder pick) is
-    // forwarded to both pipelines; only `ParentDirAuthorHintNode` in the
-    // comic pipeline reads it today.
-    let folder_root_path = folder_root.as_ref().map(std::path::PathBuf::from);
-    let folder_root_name = folder_root_path.as_ref().and_then(|p| {
-        p.file_name().map(|n| n.to_string_lossy().to_string())
-    });
-
-    // Trivial-pick suppression: when the user picked a single image folder
-    // and that folder IS the only comic in the batch, the picked-folder
-    // basename equals the comic's filename — pushing it as an author
-    // candidate would seed the comic's own name as its author. Drop the
-    // folder context so `ParentDirAuthorHintNode` no-ops for this batch.
-    let suppress_folder_root = match (&folder_root_path, comic_paths.as_slice()) {
-        (Some(root), [single]) if single.is_dir() => {
-            // Canonicalize both sides so trailing slashes / symlinks don't
-            // produce false negatives.
-            let r = root.canonicalize().ok();
-            let s = single.canonicalize().ok();
-            matches!((r, s), (Some(a), Some(b)) if a == b)
-        }
-        _ => false,
-    };
-    let folder_root_name_comic = if suppress_folder_root {
-        None
-    } else {
-        folder_root_name.clone()
-    };
-
-    // LLM-clean the folder-root basename into author candidates. The
-    // archive filename prompt already understands `[author] title volN`
-    // conventions, so feeding folder names through it strips brackets /
-    // braces consistently with file-level extraction. One call per batch
-    // (cached via the shared candidate string), with a fallback to the
-    // raw name on disable / error / empty result so we never regress
-    // below today's behavior.
-    let parent_author_candidates: Vec<String> = match folder_root_name_comic.as_ref() {
-        Some(name) if env.llm_config.enabled => {
-            match super::llm::extract_filename_metadata(
-                &env.llm_config,
-                &env.pool,
-                name,
-                "archive",
-            )
-            .await
-            {
-                Ok(meta) if !meta.authors.is_empty() => meta.authors,
-                Ok(_) => vec![name.clone()],
-                Err(e) => {
-                    eprintln!("Folder-name LLM cleanup failed for {name:?}: {e}");
-                    vec![name.clone()]
-                }
-            }
-        }
-        Some(name) => vec![name.clone()],
-        None => Vec::new(),
-    };
-
     let novel_ctxs = novel_pipeline
-        .run_batch(
-            novel_paths,
-            Arc::clone(&env),
-            folder_root_name.clone(),
-            Vec::new(),
-        )
+        .run_batch(novel_paths, Arc::clone(&env), HashMap::new())
         .await;
     let comic_ctxs = comic_pipeline
-        .run_batch(
-            comic_paths,
-            Arc::clone(&env),
-            folder_root_name_comic,
-            parent_author_candidates,
-        )
+        .run_batch(comic_paths, Arc::clone(&env), parent_author_candidates_by_path)
         .await;
 
     let mut results: Vec<FilePreparedImport> = novel_ctxs
@@ -345,21 +347,142 @@ impl Phase2Node for EmitPreparedNode {
     }
 }
 
-/// Tag each file in a batch that shares a display_name with another file
-/// so the frontend can group and warn about same-batch duplicates.
+/// Canonical key used to compare author names across sources (LLM, folder
+/// path, DB). NFC + trim + lowercase so APFS-NFD filename slices collide
+/// with the LLM's NFC output.
+pub(crate) fn normalize_author_key(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    name.nfc().collect::<String>().trim().to_lowercase()
+}
+
+/// Strip the surrounding bracket convention from a folder name and return
+/// the author candidate. Folder authors overwhelmingly use `[author]` or
+/// `[author] series-title` shapes, so a static rule is both faster and
+/// more reliable than the LLM round-trip we used to do here. Falls back
+/// to the trimmed raw name when no leading bracket is found, matching
+/// the pre-LLM behavior.
+fn clean_folder_author_name(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            let inner = rest[..end].trim();
+            if !inner.is_empty() {
+                return inner.to_string();
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+/// Tag each file in a batch that shares a display_name AND category with
+/// another file so the frontend can group and warn about same-batch
+/// duplicates. Same name in different categories (e.g. a novel and a
+/// comic that share a title) is not a duplicate.
 fn detect_batch_duplicates(results: &mut [FilePreparedImport]) {
-    let mut name_groups: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut name_groups: HashMap<(String, Option<i64>), Vec<usize>> = HashMap::new();
     for (idx, result) in results.iter().enumerate() {
         let normalized = result.display_name.trim().to_lowercase();
-        name_groups.entry(normalized).or_default().push(idx);
+        name_groups
+            .entry((normalized, result.category_id))
+            .or_default()
+            .push(idx);
     }
 
-    for (name, indices) in &name_groups {
+    for ((name, _category_id), indices) in &name_groups {
         if indices.len() > 1 {
             let group_id = format!("batch_{}", name);
             for &idx in indices {
                 results[idx].batch_duplicate_group = Some(group_id.clone());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_folder_author_strips_outer_brackets() {
+        assert_eq!(clean_folder_author_name("[SAVAN]"), "SAVAN");
+        assert_eq!(clean_folder_author_name("[作者A]"), "作者A");
+        assert_eq!(clean_folder_author_name("[ハ\u{309a}ニックアメリカ]"), "ハ\u{309a}ニックアメリカ");
+    }
+
+    #[test]
+    fn clean_folder_author_extracts_first_bracket_group() {
+        assert_eq!(clean_folder_author_name("[作者] 系列名"), "作者");
+        assert_eq!(clean_folder_author_name("[XTER] title vol1"), "XTER");
+    }
+
+    #[test]
+    fn clean_folder_author_falls_back_when_no_brackets() {
+        assert_eq!(clean_folder_author_name("plain name"), "plain name");
+        assert_eq!(clean_folder_author_name("  spaced  "), "spaced");
+    }
+
+    #[test]
+    fn clean_folder_author_handles_empty_brackets() {
+        assert_eq!(clean_folder_author_name("[]"), "[]");
+        assert_eq!(clean_folder_author_name("[ ] series"), "[ ] series");
+    }
+
+    #[test]
+    fn clean_folder_author_ignores_unbalanced_or_nested() {
+        assert_eq!(clean_folder_author_name("[unterminated"), "[unterminated");
+        assert_eq!(clean_folder_author_name("title [extra]"), "title [extra]");
+    }
+
+    fn prepared_with(name: &str, category_id: Option<i64>) -> FilePreparedImport {
+        FilePreparedImport {
+            path: format!("/tmp/{name}"),
+            file_name: name.to_string(),
+            display_name: name.to_string(),
+            category_id,
+            tag_ids: vec![],
+            author_ids: vec![],
+            metadata: vec![],
+            unresolved_author_names: vec![],
+            cover_data: None,
+            cover_mime_type: None,
+            progress: None,
+            suggested_tags: vec![],
+            duplicate_of: None,
+            batch_duplicate_group: None,
+            source_is_directory: false,
+        }
+    }
+
+    #[test]
+    fn batch_dup_groups_same_name_same_category() {
+        let mut results = vec![
+            prepared_with("三体", Some(1)),
+            prepared_with("三体", Some(1)),
+        ];
+        detect_batch_duplicates(&mut results);
+        assert!(results[0].batch_duplicate_group.is_some());
+        assert_eq!(results[0].batch_duplicate_group, results[1].batch_duplicate_group);
+    }
+
+    #[test]
+    fn batch_dup_skips_same_name_different_category() {
+        let mut results = vec![
+            prepared_with("三体", Some(1)),
+            prepared_with("三体", Some(2)),
+        ];
+        detect_batch_duplicates(&mut results);
+        assert!(results[0].batch_duplicate_group.is_none());
+        assert!(results[1].batch_duplicate_group.is_none());
+    }
+
+    #[test]
+    fn batch_dup_groups_when_both_categories_unset() {
+        let mut results = vec![
+            prepared_with("三体", None),
+            prepared_with("三体", None),
+        ];
+        detect_batch_duplicates(&mut results);
+        assert!(results[0].batch_duplicate_group.is_some());
+        assert_eq!(results[0].batch_duplicate_group, results[1].batch_duplicate_group);
     }
 }

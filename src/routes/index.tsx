@@ -62,7 +62,10 @@ function HomePage() {
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
-  const [selectedFolderRoot, setSelectedFolderRoot] = useState<string | undefined>(undefined);
+  // Map of every imported path → the folder the user picked it from. Empty
+  // for plain file picks. Used to drive per-comic author hints and the
+  // post-import empty-dir cleanup, both of which are scoped per root.
+  const [selectedPathFolderRoots, setSelectedPathFolderRoots] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [formValues, setFormValues] = useState<DynamicMetadataFormValues>(EMPTY_FORM_VALUES);
   const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
@@ -180,20 +183,27 @@ function HomePage() {
     [checkStoragePath]
   );
 
-  const handleFilesSelected = (paths: string[], folderRoot?: string) => {
+  const handleFilesSelected = (
+    paths: string[],
+    pathFolderRoots?: Record<string, string>
+  ) => {
     // Folder picks trust the backend's own filtering: `list_files_in_folder`
     // already drops dotfiles and collapses image-only sub-trees into
     // directory paths (which `isImportable` would otherwise reject for
     // having no extension). For file picks and drag-drop, run the
     // extension filter so we can surface unsupported types up-front.
     const kept: string[] = [];
+    const keptFolderRoots: Record<string, string> = {};
     const skipped: string[] = [];
-    if (folderRoot) {
-      kept.push(...paths);
-    } else {
-      for (const p of paths) {
-        if (isImportable(p)) kept.push(p);
-        else skipped.push(p);
+    const fromFolderPick = pathFolderRoots && Object.keys(pathFolderRoots).length > 0;
+    for (const p of paths) {
+      if (fromFolderPick || isImportable(p)) {
+        kept.push(p);
+        if (pathFolderRoots && pathFolderRoots[p]) {
+          keptFolderRoots[p] = pathFolderRoots[p];
+        }
+      } else {
+        skipped.push(p);
       }
     }
 
@@ -207,7 +217,7 @@ function HomePage() {
     if (kept.length === 0) return;
 
     setSelectedFiles(kept);
-    setSelectedFolderRoot(folderRoot);
+    setSelectedPathFolderRoots(keptFolderRoots);
     setFormValues(EMPTY_FORM_VALUES);
     setAddDialogOpen(false);
     setPipelineOpen(true);
@@ -430,7 +440,7 @@ function HomePage() {
         open={pipelineOpen}
         onOpenChange={setPipelineOpen}
         paths={selectedFiles}
-        folderRoot={selectedFolderRoot}
+        pathFolderRoots={selectedPathFolderRoots}
         categories={categories}
         tags={tags}
         authors={authors}
@@ -440,7 +450,7 @@ function HomePage() {
         onImportComplete={() => {
           setPipelineOpen(false);
           setSelectedFiles([]);
-          setSelectedFolderRoot(undefined);
+          setSelectedPathFolderRoots({});
           void loadFiles();
         }}
       />

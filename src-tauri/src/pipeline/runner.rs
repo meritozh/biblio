@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -37,12 +38,15 @@ impl Pipeline {
     /// overlaps via an internal semaphore; Phase-2 work is drained
     /// sequentially through an mpsc channel so downstream event ordering
     /// matches the "current N of total" display in the frontend.
+    /// Run every path through both phases. `parent_author_candidates_by_path`
+    /// supplies the per-file folder-name-derived author hint (filled by
+    /// `file_prepare_import` once per unique picked root). Paths missing
+    /// from the map get an empty hint, matching the non-folder-pick case.
     pub async fn run_batch(
         &self,
         paths: Vec<PathBuf>,
         env: Arc<PipelineEnv>,
-        folder_root_name: Option<String>,
-        parent_author_candidates: Vec<String>,
+        mut parent_author_candidates_by_path: HashMap<PathBuf, Vec<String>>,
     ) -> Vec<FileContext> {
         let total = paths.len();
         if total == 0 {
@@ -64,15 +68,15 @@ impl Pipeline {
                 let phase1 = Arc::clone(&phase1);
                 let env = Arc::clone(&dispatch_env);
 
-                let folder_root_for_task = folder_root_name.clone();
-                let candidates_for_task = parent_author_candidates.clone();
+                let candidates_for_task = parent_author_candidates_by_path
+                    .remove(&path)
+                    .unwrap_or_default();
                 tauri::async_runtime::spawn_blocking(move || {
                     let _permit = permit;
                     let mut ctx = FileContext::new(
                         path,
                         idx,
                         total,
-                        folder_root_for_task,
                         candidates_for_task,
                     );
 

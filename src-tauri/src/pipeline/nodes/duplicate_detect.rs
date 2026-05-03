@@ -36,6 +36,18 @@ impl Phase2Node for DbDuplicateDetectNode {
             .existing_files
             .iter()
             .find(|f| {
+                // A same-named file in a different category is a different
+                // work (e.g. a novel and a comic that share a title). Only
+                // filter when both sides have a known category — comics
+                // currently leave `category_id` empty in the pipeline, so a
+                // None on either side falls through to the name check.
+                if let (Some(new_cat), Some(existing_cat)) =
+                    (ctx.category_id, f.category_id)
+                {
+                    if new_cat != existing_cat {
+                        return false;
+                    }
+                }
                 let existing = f.display_name.trim().to_lowercase();
                 prefix_similarity(&display, &existing) > DUPLICATE_PREFIX_THRESHOLD
             })
