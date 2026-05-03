@@ -1,9 +1,10 @@
 //! Format-agnostic archive helpers shared by the comic-pipeline nodes.
 //!
-//! Comics arrive as ZIP/CBZ or RAR/CBR. The two backends expose very
-//! different APIs (random-access central directory vs sequential header
-//! walk), so callers go through this module instead of branching at every
-//! call site. Helpers return:
+//! Comics arrive as ZIP/CBZ, RAR/CBR, or as a directory of loose images
+//! that the import flow auto-zips on commit. The three backends expose
+//! very different APIs (random-access central directory vs sequential
+//! header walk vs filesystem walk), so callers go through this module
+//! instead of branching at every call site. Helpers return:
 //!
 //! - `list_image_entries` — enumerate image entries paired with an
 //!   archive-internal index.
@@ -16,7 +17,9 @@
 //! including non-images and directories). For ZIP that maps to the
 //! central-directory index, so reads are O(1). For RAR it's the position
 //! in `open_for_listing` order, so reads walk forward from the start —
-//! still cheap because the comic pipeline only reads ≤5 candidates.
+//! still cheap because the comic pipeline only reads ≤5 candidates. For
+//! `ImageDir` it's the position in the sorted recursive walk of the
+//! directory (image files only).
 
 use std::io::Read;
 use std::path::Path;
@@ -34,9 +37,17 @@ pub struct ArchiveImageEntry {
 enum Format {
     Zip,
     Rar,
+    /// A directory of loose images on disk. Used by the folder-import
+    /// flow when the user picks a folder whose recursive contents are
+    /// all images — the pipeline runs against the directory directly,
+    /// and `file_create` zips it on commit.
+    ImageDir,
 }
 
 fn format_for_path(path: &Path) -> Result<Format, String> {
+    if path.is_dir() {
+        return Ok(Format::ImageDir);
+    }
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -47,6 +58,12 @@ fn format_for_path(path: &Path) -> Result<Format, String> {
         "rar" | "cbr" => Ok(Format::Rar),
         other => Err(format!("Unsupported archive extension: {other}")),
     }
+}
+
+/// Public predicate so callers outside this module (e.g. the folder-import
+/// scanner) share the exact same image-extension definition.
+pub fn is_image_filename(name: &str) -> bool {
+    is_image_basename(name)
 }
 
 fn is_image_basename(name: &str) -> bool {
@@ -85,6 +102,7 @@ pub fn list_image_entries(path: &Path) -> Result<Vec<ArchiveImageEntry>, String>
     match format_for_path(path)? {
         Format::Zip => list_image_entries_zip(path),
         Format::Rar => list_image_entries_rar(path),
+        Format::ImageDir => list_image_entries_dir(path),
     }
 }
 
@@ -92,7 +110,41 @@ pub fn read_entry_bytes(path: &Path, archive_index: usize) -> Result<Vec<u8>, St
     match format_for_path(path)? {
         Format::Zip => read_entry_bytes_zip(path, archive_index),
         Format::Rar => read_entry_bytes_rar(path, archive_index),
+        Format::ImageDir => read_entry_bytes_dir(path, archive_index),
     }
+}
+
+/// Walk a directory recursively and collect every image file's path
+/// relative to `root`, sorted lexicographically. Used by the ImageDir
+/// backend for both listing and indexed reads — keep both in sync.
+fn collect_dir_image_paths(root: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    fn walk(
+        dir: &Path,
+        out: &mut Vec<std::path::PathBuf>,
+    ) -> Result<(), String> {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .map_err(|e| format!("Failed to read directory {}: {e}", dir.display()))?
+            .filter_map(|e| e.ok())
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') {
+                continue;
+            }
+            let p = entry.path();
+            if p.is_dir() {
+                walk(&p, out)?;
+            } else if p.is_file() && is_image_basename(&name_str) {
+                out.push(p);
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(root, &mut out)?;
+    Ok(out)
 }
 
 /// Phase-1 baseline cover pick. Returns the first image (cover/000/001
@@ -204,6 +256,32 @@ fn read_entry_bytes_rar(path: &Path, archive_index: usize) -> Result<Vec<u8>, St
     Err(format!("rar entry {archive_index} not found"))
 }
 
+// ── ImageDir backend ─────────────────────────────────────────────────────
+
+fn list_image_entries_dir(path: &Path) -> Result<Vec<ArchiveImageEntry>, String> {
+    let paths = collect_dir_image_paths(path)?;
+    let entries = paths
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| ArchiveImageEntry {
+            basename: p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            archive_index: i,
+        })
+        .collect();
+    Ok(entries)
+}
+
+fn read_entry_bytes_dir(path: &Path, archive_index: usize) -> Result<Vec<u8>, String> {
+    let paths = collect_dir_image_paths(path)?;
+    let p = paths
+        .get(archive_index)
+        .ok_or_else(|| format!("dir entry {archive_index} not found"))?;
+    std::fs::read(p).map_err(|e| format!("read entry: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +323,42 @@ mod tests {
             Format::Rar
         );
         assert!(format_for_path(Path::new("foo.txt")).is_err());
+    }
+
+    #[test]
+    fn format_for_path_recognizes_directory() {
+        let tmp = std::env::temp_dir().join(format!(
+            "biblio_archive_dirfmt_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert_eq!(format_for_path(&tmp).unwrap(), Format::ImageDir);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn imagedir_backend_lists_and_reads_in_sorted_order() {
+        let tmp = std::env::temp_dir().join(format!(
+            "biblio_archive_dir_{}",
+            std::process::id()
+        ));
+        let nested = tmp.join("chapter-2");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(tmp.join("002.jpg"), b"002bytes").unwrap();
+        std::fs::write(tmp.join("001.png"), b"001bytes").unwrap();
+        std::fs::write(tmp.join("readme.txt"), b"ignored").unwrap();
+        std::fs::write(nested.join("003.webp"), b"003bytes").unwrap();
+
+        let entries = list_image_entries(&tmp).unwrap();
+        assert_eq!(
+            entries.iter().map(|e| e.basename.as_str()).collect::<Vec<_>>(),
+            vec!["001.png", "002.jpg", "003.webp"]
+        );
+
+        let bytes = read_entry_bytes(&tmp, 1).unwrap();
+        assert_eq!(bytes, b"002bytes".to_vec());
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

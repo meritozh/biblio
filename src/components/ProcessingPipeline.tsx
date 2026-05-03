@@ -32,8 +32,9 @@ import {
   listenProcessingProgress,
   listenFilePrepared,
   settingsGet,
+  importFinalize,
 } from '@/lib/tauri';
-import { schemaForPath, kindForPath, defaultCategoryIdForKind } from '@/lib/fileKind';
+import { schemaForPath, kindForPath, defaultCategoryIdForKind, KIND_REGISTRY } from '@/lib/fileKind';
 import {
   ChevronDown,
   ChevronRight,
@@ -42,6 +43,7 @@ import {
   AlertCircle,
   AlertTriangle,
   FileText,
+  FolderArchive,
 } from 'lucide-react';
 import type {
   Category,
@@ -83,8 +85,14 @@ interface FileItemState {
   storageKind: StorageKind;
 }
 
-function defaultStorageKind(fileName: string, remoteEnabled: boolean): StorageKind {
-  const schemaDefault = schemaForPath(fileName).defaultStorage;
+function defaultStorageKind(path: string, remoteEnabled: boolean): StorageKind {
+  // Folder imports (no file extension) are auto-zipped into comics on
+  // commit, so they take the comic schema's storage default rather than
+  // falling through to `local`.
+  const isFolderImport = !path.includes('.') || path.endsWith('/');
+  const schemaDefault =
+    schemaForPath(path)?.defaultStorage ??
+    (isFolderImport ? KIND_REGISTRY.comic.defaultStorage : 'local');
   if (schemaDefault === 'remote' && !remoteEnabled) return 'local';
   return schemaDefault;
 }
@@ -151,6 +159,7 @@ interface ProcessingPipelineProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   paths: string[];
+  folderRoot?: string;
   categories: Category[];
   tags: Tag[];
   authors: Author[];
@@ -191,6 +200,7 @@ export function ProcessingPipeline({
   open,
   onOpenChange,
   paths,
+  folderRoot,
   categories,
   tags,
   authors,
@@ -290,9 +300,14 @@ export function ProcessingPipeline({
               // When the LLM didn't pick a category, fall back to the
               // kind's default (e.g. comics → "comic" category) so the
               // user doesn't have to set it manually for every import.
+              // Folder imports have no extension, so trust the backend's
+              // `source_is_directory` flag and route them to comic.
+              const itemKind = result.source_is_directory
+                ? 'comic'
+                : kindForPath(item.path);
               const resolvedCategoryId =
                 result.category_id ??
-                defaultCategoryIdForKind(kindForPath(item.path), categories);
+                (itemKind ? defaultCategoryIdForKind(itemKind, categories) : null);
               const formValues: DynamicMetadataFormValues = item.userEdited
                 ? item.formValues
                 : {
@@ -343,7 +358,7 @@ export function ProcessingPipeline({
       }
 
       try {
-        const results = await filePrepareImport(paths);
+        const results = await filePrepareImport(paths, folderRoot);
 
         // Final sync: backfill anything the streaming events missed + mark
         // items that never produced a result as errored.
@@ -385,7 +400,7 @@ export function ProcessingPipeline({
     };
 
     runAnalysis();
-  }, [open, paths, onAuthorCreate]);
+  }, [open, paths, folderRoot, onAuthorCreate]);
 
   // Auto-deselect items that transitioned to error after initial analysis.
   // (The streaming path can mark a file ready → we then import it and it
@@ -629,6 +644,20 @@ export function ProcessingPipeline({
       }
 
       if (errors.length === 0) {
+        // Best-effort cleanup of empty subdirs left behind by
+        // folder-to-zip imports under the picked root. Backend gates
+        // on copy-mode and `had_folder_imports`; failures are logged
+        // and never block the close.
+        if (folderRoot) {
+          const hadFolderImports = toProcess.some(
+            (i) => i.preparedImport?.source_is_directory ?? false
+          );
+          try {
+            await importFinalize(folderRoot, hadFolderImports);
+          } catch (error) {
+            console.error('Import finalize failed:', error);
+          }
+        }
         onOpenChange(false);
         onImportComplete();
       } else {
@@ -637,7 +666,7 @@ export function ProcessingPipeline({
     } finally {
       setImporting(false);
     }
-  }, [fileItems, importing, analyzing, onOpenChange, onImportComplete]);
+  }, [fileItems, importing, analyzing, folderRoot, onOpenChange, onImportComplete]);
 
   const processingCount = buckets.processing.length;
   const totalFiles = fileItems.length;
@@ -1068,7 +1097,10 @@ function FileCardRow({
             <StatusIcon status={item.status} />
 
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{item.fileName}</p>
+              <div className="flex items-center gap-2 min-w-0">
+                <p className="text-sm font-medium truncate">{item.fileName}</p>
+                {item.preparedImport?.source_is_directory && <FolderToZipHint />}
+              </div>
               <StatusSubtitle item={item} />
             </div>
 
@@ -1123,7 +1155,12 @@ function FileCardRow({
             <DynamicMetadataForm
               values={item.formValues}
               onChange={(values) => onFormChange(item.path, values)}
-              fields={schemaForPath(item.path).formFields}
+              fields={
+                schemaForPath(item.path)?.formFields ??
+                (item.preparedImport?.source_is_directory
+                  ? KIND_REGISTRY.comic.formFields
+                  : [])
+              }
               categories={categories}
               tags={tags}
               authors={authors}
@@ -1140,6 +1177,18 @@ function FileCardRow({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function FolderToZipHint() {
+  return (
+    <span
+      className="shrink-0 inline-flex items-center gap-1 rounded-full border border-border/60 bg-secondary/40 px-1.5 py-0 text-[10px] text-muted-foreground"
+      title="This folder of images will be packaged as a .zip on import"
+    >
+      <FolderArchive className="h-3 w-3" aria-hidden="true" />
+      Folder → .zip
+    </span>
   );
 }
 

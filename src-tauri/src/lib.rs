@@ -24,6 +24,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             commands::file::file_list,
             commands::file::file_get,
@@ -32,6 +33,7 @@ pub fn run() {
             commands::file::file_delete,
             commands::file::file_delete_source,
             commands::file::list_files_in_folder,
+            commands::file::import_finalize,
             commands::file::file_move_category,
             commands::file::file_search,
             commands::file::file_check_status,

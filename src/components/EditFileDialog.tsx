@@ -127,7 +127,7 @@ export function EditFileDialog({
         <DynamicMetadataForm
           values={formValues}
           onChange={setFormValues}
-          fields={schemaForPath(file?.path).formFields}
+          fields={schemaForPath(file?.path)?.formFields ?? []}
           categories={categories}
           tags={tags}
           authors={authors}

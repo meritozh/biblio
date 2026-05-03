@@ -71,7 +71,7 @@ export const KIND_REGISTRY: Readonly<Record<FileKind, KindSchema>> = {
     defaultCategoryName: 'comic',
   },
   novel: {
-    extensions: ['txt', 'epub', 'pdf'],
+    extensions: ['txt'],
     defaultStorage: 'local',
     columns: {
       cover: false,
@@ -93,16 +93,25 @@ export const KIND_REGISTRY: Readonly<Record<FileKind, KindSchema>> = {
   },
 };
 
-/** Resolve a file path to its kind by extension. Anything unknown falls
- *  through to `novel` — matches the backend dispatcher's default. */
-export function kindForPath(path: string | null | undefined): FileKind {
+/** Resolve a file path to its kind by extension. Returns `null` for any
+ *  extension outside the supported set — callers must handle the null,
+ *  matching the backend dispatcher's strict rejection. */
+export function kindForPath(path: string | null | undefined): FileKind | null {
   const ext = (path ?? '').split('.').pop()?.toLowerCase() ?? '';
   if (KIND_REGISTRY.comic.extensions.includes(ext)) return 'comic';
-  return 'novel';
+  if (KIND_REGISTRY.novel.extensions.includes(ext)) return 'novel';
+  return null;
 }
 
-export function schemaForPath(path: string | null | undefined): KindSchema {
-  return KIND_REGISTRY[kindForPath(path)];
+export function schemaForPath(path: string | null | undefined): KindSchema | null {
+  const kind = kindForPath(path);
+  return kind ? KIND_REGISTRY[kind] : null;
+}
+
+/** Whether this path is in the supported import set. Used by the file
+ *  picker / drag-drop handler to silently skip unsupported inputs. */
+export function isImportable(path: string | null | undefined): boolean {
+  return kindForPath(path) !== null;
 }
 
 /** Resolve the registry-default category id for a kind, given the user's

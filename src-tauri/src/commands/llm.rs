@@ -184,8 +184,8 @@ const LANGUAGE_INSTRUCTION: &str = "Output all Chinese text in Simplified Chines
 
 /// Call 1: Extract display_name, authors, progress from filename only.
 /// Preamble is loaded from the active `(mime_group, 'filename')` prompt
-/// in the DB — `'text'` for novels (.txt/.epub/.pdf), `'archive'` for
-/// comics (.zip/.cbz). Lets the user customize each independently.
+/// in the DB — `'text'` for novels (.txt), `'archive'` for comics
+/// (.zip/.cbz/.rar/.cbr). Lets the user customize each independently.
 pub async fn extract_filename_metadata(
     config: &LlmConfig,
     pool: &sqlx::SqlitePool,

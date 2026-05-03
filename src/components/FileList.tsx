@@ -13,7 +13,7 @@ import { ArrowUpDown, Loader2, BookOpen } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { FileContextMenu } from '@/components/FileContextMenu';
 import { coverGet } from '@/lib/tauri';
-import { schemaForPath } from '@/lib/fileKind';
+import { schemaForPath, isImportable, KIND_REGISTRY } from '@/lib/fileKind';
 import type { FileEntry } from '@/types';
 
 // ── CoverCell ─────────────────────────────────────────────────────────────────
@@ -95,7 +95,7 @@ interface FileListProps {
 // ── FileList ──────────────────────────────────────────────────────────────────
 
 export function FileList({
-  files,
+  files: rawFiles,
   total,
   loadingMore = false,
   onLoadMore,
@@ -110,6 +110,14 @@ export function FileList({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const prevFilterKeyRef = useRef(filterKey);
 
+  // Drop legacy rows whose extension is no longer in the supported set
+  // (.epub / .pdf / standalone images from the pre-removal era). Their DB
+  // rows stay intact; we just don't surface them in the list.
+  const files = useMemo(
+    () => rawFiles.filter((f) => isImportable(f.path)),
+    [rawFiles]
+  );
+
   // Scroll to top when the filter (category / search) changes
   useEffect(() => {
     if (prevFilterKeyRef.current === filterKey) return;
@@ -119,9 +127,10 @@ export function FileList({
 
   // Schema picks the layout (table vs grid) and column visibility from the
   // first file's kind. Categories are typically homogeneous, so the first
-  // file determines the rendering for the whole list.
+  // file determines the rendering for the whole list. Falls back to the
+  // novel schema when the list is empty.
   const schema = useMemo(
-    () => schemaForPath(files[0]?.path),
+    () => schemaForPath(files[0]?.path) ?? KIND_REGISTRY.novel,
     [files[0]?.path] // eslint-disable-line react-hooks/exhaustive-deps
   );
   const layout = schema.layout;

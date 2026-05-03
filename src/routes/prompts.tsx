@@ -45,11 +45,15 @@ const STEPS_BY_GROUP: Record<PromptMimeGroup, ReadonlyArray<{ step: PromptStep; 
     { step: 'filename', label: 'Filename extraction' },
     { step: 'cover_pick', label: 'Cover detection' },
   ],
+  image_folder: [
+    { step: 'filename', label: 'Filename extraction' },
+  ],
 };
 
 const GROUP_LABEL: Record<PromptMimeGroup, string> = {
   text: 'Novel',
-  archive: 'Comic',
+  archive: 'Comic Archive',
+  image_folder: 'Comic Folder',
 };
 
 const STEP_LABEL: Record<PromptStep, string> = {
@@ -70,7 +74,10 @@ function promptHelpText(group: PromptMimeGroup, step: PromptStep): string {
     return 'Filename extraction has no runtime context — this prompt is used verbatim.';
   }
   if (group === 'archive' && step === 'filename') {
-    return 'Used for comic archive filenames (.zip / .cbz). No runtime context appended.';
+    return 'Used for comic archive filenames (.zip / .cbz / .rar / .cbr). No runtime context appended.';
+  }
+  if (group === 'image_folder' && step === 'filename') {
+    return 'Used for comic folder names. Author is taken from the parent folder separately, so this prompt does not extract authors. No runtime context appended.';
   }
   return 'Used to rank candidate cover filenames inside a comic archive. No runtime context appended.';
 }
@@ -228,8 +235,8 @@ function PromptsPage() {
           <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 mb-6">
             <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
             <p className="text-xs text-muted-foreground">
-              Prompts are grouped by mime type. Novels (.txt / .epub / .pdf) use a filename
-              and a content prompt; comics (.zip / .cbz) use a filename and a cover-detection
+              Prompts are grouped by mime type. Novels (.txt) use a filename and a content
+              prompt; comics (.zip / .cbz / .rar / .cbr) use a filename and a cover-detection
               prompt. The active prompt within each (group, step) bucket runs at import time.
             </p>
           </div>

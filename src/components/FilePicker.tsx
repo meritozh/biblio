@@ -11,7 +11,7 @@ import { Plus, Files, Folder, Loader2 } from 'lucide-react';
 import { listFilesInFolder } from '@/lib/tauri';
 
 interface FilePickerProps {
-  onFilesSelected: (paths: string[]) => void;
+  onFilesSelected: (paths: string[], folderRoot?: string) => void;
   multiple?: boolean;
   disabled?: boolean;
 }
@@ -75,7 +75,7 @@ export function FilePicker({ onFilesSelected, multiple = true, disabled = false 
           alert('The selected folder is empty.');
           return;
         }
-        onFilesSelected(files);
+        onFilesSelected(files, folderPath);
       } finally {
         setExpanding(false);
       }

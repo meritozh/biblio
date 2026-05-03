@@ -93,6 +93,69 @@ fn copy_file(source: &std::path::Path, dest: &std::path::Path) -> Result<PathBuf
     Ok(final_dest)
 }
 
+/// Write every image file under `source_dir` (recursively, sorted) into
+/// a `.zip` at `dest`. Stored (no compression) — comic images are already
+/// JPEG/PNG/WebP, so deflate burns CPU for ~0% gain. Returns the final
+/// destination path (after any unique-name disambiguation). Hidden files
+/// and non-image files are skipped, matching the importer's collapse
+/// rule.
+fn zip_image_dir(source_dir: &std::path::Path, dest: &std::path::Path) -> Result<PathBuf, String> {
+    use crate::pipeline::archive::is_image_filename;
+    use std::io::Write;
+
+    let final_dest = get_unique_destination(dest);
+    let f = std::fs::File::create(&final_dest)
+        .map_err(|e| format!("Failed to create zip: {e}"))?;
+    let mut zw = zip::ZipWriter::new(f);
+    let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+
+    fn walk(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        zw: &mut zip::ZipWriter<std::fs::File>,
+        opts: &zip::write::SimpleFileOptions,
+    ) -> Result<(), String> {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .map_err(|e| format!("Failed to read {}: {e}", dir.display()))?
+            .filter_map(|e| e.ok())
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') {
+                continue;
+            }
+            let p = entry.path();
+            if p.is_dir() {
+                walk(root, &p, zw, opts)?;
+            } else if p.is_file() && is_image_filename(&name_str) {
+                let rel = p
+                    .strip_prefix(root)
+                    .map_err(|e| format!("strip_prefix: {e}"))?;
+                // ZIP paths use forward slashes by spec.
+                let zip_name = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                zw.start_file(zip_name, *opts)
+                    .map_err(|e| format!("zip start_file: {e}"))?;
+                let bytes = std::fs::read(&p)
+                    .map_err(|e| format!("read {}: {e}", p.display()))?;
+                zw.write_all(&bytes)
+                    .map_err(|e| format!("zip write: {e}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    walk(source_dir, source_dir, &mut zw, &opts)?;
+    zw.finish().map_err(|e| format!("zip finish: {e}"))?;
+    Ok(final_dest)
+}
+
 /// Move a file, handling cross-drive moves
 /// Returns the final destination path
 fn move_file(source: &std::path::Path, dest: &std::path::Path) -> Result<PathBuf, String> {
@@ -492,6 +555,8 @@ pub async fn file_create(
     if !source_path.exists() {
         return Err("SOURCE_FILE_NOT_FOUND".to_string());
     }
+    // Source kind drives the move/copy vs zip-on-commit branch below.
+    let source_is_dir = source_path.is_dir();
 
     // Canonicalize paths for comparison
     let source_canonical = source_path.canonicalize()
@@ -556,7 +621,18 @@ pub async fn file_create(
     };
 
     // Compute destination filename
-    let dest_filename = if should_clean_name {
+    let dest_filename = if source_is_dir {
+        // Image-folder import: package the directory into a `.zip` named
+        // after the (sanitized) display_name. Source folder has no
+        // extension, so we append `.zip` unconditionally.
+        let stem = sanitize_filename(&validated_name);
+        let stem = if stem.trim().is_empty() {
+            sanitize_filename(source_filename)
+        } else {
+            stem
+        };
+        format!("{}.zip", stem)
+    } else if should_clean_name {
         let ext_with_dot = ext_lower
             .as_ref()
             .map(|e| format!(".{}", e))
@@ -586,8 +662,19 @@ pub async fn file_create(
         .map(|(v,)| v == "copy")
         .unwrap_or(false);
 
-    // Move or copy the file based on setting
-    let final_path = if use_copy {
+    // Move or copy the file based on setting. Directory sources are
+    // packaged as a `.zip` straight into the destination, then the source
+    // folder is recursively removed (move-mode only).
+    let final_path = if source_is_dir {
+        let zipped = zip_image_dir(&source_canonical, &dest_path)?;
+        if !use_copy {
+            // Best-effort: orphan-on-failure is acceptable here; the DB
+            // insert below is the source of truth, and the user can clean
+            // up the source folder manually.
+            let _ = fs::remove_dir_all(&source_canonical);
+        }
+        zipped
+    } else if use_copy {
         copy_file(&source_canonical, &dest_path)?
     } else {
         move_file(&source_canonical, &dest_path)?
@@ -822,7 +909,7 @@ async fn file_create_remote(
 }
 
 /// Rename a file on disk to match current metadata, updating DB atomically.
-/// Only renames .txt and .epub files. No-op for other extensions.
+/// Only renames .txt files. No-op for other extensions.
 /// Uses a transaction: DB update first, then fs rename; rollback on rename failure.
 pub async fn rename_file_to_match_metadata(
     pool: &sqlx::SqlitePool,
@@ -846,7 +933,7 @@ pub async fn rename_file_to_match_metadata(
         .map(|e| e.to_lowercase());
 
     // Only rename text files
-    if !matches!(ext_lower.as_deref(), Some("txt") | Some("epub")) {
+    if !matches!(ext_lower.as_deref(), Some("txt")) {
         return Ok(());
     }
     let ext_with_dot = ext_lower
@@ -1125,10 +1212,24 @@ pub struct FileUpdateResponse {
 ///
 /// Hidden files/dirs (dotfiles) are skipped. Symlinks are followed by the
 /// default `std::fs::read_dir` + `is_dir`/`is_file` calls — acceptable for
-/// the common case of a user picking a media folder. Result is sorted so
-/// repeated folder picks produce stable ordering.
+/// the common case of a user picking a media folder.
+///
+/// Image-folder leaf collapse: a directory whose non-hidden direct
+/// children are all image files (and which has no subdirectories) is
+/// emitted as a single path. `file_prepare_import` routes such dir
+/// paths through the comic pipeline; `file_create` zips them on commit.
+/// The walker descends through every other directory, so a
+/// `library/[author]/[work]/*.jpg` tree resolves to one comic per
+/// `[work]` folder. Multi-level structures like
+/// `vol/chapter-1/*.jpg, vol/chapter-2/*.jpg` are split into per-chapter
+/// comics — there is no filesystem-only signal that distinguishes
+/// sibling chapters of one comic from sibling comics of one author, so
+/// this leaf-only rule errs on the side of finer-grained imports.
+/// Result is sorted so repeated folder picks produce stable ordering.
 #[tauri::command]
 pub async fn list_files_in_folder(path: String) -> Result<Vec<String>, String> {
+    use crate::pipeline::archive::is_image_filename;
+
     let root = std::path::Path::new(&path);
     if !root.exists() {
         return Err("PATH_NOT_FOUND".to_string());
@@ -1137,18 +1238,49 @@ pub async fn list_files_in_folder(path: String) -> Result<Vec<String>, String> {
         return Err("NOT_A_DIRECTORY".to_string());
     }
 
+    /// True iff every non-hidden direct child of `dir` is an image file
+    /// AND `dir` contains no subdirectories. Hidden entries are ignored.
+    /// Empty directories return false (no content to import).
+    fn is_image_leaf(dir: &std::path::Path) -> std::io::Result<bool> {
+        let mut saw_image = false;
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') {
+                continue;
+            }
+            let p = entry.path();
+            if p.is_dir() {
+                return Ok(false);
+            }
+            if p.is_file() {
+                if !is_image_filename(&name_str) {
+                    return Ok(false);
+                }
+                saw_image = true;
+            }
+        }
+        Ok(saw_image)
+    }
+
     fn walk(dir: &std::path::Path, out: &mut Vec<String>) -> std::io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            // Skip dotfiles / dotdirs (.DS_Store, .git, etc.)
             if name_str.starts_with('.') {
                 continue;
             }
             let path = entry.path();
             if path.is_dir() {
-                walk(&path, out)?;
+                if is_image_leaf(&path)? {
+                    if let Some(s) = path.to_str() {
+                        out.push(s.to_string());
+                    }
+                } else {
+                    walk(&path, out)?;
+                }
             } else if path.is_file() {
                 if let Some(s) = path.to_str() {
                     out.push(s.to_string());
@@ -1159,9 +1291,136 @@ pub async fn list_files_in_folder(path: String) -> Result<Vec<String>, String> {
     }
 
     let mut files = Vec::new();
-    walk(root, &mut files).map_err(|e| format!("Failed to walk folder: {e}"))?;
+    // Top-level: if the picked folder ITSELF is an image leaf, emit it
+    // as a single comic instead of returning its images individually.
+    if is_image_leaf(root).map_err(|e| format!("Failed to scan folder: {e}"))? {
+        if let Some(s) = root.to_str() {
+            files.push(s.to_string());
+        }
+    } else {
+        walk(root, &mut files).map_err(|e| format!("Failed to walk folder: {e}"))?;
+    }
     files.sort();
     Ok(files)
+}
+
+/// Post-commit cleanup for folder imports. Called by the frontend after
+/// every per-file `file_create` in the batch succeeds.
+///
+/// Behavior:
+/// - No-op when `had_folder_imports` is false (pure-archive folder picks
+///   keep their picked root untouched, matching pre-feature behavior).
+/// - No-op when `import_mode` is `'copy'` (copy semantics keep originals).
+/// - Refuses to touch anything inside `storage_path` (defense in depth).
+/// - Walks `folder_root` bottom-up and removes empty subdirectories.
+///   If after the walk the root itself is empty, removes it. If
+///   non-empty (the user had stray non-image files), leaves it alone
+///   and logs to stderr — the import already succeeded; cleanup is
+///   best-effort and never fails the call.
+#[tauri::command]
+pub async fn import_finalize(
+    app: AppHandle,
+    folder_root: String,
+    had_folder_imports: bool,
+) -> Result<(), String> {
+    if !had_folder_imports {
+        return Ok(());
+    }
+
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    let import_mode: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM app_settings WHERE key = 'import_mode'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if import_mode.map(|(v,)| v == "copy").unwrap_or(false) {
+        return Ok(());
+    }
+
+    let root = PathBuf::from(&folder_root);
+    if !root.exists() {
+        // file_create already removed every leaf; nothing to do.
+        return Ok(());
+    }
+    if !root.is_dir() {
+        return Err("FOLDER_ROOT_NOT_A_DIRECTORY".to_string());
+    }
+
+    // Defense in depth: never recurse into anything under storage_path.
+    let storage_path: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM app_settings WHERE key = 'storage_path'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if let Some((sp,)) = storage_path {
+        if !sp.is_empty() {
+            let storage_canonical = std::path::Path::new(&sp)
+                .canonicalize()
+                .map_err(|e| format!("Failed to resolve storage path: {e}"))?;
+            let root_canonical = root
+                .canonicalize()
+                .map_err(|e| format!("Failed to resolve folder root: {e}"))?;
+            if root_canonical.starts_with(&storage_canonical) {
+                return Err("FOLDER_ROOT_INSIDE_STORAGE".to_string());
+            }
+        }
+    }
+
+    /// True iff `dir` recursively contains no non-hidden files. Hidden
+    /// entries (`.DS_Store`, `.localized`, etc.) are transparent —
+    /// macOS Finder seeds them everywhere it's been opened, and they
+    /// would otherwise block cleanup of folders that are otherwise empty
+    /// after `file_create` removed the leaf source dirs. Mirrors the
+    /// hidden-skip convention used by `list_files_in_folder` and
+    /// `zip_image_dir`.
+    fn has_only_hidden_content(dir: &std::path::Path) -> std::io::Result<bool> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') {
+                continue;
+            }
+            let p = entry.path();
+            if p.is_dir() {
+                if !has_only_hidden_content(&p)? {
+                    return Ok(false);
+                }
+            } else {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    match has_only_hidden_content(&root) {
+        Ok(true) => {
+            // `remove_dir_all` nukes the dir tree including the hidden
+            // metadata we treated as transparent above.
+            if let Err(e) = std::fs::remove_dir_all(&root) {
+                eprintln!(
+                    "import_finalize: remove_dir_all failed for {}: {e}",
+                    root.display()
+                );
+            }
+            Ok(())
+        }
+        Ok(false) => {
+            eprintln!(
+                "import_finalize: {} not removed (real files remain after leaf cleanup)",
+                root.display()
+            );
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("import_finalize: cleanup failed for {}: {e}", root.display());
+            Ok(())
+        }
+    }
 }
 
 /// Delete a file at an arbitrary path on disk — used for the "Delete" choice

@@ -177,6 +177,10 @@ export interface FilePreparedImport {
   suggested_tags: string[];
   duplicate_of: DuplicateInfo | null;
   batch_duplicate_group: string | null;
+  /** True when the picked source is a folder of images. The import flow
+   *  will package it into a `.zip` on commit; the review UI shows a
+   *  "Folder → .zip" hint so the user knows what's about to land. */
+  source_is_directory: boolean;
 }
 
 export interface ProcessingProgress {
@@ -216,10 +220,11 @@ export interface RemoteConfig {
 }
 
 /** Mime-type group a prompt applies to. */
-export type PromptMimeGroup = 'text' | 'archive';
+export type PromptMimeGroup = 'text' | 'archive' | 'image_folder';
 
 /** Step within a mime group. text supports filename + content; archive supports
- *  filename + cover_pick. The (group, step) pair is the unique discriminator. */
+ *  filename + cover_pick; image_folder supports filename only (cover detection
+ *  reuses the archive prompt). The (group, step) pair is the unique discriminator. */
 export type PromptStep = 'filename' | 'content' | 'cover_pick';
 
 /** Legacy free-text label kept on rows for back-compat readers. New code

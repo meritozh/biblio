@@ -3,7 +3,6 @@ import {
   Palette,
   FolderCog,
   Sparkles,
-  SlidersHorizontal,
   Bug,
   type LucideIcon,
 } from 'lucide-react';
@@ -13,7 +12,6 @@ import { cn } from '@/lib/utils';
 import { StoragePathSetting } from './StoragePathSetting';
 import { ThemeSetting } from './ThemeSetting';
 import { AiSetting } from './AiSetting';
-import { NovelProcessingSetting } from './NovelProcessingSetting';
 import { RemoteStorageSetting } from './RemoteStorageSetting';
 import { DebugSetting } from './DebugSetting';
 
@@ -22,13 +20,12 @@ interface SettingsDialogProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-type SectionId = 'general' | 'storage' | 'ai' | 'behavior' | 'debug';
+type SectionId = 'general' | 'storage' | 'ai' | 'debug';
 
 const SECTIONS: ReadonlyArray<{ id: SectionId; label: string; icon: LucideIcon }> = [
   { id: 'general', label: 'General', icon: Palette },
   { id: 'storage', label: 'Storage', icon: FolderCog },
   { id: 'ai', label: 'AI', icon: Sparkles },
-  { id: 'behavior', label: 'Behavior', icon: SlidersHorizontal },
   { id: 'debug', label: 'Debug', icon: Bug },
 ];
 
@@ -87,8 +84,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
               )}
 
               {section === 'ai' && <AiSetting />}
-
-              {section === 'behavior' && <NovelProcessingSetting />}
 
               {section === 'debug' && <DebugSetting />}
             </div>

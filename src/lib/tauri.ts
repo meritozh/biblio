@@ -122,6 +122,19 @@ export async function listFilesInFolder(path: string): Promise<string[]> {
   return invoke('list_files_in_folder', { path });
 }
 
+/** Post-import cleanup for folder picks. Removes empty subdirectories
+ *  under `folderRoot` and the root itself if empty. No-ops when
+ *  `hadFolderImports` is false or when the user is in copy-mode. */
+export async function importFinalize(
+  folderRoot: string,
+  hadFolderImports: boolean
+): Promise<void> {
+  return invoke('import_finalize', {
+    folderRoot,
+    hadFolderImports,
+  });
+}
+
 export async function fileSearch(
   params: FileSearchRequest
 ): Promise<{ files: FileEntry[]; total: number }> {
@@ -347,8 +360,11 @@ export function translateError(error: string): string {
   return error;
 }
 
-export async function filePrepareImport(paths: string[]): Promise<FilePreparedImport[]> {
-  return invoke('file_prepare_import', { paths });
+export async function filePrepareImport(
+  paths: string[],
+  folderRoot?: string
+): Promise<FilePreparedImport[]> {
+  return invoke('file_prepare_import', { paths, folderRoot: folderRoot ?? null });
 }
 
 export async function cancelProcessing(): Promise<void> {

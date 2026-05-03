@@ -9,8 +9,6 @@ use crate::commands::llm::LlmConfig;
 /// `run_batch` from `app_settings` so per-file nodes don't re-query the DB.
 #[derive(Debug, Clone)]
 pub struct PipelineSettings {
-    pub process_novel_epub: bool,
-    pub process_novel_pdf: bool,
     pub analyze_content: bool,
 }
 

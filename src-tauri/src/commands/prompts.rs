@@ -12,7 +12,7 @@ pub struct Prompt {
     /// rows. The active discriminator is `(mime_group, step)`.
     pub category: Option<String>,
     /// Mime-type group the prompt applies to. Currently `'text'` (novels:
-    /// .txt / .epub / .pdf) or `'archive'` (comics: .zip / .cbz).
+    /// .txt) or `'archive'` (comics: .zip / .cbz / .rar / .cbr).
     pub mime_group: String,
     /// Pipeline step the prompt feeds. `'filename'` and `'content'` for
     /// text; `'filename'` and `'cover_pick'` for archives.
@@ -40,13 +40,17 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
 
 /// Validate that a (mime_group, step) pair is one we know about.
 /// Pairs: `('text', 'filename')`, `('text', 'content')`,
-/// `('archive', 'filename')`, `('archive', 'cover_pick')`.
+/// `('archive', 'filename')`, `('archive', 'cover_pick')`,
+/// `('image_folder', 'filename')`. The image_folder group reuses
+/// `(archive, cover_pick)` for cover detection (filename-pattern
+/// reasoning is identical), so no `(image_folder, cover_pick)` pair.
 fn validate_group_step(mime_group: &str, step: &str) -> Result<(), String> {
     match (mime_group, step) {
         ("text", "filename")
         | ("text", "content")
         | ("archive", "filename")
-        | ("archive", "cover_pick") => Ok(()),
+        | ("archive", "cover_pick")
+        | ("image_folder", "filename") => Ok(()),
         _ => Err("INVALID_PROMPT_GROUP_STEP".to_string()),
     }
 }
@@ -278,6 +282,7 @@ mod tests {
         assert!(validate_group_step("text", "content").is_ok());
         assert!(validate_group_step("archive", "filename").is_ok());
         assert!(validate_group_step("archive", "cover_pick").is_ok());
+        assert!(validate_group_step("image_folder", "filename").is_ok());
     }
 
     #[test]

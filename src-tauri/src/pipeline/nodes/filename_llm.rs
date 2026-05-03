@@ -4,28 +4,54 @@ use super::content_sample::is_novel_file;
 use crate::pipeline::runner::emit_progress;
 use crate::pipeline::{FileContext, NodeError, Phase2Node, PipelineEnv};
 
+/// Which input shape this node is responsible for. Drives the
+/// `applies()` gate so a single comic pipeline can carry both an
+/// archive- and a folder-flavored filename node, with exactly one
+/// firing per file. The other is recorded as `Skipped` by the runner.
+#[derive(Debug, Clone, Copy)]
+enum FilenameSource {
+    /// Plain text files (.txt). `applies` falls back to `is_novel_file`
+    /// as a final sanity check on top of the dispatcher's extension filter.
+    Text,
+    /// Comic archives (.zip / .cbz / .rar / .cbr).
+    Archive,
+    /// Image-folder imports — directories of loose images that the
+    /// commit step zips into a `.zip`. Uses a dedicated prompt that
+    /// returns no `authors` (folder name is the work title; author
+    /// candidates come from the picked-root LLM cleanup).
+    Folder,
+}
+
 /// LLM Call 1: extract display_name / authors / progress from the filename.
 /// The prompt group is fixed at construction time — `"text"` for the novel
-/// pipeline, `"archive"` for the comic pipeline — so the dispatcher decides
-/// which prompt to use, not the runtime MIME check.
-///
-/// For the `"text"` variant we still gate on `is_novel_file` so the per-
-/// format toggles (`process_novel_epub` / `process_novel_pdf`) take effect
-/// even when the file made it past the frontend filter.
+/// pipeline, `"archive"` for archive comics, `"image_folder"` for
+/// directory comics — so the dispatcher decides which prompt to use, not
+/// the runtime MIME check.
 ///
 /// The actual network call is gated by a 60 s timeout inside
 /// `extract_filename_metadata`.
 pub struct FilenameLlmNode {
     mime_group: &'static str,
+    source: FilenameSource,
 }
 
 impl FilenameLlmNode {
     pub fn text() -> Self {
-        Self { mime_group: "text" }
+        Self {
+            mime_group: "text",
+            source: FilenameSource::Text,
+        }
     }
     pub fn archive() -> Self {
         Self {
             mime_group: "archive",
+            source: FilenameSource::Archive,
+        }
+    }
+    pub fn folder() -> Self {
+        Self {
+            mime_group: "image_folder",
+            source: FilenameSource::Folder,
         }
     }
 }
@@ -40,15 +66,21 @@ impl Phase2Node for FilenameLlmNode {
         if !env.llm_config.enabled {
             return false;
         }
-        if self.mime_group == "text" {
-            return is_novel_file(
-                &ctx.file_path.to_string_lossy(),
-                env.settings.process_novel_epub,
-                env.settings.process_novel_pdf,
-            );
+        let is_dir = ctx.file_path.is_dir();
+        match self.source {
+            FilenameSource::Text => {
+                if is_dir {
+                    return false;
+                }
+                is_novel_file(&ctx.file_path.to_string_lossy())
+            }
+            // Archive variant only fires for real archive files; the
+            // comic pipeline also carries the Folder variant, which
+            // catches directory inputs.
+            FilenameSource::Archive => !is_dir,
+            // Folder variant only fires for directory inputs.
+            FilenameSource::Folder => is_dir,
         }
-        // archive: dispatcher already routed only zip/cbz/rar/cbr here.
-        true
     }
 
     async fn run(&self, ctx: &mut FileContext, env: &PipelineEnv) -> Result<(), NodeError> {

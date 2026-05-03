@@ -41,6 +41,8 @@ impl Pipeline {
         &self,
         paths: Vec<PathBuf>,
         env: Arc<PipelineEnv>,
+        folder_root_name: Option<String>,
+        parent_author_candidates: Vec<String>,
     ) -> Vec<FileContext> {
         let total = paths.len();
         if total == 0 {
@@ -62,9 +64,17 @@ impl Pipeline {
                 let phase1 = Arc::clone(&phase1);
                 let env = Arc::clone(&dispatch_env);
 
+                let folder_root_for_task = folder_root_name.clone();
+                let candidates_for_task = parent_author_candidates.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let _permit = permit;
-                    let mut ctx = FileContext::new(path, idx, total);
+                    let mut ctx = FileContext::new(
+                        path,
+                        idx,
+                        total,
+                        folder_root_for_task,
+                        candidates_for_task,
+                    );
 
                     emit_progress(&env.app, idx + 1, total, &ctx.file_name, "gathering_signals");
 

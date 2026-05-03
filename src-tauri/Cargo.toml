@@ -17,6 +17,7 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-window-state = "2"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -25,8 +26,6 @@ regex = "1"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 infer = "0.19"
-lopdf = "0.40"
-kamadak-exif = "0.6"
 rig-core = "0.35"
 schemars = "1"
 chardet = { package = "chardet-rs", git = "https://github.com/meritozh/chardet-rust" }

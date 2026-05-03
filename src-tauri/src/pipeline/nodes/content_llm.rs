@@ -27,11 +27,7 @@ impl Phase2Node for ContentLlmNode {
         if ctx.content_sample.is_none() {
             return false;
         }
-        is_novel_file(
-            &ctx.file_path.to_string_lossy(),
-            env.settings.process_novel_epub,
-            env.settings.process_novel_pdf,
-        )
+        is_novel_file(&ctx.file_path.to_string_lossy())
     }
 
     async fn run(&self, ctx: &mut FileContext, env: &PipelineEnv) -> Result<(), NodeError> {

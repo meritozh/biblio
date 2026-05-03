@@ -12,7 +12,6 @@ import {
   coverSet,
   storageGetPath,
   storageCheckAccess,
-  settingsGet,
 } from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
@@ -30,7 +29,7 @@ import {
   DynamicMetadataForm,
   type DynamicMetadataFormValues,
 } from '@/components/DynamicMetadataForm';
-import { schemaForPath } from '@/lib/fileKind';
+import { schemaForPath, isImportable } from '@/lib/fileKind';
 import { useFileActions } from '@/hooks/useFileActions';
 import type { FileEntry } from '@/types';
 
@@ -63,6 +62,7 @@ function HomePage() {
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
+  const [selectedFolderRoot, setSelectedFolderRoot] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [formValues, setFormValues] = useState<DynamicMetadataFormValues>(EMPTY_FORM_VALUES);
   const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
@@ -180,40 +180,34 @@ function HomePage() {
     [checkStoragePath]
   );
 
-  const handleFilesSelected = async (paths: string[]) => {
-    const [epubRaw, pdfRaw] = await Promise.all([
-      settingsGet('process_novel_epub'),
-      settingsGet('process_novel_pdf'),
-    ]);
-    const parse = (v: string | null, fallback: boolean) =>
-      v === null ? fallback : v === '1' || v.toLowerCase() === 'true';
-    const allowEpub = parse(epubRaw, true);
-    const allowPdf = parse(pdfRaw, false);
-
+  const handleFilesSelected = (paths: string[], folderRoot?: string) => {
+    // Folder picks trust the backend's own filtering: `list_files_in_folder`
+    // already drops dotfiles and collapses image-only sub-trees into
+    // directory paths (which `isImportable` would otherwise reject for
+    // having no extension). For file picks and drag-drop, run the
+    // extension filter so we can surface unsupported types up-front.
+    const kept: string[] = [];
     const skipped: string[] = [];
-    const kept = paths.filter((p) => {
-      const lower = p.toLowerCase();
-      if (!allowEpub && lower.endsWith('.epub')) {
-        skipped.push(p);
-        return false;
+    if (folderRoot) {
+      kept.push(...paths);
+    } else {
+      for (const p of paths) {
+        if (isImportable(p)) kept.push(p);
+        else skipped.push(p);
       }
-      if (!allowPdf && lower.endsWith('.pdf')) {
-        skipped.push(p);
-        return false;
-      }
-      return true;
-    });
+    }
 
     if (skipped.length > 0) {
       alert(
-        `Skipped ${skipped.length} file${skipped.length === 1 ? '' : 's'} ` +
-          `because their format is disabled in Settings → Behavior.`
+        `Skipped ${skipped.length} unsupported file${skipped.length === 1 ? '' : 's'}. ` +
+          `Only .txt and comic archives (.cbz / .zip / .cbr / .rar) are supported.`
       );
     }
 
     if (kept.length === 0) return;
 
     setSelectedFiles(kept);
+    setSelectedFolderRoot(folderRoot);
     setFormValues(EMPTY_FORM_VALUES);
     setAddDialogOpen(false);
     setPipelineOpen(true);
@@ -436,6 +430,7 @@ function HomePage() {
         open={pipelineOpen}
         onOpenChange={setPipelineOpen}
         paths={selectedFiles}
+        folderRoot={selectedFolderRoot}
         categories={categories}
         tags={tags}
         authors={authors}
@@ -445,6 +440,7 @@ function HomePage() {
         onImportComplete={() => {
           setPipelineOpen(false);
           setSelectedFiles([]);
+          setSelectedFolderRoot(undefined);
           void loadFiles();
         }}
       />
@@ -458,7 +454,7 @@ function HomePage() {
             <DynamicMetadataForm
               values={formValues}
               onChange={setFormValues}
-              fields={schemaForPath(selectedFiles[0]).formFields}
+              fields={schemaForPath(selectedFiles[0])?.formFields ?? []}
               categories={categories}
               tags={tags}
               authors={authors}
@@ -473,7 +469,7 @@ function HomePage() {
                 <DynamicMetadataForm
                   values={formValues}
                   onChange={setFormValues}
-                  fields={schemaForPath(selectedFiles[0]).formFields}
+                  fields={schemaForPath(selectedFiles[0])?.formFields ?? []}
                   categories={categories}
                   tags={tags}
                   authors={authors}

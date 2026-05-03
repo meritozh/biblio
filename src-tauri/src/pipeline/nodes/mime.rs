@@ -10,6 +10,13 @@ impl Phase1Node for MimeDetectNode {
         "MimeDetect"
     }
 
+    /// Skip when the source is a directory — the auto-zipped image-folder
+    /// import has no single file to sniff, and the comic pipeline downstream
+    /// doesn't need the mime to make decisions.
+    fn applies(&self, ctx: &FileContext, _env: &PipelineEnv) -> bool {
+        !ctx.file_path.is_dir()
+    }
+
     fn run(&self, ctx: &mut FileContext, _env: &PipelineEnv) -> Result<(), NodeError> {
         let bytes = std::fs::read(&ctx.file_path)
             .map_err(|e| NodeError(format!("Failed to read file: {e}")))?;

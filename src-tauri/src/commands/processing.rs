@@ -38,6 +38,10 @@ pub struct FilePreparedImport {
     pub suggested_tags: Vec<String>,
     pub duplicate_of: Option<DuplicateInfo>,
     pub batch_duplicate_group: Option<String>,
+    /// True when the source path is a directory of images. Tells the
+    /// review UI to surface a "Folder → .zip" hint, since the import
+    /// flow will package the folder on commit.
+    pub source_is_directory: bool,
 }
 
 fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
@@ -45,19 +49,6 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
     let db_pool = instances_lock.get(db_url).ok_or("Database not found")?;
     match db_pool {
         DbPool::Sqlite(pool) => Ok(pool.clone()),
-    }
-}
-
-async fn load_bool_setting(pool: &sqlx::SqlitePool, key: &str, default: bool) -> bool {
-    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM app_settings WHERE key = ?")
-        .bind(key)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten();
-    match row {
-        Some((v,)) => matches!(v.as_str(), "1" | "true" | "True" | "TRUE"),
-        None => default,
     }
 }
 
@@ -71,6 +62,7 @@ pub async fn cancel_processing(app: tauri::AppHandle) {
 pub async fn file_prepare_import(
     app: tauri::AppHandle,
     paths: Vec<String>,
+    folder_root: Option<String>,
 ) -> Result<Vec<FilePreparedImport>, String> {
     use super::{Author, Category, FileEntry, Tag};
 
@@ -129,8 +121,6 @@ pub async fn file_prepare_import(
 
     let llm_config = super::llm::load_config(&pool).await?;
     let analyze_content = llm_config.analyze_content;
-    let process_novel_epub = load_bool_setting(&pool, "process_novel_epub", true).await;
-    let process_novel_pdf = load_bool_setting(&pool, "process_novel_pdf", false).await;
 
     let env = Arc::new(PipelineEnv {
         pool,
@@ -143,11 +133,7 @@ pub async fn file_prepare_import(
         category_names,
         tag_names,
         existing_files,
-        settings: PipelineSettings {
-            process_novel_epub,
-            process_novel_pdf,
-            analyze_content,
-        },
+        settings: PipelineSettings { analyze_content },
     });
 
     // EmitPreparedNode is command-layer: it knows how to convert a
@@ -164,13 +150,18 @@ pub async fn file_prepare_import(
         .add_phase2(EmitPreparedNode)
         .build();
 
+    // Frontend filters by extension before invoking, but skip anything
+    // that slipped past (drag-drop, IPC abuse, future code paths). The
+    // missing entries surface in the result map's final-sync as errored
+    // items, matching the existing "Analysis failed" UX.
     let mut novel_paths: Vec<PathBuf> = Vec::new();
     let mut comic_paths: Vec<PathBuf> = Vec::new();
     for raw in paths {
         let pb = PathBuf::from(raw);
         match pipeline::nodes::kind_for_path(&pb) {
-            pipeline::nodes::FileKind::Comic => comic_paths.push(pb),
-            pipeline::nodes::FileKind::Novel => novel_paths.push(pb),
+            Some(pipeline::nodes::FileKind::Comic) => comic_paths.push(pb),
+            Some(pipeline::nodes::FileKind::Novel) => novel_paths.push(pb),
+            None => {} // dropped; frontend final-sync flags it as failed
         }
     }
 
@@ -178,11 +169,80 @@ pub async fn file_prepare_import(
     // from 1, so concurrent execution would surface two interleaved
     // counters in the UI. Empty path lists short-circuit `run_batch`, so
     // the common single-type import pays nothing for the unused branch.
+    //
+    // The folder-root basename (when the batch came from a folder pick) is
+    // forwarded to both pipelines; only `ParentDirAuthorHintNode` in the
+    // comic pipeline reads it today.
+    let folder_root_path = folder_root.as_ref().map(std::path::PathBuf::from);
+    let folder_root_name = folder_root_path.as_ref().and_then(|p| {
+        p.file_name().map(|n| n.to_string_lossy().to_string())
+    });
+
+    // Trivial-pick suppression: when the user picked a single image folder
+    // and that folder IS the only comic in the batch, the picked-folder
+    // basename equals the comic's filename — pushing it as an author
+    // candidate would seed the comic's own name as its author. Drop the
+    // folder context so `ParentDirAuthorHintNode` no-ops for this batch.
+    let suppress_folder_root = match (&folder_root_path, comic_paths.as_slice()) {
+        (Some(root), [single]) if single.is_dir() => {
+            // Canonicalize both sides so trailing slashes / symlinks don't
+            // produce false negatives.
+            let r = root.canonicalize().ok();
+            let s = single.canonicalize().ok();
+            matches!((r, s), (Some(a), Some(b)) if a == b)
+        }
+        _ => false,
+    };
+    let folder_root_name_comic = if suppress_folder_root {
+        None
+    } else {
+        folder_root_name.clone()
+    };
+
+    // LLM-clean the folder-root basename into author candidates. The
+    // archive filename prompt already understands `[author] title volN`
+    // conventions, so feeding folder names through it strips brackets /
+    // braces consistently with file-level extraction. One call per batch
+    // (cached via the shared candidate string), with a fallback to the
+    // raw name on disable / error / empty result so we never regress
+    // below today's behavior.
+    let parent_author_candidates: Vec<String> = match folder_root_name_comic.as_ref() {
+        Some(name) if env.llm_config.enabled => {
+            match super::llm::extract_filename_metadata(
+                &env.llm_config,
+                &env.pool,
+                name,
+                "archive",
+            )
+            .await
+            {
+                Ok(meta) if !meta.authors.is_empty() => meta.authors,
+                Ok(_) => vec![name.clone()],
+                Err(e) => {
+                    eprintln!("Folder-name LLM cleanup failed for {name:?}: {e}");
+                    vec![name.clone()]
+                }
+            }
+        }
+        Some(name) => vec![name.clone()],
+        None => Vec::new(),
+    };
+
     let novel_ctxs = novel_pipeline
-        .run_batch(novel_paths, Arc::clone(&env))
+        .run_batch(
+            novel_paths,
+            Arc::clone(&env),
+            folder_root_name.clone(),
+            Vec::new(),
+        )
         .await;
     let comic_ctxs = comic_pipeline
-        .run_batch(comic_paths, Arc::clone(&env))
+        .run_batch(
+            comic_paths,
+            Arc::clone(&env),
+            folder_root_name_comic,
+            parent_author_candidates,
+        )
         .await;
 
     let mut results: Vec<FilePreparedImport> = novel_ctxs
@@ -212,6 +272,7 @@ fn prepared_from_ctx(ctx: FileContext) -> FilePreparedImport {
         None => (None, None),
     };
     let display_name = ctx.display_name.unwrap_or_else(|| ctx.file_name.clone());
+    let source_is_directory = ctx.file_path.is_dir();
     FilePreparedImport {
         path: ctx.file_path.to_string_lossy().to_string(),
         file_name: ctx.file_name,
@@ -227,6 +288,7 @@ fn prepared_from_ctx(ctx: FileContext) -> FilePreparedImport {
         suggested_tags: ctx.suggested_tags,
         duplicate_of: ctx.duplicate_of,
         batch_duplicate_group: None,
+        source_is_directory,
     }
 }
 
@@ -245,6 +307,7 @@ fn prepared_from_ctx_ref(ctx: &FileContext) -> FilePreparedImport {
         .display_name
         .clone()
         .unwrap_or_else(|| ctx.file_name.clone());
+    let source_is_directory = ctx.file_path.is_dir();
     FilePreparedImport {
         path: ctx.file_path.to_string_lossy().to_string(),
         file_name: ctx.file_name.clone(),
@@ -260,6 +323,7 @@ fn prepared_from_ctx_ref(ctx: &FileContext) -> FilePreparedImport {
         suggested_tags: ctx.suggested_tags.clone(),
         duplicate_of: ctx.duplicate_of.clone(),
         batch_duplicate_group: None,
+        source_is_directory,
     }
 }
 
