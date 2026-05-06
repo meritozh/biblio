@@ -2,35 +2,25 @@
 //!
 //! Config is persisted in `app_settings` as individual rows rather than a
 //! dedicated table — keeps the settings surface uniform with the rest of
-//! the app (LLM config, storage path, etc). Refresh tokens rotate on
-//! every refresh so every success path writes the new token back before
-//! returning.
+//! the app (LLM config, storage path, etc). Uses implicit grant OAuth:
+//! the frontend obtains the access_token directly via the authorize URL
+//! redirect and passes it here for storage.
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_sql::{DbInstances, DbPool};
 
 use crate::providers::baidu_netdisk::{
-    AuthMode, BaiduCredentials, BaiduError, UploadResult, delete_file, refresh_access_token,
-    upload_file,
+    BaiduError, UploadResult, build_authorize_url, delete_file, upload_file,
 };
 
-/// User-facing config returned to the frontend. Tokens are included so
-/// the settings UI can show "logged in as ..." / "expires in N minutes";
-/// the frontend redacts them before display.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteConfig {
     pub enabled: bool,
-    pub auth_mode: String, // "openlist_proxy" | "self_app"
-    pub refresh_token: String,
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
+    pub app_key: String,
     pub access_token: String,
-    /// Unix seconds. Values ≤ now indicate we need a refresh before the
-    /// next upload/delete.
     pub access_token_expires_at: i64,
-    /// Absolute directory in the user's Baidu Pan where uploads land.
-    /// Default `/apps/biblio`; created implicitly on first upload.
     pub app_root: String,
 }
 
@@ -38,10 +28,7 @@ impl Default for RemoteConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            auth_mode: "openlist_proxy".to_string(),
-            refresh_token: String::new(),
-            client_id: None,
-            client_secret: None,
+            app_key: String::new(),
             access_token: String::new(),
             access_token_expires_at: 0,
             app_root: "/apps/biblio".to_string(),
@@ -86,14 +73,9 @@ pub async fn load_config(pool: &sqlx::SqlitePool) -> RemoteConfig {
         .await
         .and_then(|v| v.parse::<bool>().ok())
         .unwrap_or(false);
-    let auth_mode = read_setting(pool, "remote_auth_mode")
-        .await
-        .unwrap_or_else(|| "openlist_proxy".to_string());
-    let refresh_token = read_setting(pool, "remote_refresh_token")
+    let app_key = read_setting(pool, "remote_app_key")
         .await
         .unwrap_or_default();
-    let client_id = read_setting(pool, "remote_client_id").await;
-    let client_secret = read_setting(pool, "remote_client_secret").await;
     let access_token = read_setting(pool, "remote_access_token")
         .await
         .unwrap_or_default();
@@ -107,10 +89,7 @@ pub async fn load_config(pool: &sqlx::SqlitePool) -> RemoteConfig {
 
     RemoteConfig {
         enabled,
-        auth_mode,
-        refresh_token,
-        client_id,
-        client_secret,
+        app_key,
         access_token,
         access_token_expires_at,
         app_root,
@@ -119,20 +98,7 @@ pub async fn load_config(pool: &sqlx::SqlitePool) -> RemoteConfig {
 
 async fn save_config(pool: &sqlx::SqlitePool, cfg: &RemoteConfig) -> Result<(), String> {
     write_setting(pool, "remote_enabled", &cfg.enabled.to_string()).await?;
-    write_setting(pool, "remote_auth_mode", &cfg.auth_mode).await?;
-    write_setting(pool, "remote_refresh_token", &cfg.refresh_token).await?;
-    write_setting(
-        pool,
-        "remote_client_id",
-        cfg.client_id.as_deref().unwrap_or(""),
-    )
-    .await?;
-    write_setting(
-        pool,
-        "remote_client_secret",
-        cfg.client_secret.as_deref().unwrap_or(""),
-    )
-    .await?;
+    write_setting(pool, "remote_app_key", &cfg.app_key).await?;
     write_setting(pool, "remote_access_token", &cfg.access_token).await?;
     write_setting(
         pool,
@@ -144,44 +110,18 @@ async fn save_config(pool: &sqlx::SqlitePool, cfg: &RemoteConfig) -> Result<(), 
     Ok(())
 }
 
-fn creds_from_config(cfg: &RemoteConfig) -> Result<BaiduCredentials, String> {
-    let mode = match cfg.auth_mode.as_str() {
-        "openlist_proxy" => AuthMode::OpenListProxy,
-        "self_app" => AuthMode::SelfApp,
-        other => return Err(format!("unknown auth_mode: {other}")),
-    };
-    Ok(BaiduCredentials {
-        auth_mode: mode,
-        refresh_token: cfg.refresh_token.clone(),
-        client_id: cfg.client_id.clone(),
-        client_secret: cfg.client_secret.clone(),
-    })
-}
-
-/// Renew `access_token` if it's missing or within 60s of expiry. Persists
-/// the rotated refresh_token back to settings on success.
 pub async fn ensure_access_token(pool: &sqlx::SqlitePool) -> Result<String, String> {
-    let mut cfg = load_config(pool).await;
-    if !cfg.enabled || cfg.refresh_token.is_empty() {
-        return Err("Remote storage not configured".into());
+    let cfg = load_config(pool).await;
+    if !cfg.enabled || cfg.access_token.is_empty() {
+        return Err("REMOTE_NOT_AUTHENTICATED".into());
     }
 
     let now = chrono::Utc::now().timestamp();
-    if !cfg.access_token.is_empty() && cfg.access_token_expires_at > now + 60 {
+    if cfg.access_token_expires_at > now + 60 {
         return Ok(cfg.access_token);
     }
 
-    let creds = creds_from_config(&cfg)?;
-    let refreshed = refresh_access_token(&creds)
-        .await
-        .map_err(|e: BaiduError| e.0)?;
-
-    cfg.access_token = refreshed.access_token.clone();
-    cfg.refresh_token = refreshed.refresh_token;
-    cfg.access_token_expires_at = now + refreshed.expires_in_secs;
-    save_config(pool, &cfg).await?;
-
-    Ok(refreshed.access_token)
+    Err("ACCESS_TOKEN_EXPIRED".into())
 }
 
 #[tauri::command]
@@ -191,42 +131,37 @@ pub async fn remote_config_get(app: tauri::AppHandle) -> Result<RemoteConfig, St
     Ok(load_config(&pool).await)
 }
 
-/// Accept a user-supplied refresh_token (and optionally client_id/secret
-/// for SelfApp mode) and validate it by doing one refresh. On success,
-/// persist the config + fresh access_token and flip `enabled=true`.
+#[tauri::command]
+pub async fn remote_get_authorize_url(app_key: String) -> Result<String, String> {
+    build_authorize_url(&app_key).map_err(|e: BaiduError| e.0)
+}
+
 #[tauri::command]
 pub async fn remote_login(
     app: tauri::AppHandle,
-    auth_mode: String,
-    refresh_token: String,
-    client_id: Option<String>,
-    client_secret: Option<String>,
+    app_key: String,
+    access_token: String,
+    expires_in_secs: i64,
     app_root: Option<String>,
 ) -> Result<RemoteConfig, String> {
-    if refresh_token.trim().is_empty() {
-        return Err("refresh_token is required".into());
+    if app_key.trim().is_empty() {
+        return Err("AppKey is required".into());
     }
+    if access_token.trim().is_empty() {
+        return Err("Access token is required".into());
+    }
+
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
     let mut cfg = load_config(&pool).await;
-    cfg.auth_mode = auth_mode;
-    cfg.refresh_token = refresh_token;
-    cfg.client_id = client_id.filter(|s| !s.is_empty());
-    cfg.client_secret = client_secret.filter(|s| !s.is_empty());
+    cfg.app_key = app_key;
+    cfg.access_token = access_token;
+    cfg.access_token_expires_at = chrono::Utc::now().timestamp() + expires_in_secs;
+    cfg.enabled = true;
     if let Some(root) = app_root.filter(|s| !s.is_empty()) {
         cfg.app_root = root;
     }
-
-    let creds = creds_from_config(&cfg)?;
-    let refreshed = refresh_access_token(&creds)
-        .await
-        .map_err(|e: BaiduError| e.0)?;
-
-    cfg.enabled = true;
-    cfg.access_token = refreshed.access_token;
-    cfg.refresh_token = refreshed.refresh_token;
-    cfg.access_token_expires_at = chrono::Utc::now().timestamp() + refreshed.expires_in_secs;
     save_config(&pool, &cfg).await?;
 
     Ok(cfg)
@@ -237,11 +172,8 @@ pub async fn remote_logout(app: tauri::AppHandle) -> Result<(), String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    // Wipe tokens but keep app_root / auth_mode so re-login later doesn't
-    // force the user to re-enter everything.
     let mut cfg = load_config(&pool).await;
     cfg.enabled = false;
-    cfg.refresh_token = String::new();
     cfg.access_token = String::new();
     cfg.access_token_expires_at = 0;
     save_config(&pool, &cfg).await
@@ -265,4 +197,193 @@ pub async fn delete_on_remote(pool: &sqlx::SqlitePool, remote_path: &str) -> Res
     delete_file(&access_token, remote_path)
         .await
         .map_err(|e: BaiduError| e.0)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FileUploadResult {
+    pub file_id: i64,
+    pub success: bool,
+    pub error: Option<String>,
+    pub remote_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteUploadProgressEvent {
+    pub file_id: i64,
+    pub file_name: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub current: usize,
+    pub total: usize,
+}
+
+#[tauri::command]
+pub async fn file_upload_to_remote(
+    app: tauri::AppHandle,
+    file_ids: Vec<i64>,
+) -> Result<Vec<FileUploadResult>, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    let remote_cfg = load_config(&pool).await;
+    if !remote_cfg.enabled {
+        return Err("REMOTE_STORAGE_NOT_CONFIGURED".to_string());
+    }
+
+    let mut results = Vec::new();
+
+    for (idx, &file_id) in file_ids.iter().enumerate() {
+        let row: Option<(String, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT path, display_name, progress, COALESCE(storage_kind, 'local') FROM files WHERE id = ?"
+        )
+        .bind(file_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let Some((local_path, display_name, _progress, storage_kind)) = row else {
+            results.push(FileUploadResult {
+                file_id,
+                success: false,
+                error: Some("File not found".to_string()),
+                remote_path: None,
+            });
+            continue;
+        };
+
+        if storage_kind != "local" {
+            results.push(FileUploadResult {
+                file_id,
+                success: false,
+                error: Some("File is not local storage".to_string()),
+                remote_path: None,
+            });
+            continue;
+        }
+
+        let source_path = std::path::PathBuf::from(&local_path);
+        if !source_path.exists() {
+            results.push(FileUploadResult {
+                file_id,
+                success: false,
+                error: Some("Local file not found".to_string()),
+                remote_path: None,
+            });
+            continue;
+        }
+
+        let stem = source_path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+        let ext = source_path.extension().and_then(|e| e.to_str());
+        let encoded_stem = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(stem.as_bytes());
+        let encoded_filename = match ext {
+            Some(e) if !e.is_empty() => format!("{encoded_stem}.{e}"),
+            _ => encoded_stem.clone(),
+        };
+
+        let app_root = remote_cfg.app_root.trim_end_matches('/');
+        let mut remote_path = format!("{app_root}/{encoded_filename}");
+
+        let mut counter = 1u32;
+        loop {
+            let existing: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM files WHERE path = ? AND id != ?"
+            )
+            .bind(&remote_path)
+            .bind(file_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+            if existing.is_none() {
+                break;
+            }
+
+            remote_path = match ext {
+                Some(e) if !e.is_empty() => format!("{app_root}/{encoded_stem}_{counter}.{e}"),
+                _ => format!("{app_root}/{encoded_stem}_{counter}"),
+            };
+            counter += 1;
+        }
+
+        let _ = app.emit(
+            "remote-upload-progress",
+            &RemoteUploadProgressEvent {
+                file_id,
+                file_name: display_name.clone(),
+                status: "uploading".to_string(),
+                error: None,
+                current: idx + 1,
+                total: file_ids.len(),
+            },
+        );
+
+        match upload_to_remote(&pool, &source_path, &remote_path).await {
+            Ok(upload) => {
+                sqlx::query(
+                    "UPDATE files SET \
+                     path = ?, storage_kind = 'remote', remote_provider = 'baidu_netdisk', \
+                     remote_fs_id = ?, remote_md5 = ?, remote_size = ?, \
+                     in_storage = 0, original_path = ?, file_status = 'available' \
+                     WHERE id = ?"
+                )
+                .bind(&remote_path)
+                .bind(&upload.fs_id)
+                .bind(&upload.md5)
+                .bind(upload.size)
+                .bind(&local_path)
+                .bind(file_id)
+                .execute(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
+
+                if let Err(e) = std::fs::remove_file(&source_path) {
+                    eprintln!(
+                        "Remote upload succeeded but local delete failed ({}): {e}",
+                        source_path.display()
+                    );
+                }
+
+                let _ = app.emit(
+                    "remote-upload-progress",
+                    &RemoteUploadProgressEvent {
+                        file_id,
+                        file_name: display_name.clone(),
+                        status: "success".to_string(),
+                        error: None,
+                        current: idx + 1,
+                        total: file_ids.len(),
+                    },
+                );
+
+                results.push(FileUploadResult {
+                    file_id,
+                    success: true,
+                    error: None,
+                    remote_path: Some(remote_path),
+                });
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "remote-upload-progress",
+                    &RemoteUploadProgressEvent {
+                        file_id,
+                        file_name: display_name.clone(),
+                        status: "error".to_string(),
+                        error: Some(e.clone()),
+                        current: idx + 1,
+                        total: file_ids.len(),
+                    },
+                );
+
+                results.push(FileUploadResult {
+                    file_id,
+                    success: false,
+                    error: Some(e),
+                    remote_path: None,
+                });
+            }
+        }
+    }
+
+    Ok(results)
 }

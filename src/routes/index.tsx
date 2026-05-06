@@ -6,12 +6,16 @@ import { SearchBar } from '@/components/SearchBar';
 import { FileList } from '@/components/FileList';
 import { CategorySidebar } from '@/components/CategorySidebar';
 import { ProcessingPipeline } from '@/components/ProcessingPipeline';
+import { RemoteUploadProgressPanel } from '@/components/RemoteUploadProgress';
 import { fetchFiles } from '@/stores';
+import { useRemoteUploadStore, startUpload, dismissPanel } from '@/stores/remoteUploadStore';
 import {
   fileCreate,
   coverSet,
   storageGetPath,
   storageCheckAccess,
+  settingsGet,
+  remoteConfigGet,
 } from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
@@ -73,6 +77,9 @@ function HomePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pipelineOpen, setPipelineOpen] = useState(false);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+
+  const [remoteEnabled, setRemoteEnabled] = useState(false);
+  const uploadState = useRemoteUploadStore();
 
   // Debounce the search input. `searchQuery` reflects every keystroke;
   // `debouncedQuery` is what actually drives fetches, so typing quickly
@@ -171,6 +178,7 @@ function HomePage() {
   useEffect(() => {
     void loadFiles();
     void checkStoragePath();
+    remoteConfigGet().then(cfg => setRemoteEnabled(cfg.enabled)).catch(() => {});
   }, [loadFiles, checkStoragePath]);
 
   const handleSettingsOpenChange = useCallback(
@@ -268,9 +276,12 @@ function HomePage() {
   // paths inside a Tauri webview, so we listen at the window level and route
   // dropped paths through the same import flow as FilePicker.
   const handleFilesSelectedRef = useRef(handleFilesSelected);
-  handleFilesSelectedRef.current = handleFilesSelected;
   const storageReadyRef = useRef(storagePathConfigured !== false);
-  storageReadyRef.current = storagePathConfigured !== false;
+
+  useEffect(() => {
+    handleFilesSelectedRef.current = handleFilesSelected;
+    storageReadyRef.current = storagePathConfigured !== false;
+  });
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -298,6 +309,24 @@ function HomePage() {
       unlisten?.();
     };
   }, []);
+
+  const handleBulkUpload = useCallback((fileIds: number[]) => {
+    const fileNames = new Map<number, string>();
+    for (const f of files) {
+      if (fileIds.includes(f.id)) {
+        fileNames.set(f.id, f.display_name);
+      }
+    }
+    startUpload(fileIds, fileNames);
+  }, [files]);
+
+  const prevUploadingRef = useRef(false);
+  useEffect(() => {
+    if (prevUploadingRef.current && !uploadState.isUploading) {
+      void loadFiles();
+    }
+    prevUploadingRef.current = uploadState.isUploading;
+  }, [uploadState.isUploading, loadFiles]);
 
   return (
     <div className="flex h-screen bg-background">
@@ -409,9 +438,18 @@ function HomePage() {
               onFileClick={handleFileClick}
               onFileEdit={handleFileEdit}
               onFileDelete={handleFileDeleteClick}
+              onBulkUpload={handleBulkUpload}
+              remoteEnabled={remoteEnabled}
             />
           )}
         </div>
+
+        {uploadState.showPanel && (
+          <RemoteUploadProgressPanel
+            uploads={uploadState.uploads}
+            onClose={dismissPanel}
+          />
+        )}
       </main>
 
       <SettingsDialog open={settingsOpen} onOpenChange={handleSettingsOpenChange} />

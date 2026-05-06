@@ -9,11 +9,12 @@ import {
 } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Button } from '@/components/ui/button';
-import { ArrowUpDown, Loader2, BookOpen } from 'lucide-react';
+import { ArrowUpDown, Loader2, BookOpen, Cloud, HardDrive } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { FileContextMenu } from '@/components/FileContextMenu';
 import { coverGet } from '@/lib/tauri';
 import { schemaForPath, isImportable, KIND_REGISTRY } from '@/lib/fileKind';
+import { useRemoteUploadStore } from '@/stores/remoteUploadStore';
 import type { FileEntry } from '@/types';
 
 // ── CoverCell ─────────────────────────────────────────────────────────────────
@@ -54,6 +55,28 @@ function CardCover({ fileId }: { fileId: number }) {
   );
 }
 
+function StorageBadge({ storageKind, isUploading }: { storageKind?: string; isUploading: boolean }) {
+  if (isUploading) {
+    return (
+      <span className="inline-flex items-center gap-0.5 ml-1 text-[10px] text-amber-600 dark:text-amber-400">
+        <Loader2 className="h-3 w-3 animate-spin" />
+      </span>
+    );
+  }
+  if (storageKind === 'remote') {
+    return (
+      <span className="inline-flex items-center gap-0.5 ml-1 text-[10px] text-primary/70">
+        <Cloud className="h-3 w-3" />
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-0.5 ml-1 text-[10px] text-muted-foreground/50">
+      <HardDrive className="h-3 w-3" />
+    </span>
+  );
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const ROW_HEIGHT = 48;
@@ -64,6 +87,8 @@ const OVERSCAN = 10;
 const LOAD_MORE_THRESHOLD = 5;
 const DEBOUNCE_MS = 150;
 const MAX_VISIBLE_TAGS = 3;
+
+const CHECKBOX_WIDTH = 40;
 
 const DEFAULT_COL_SIZES: Record<string, number> = {
   display_name: 300,
@@ -90,6 +115,8 @@ interface FileListProps {
   onFileClick?: (file: FileEntry) => void;
   onFileEdit?: (file: FileEntry) => void;
   onFileDelete?: (file: FileEntry) => void;
+  onBulkUpload?: (fileIds: number[]) => void;
+  remoteEnabled?: boolean;
 }
 
 // ── FileList ──────────────────────────────────────────────────────────────────
@@ -103,9 +130,18 @@ export function FileList({
   onFileClick,
   onFileEdit,
   onFileDelete,
+  onBulkUpload,
+  remoteEnabled = false,
 }: FileListProps) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+
+  const uploadState = useRemoteUploadStore();
+  const uploadingFileIds = useMemo(
+    () => new Set(uploadState.uploads.filter(u => u.status === 'uploading').map(u => u.file_id)),
+    [uploadState.uploads]
+  );
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const prevFilterKeyRef = useRef(filterKey);
@@ -125,6 +161,10 @@ export function FileList({
     scrollContainerRef.current?.scrollTo(0, 0);
   }, [filterKey]);
 
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [filterKey]);
+
   // Schema picks the layout (table vs grid) and column visibility from the
   // first file's kind. Categories are typically homogeneous, so the first
   // file determines the rendering for the whole list. Falls back to the
@@ -139,8 +179,60 @@ export function FileList({
     [schema]
   );
 
+  const toggleSelection = (id: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = useCallback(() => {
+    setSelectedIds(new Set(files.filter(f => f.storage_kind !== 'remote' && !uploadingFileIds.has(f.id)).map(f => f.id)));
+  }, [files, uploadingFileIds]);
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const allLocalSelected = files.length > 0 &&
+    files.filter(f => f.storage_kind !== 'remote' && !uploadingFileIds.has(f.id)).every(f => selectedIds.has(f.id));
+
   const columns = useMemo(
     () => [
+      {
+        id: 'select',
+        header: () => (
+          <div className="flex items-center justify-center" style={{ width: CHECKBOX_WIDTH }}>
+            <input
+              type="checkbox"
+              checked={allLocalSelected}
+              onChange={() => allLocalSelected ? clearSelection() : selectAll()}
+              className="h-3.5 w-3.5 rounded border-border accent-primary"
+            />
+          </div>
+        ),
+        cell: ({ row }: { row: { original: FileEntry } }) => {
+          const file = row.original;
+          const blocked = file.storage_kind === 'remote' || uploadingFileIds.has(file.id);
+          return (
+            <div className="flex items-center justify-center" style={{ width: CHECKBOX_WIDTH }}>
+              <input
+                type="checkbox"
+                checked={blocked ? false : selectedIds.has(file.id)}
+                onChange={() => !blocked && toggleSelection(file.id)}
+                disabled={blocked}
+                className="h-3.5 w-3.5 rounded border-border accent-primary disabled:opacity-30"
+              />
+            </div>
+          );
+        },
+        size: CHECKBOX_WIDTH,
+        minSize: CHECKBOX_WIDTH,
+        maxSize: CHECKBOX_WIDTH,
+        enableSorting: false,
+        enableResizing: false,
+        enableHiding: false,
+      },
       {
         id: 'cover',
         header: 'Cover',
@@ -172,6 +264,15 @@ export function FileList({
             <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
           </Button>
         ),
+        cell: ({ row }: { row: { original: FileEntry } }) => {
+          const file = row.original;
+          return (
+            <span className="flex items-center truncate">
+              {file.display_name}
+              <StorageBadge storageKind={file.storage_kind} isUploading={uploadingFileIds.has(file.id)} />
+            </span>
+          );
+        },
         size: DEFAULT_COL_SIZES.display_name,
         minSize: 150,
         maxSize: 600,
@@ -265,7 +366,7 @@ export function FileList({
         maxSize: ACTIONS_WIDTH,
       },
     ],
-    [onFileEdit, onFileDelete]
+    [onFileEdit, onFileDelete, selectedIds, allLocalSelected, selectAll]
   );
 
   const table = useReactTable({
@@ -331,10 +432,10 @@ export function FileList({
       ([id]) => t.getColumn(id)?.getIsVisible() !== false
     );
     const resizableTotal = visibleResizable.reduce((a, [, b]) => a + b, 0);
-    const available = Math.max(0, width - ACTIONS_WIDTH - coverW - SCROLLBAR_BUFFER);
+    const available = Math.max(0, width - ACTIONS_WIDTH - coverW - CHECKBOX_WIDTH - SCROLLBAR_BUFFER);
     const ratio = resizableTotal > 0 ? available / resizableTotal : 1;
 
-    const newSizing: Record<string, number> = { actions: ACTIONS_WIDTH, cover: COVER_WIDTH };
+    const newSizing: Record<string, number> = { actions: ACTIONS_WIDTH, cover: COVER_WIDTH, select: CHECKBOX_WIDTH };
     for (const [id, base] of Object.entries(DEFAULT_COL_SIZES)) {
       const col = t.getColumn(id);
       if (!col) continue;
@@ -397,6 +498,38 @@ export function FileList({
               </span>
             )}
           </button>
+        </div>
+      )}
+
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 p-2 bg-primary/10 border border-primary/20 rounded-xl mb-2 shrink-0">
+          <span className="text-xs font-medium text-primary">
+            {selectedIds.size} file{selectedIds.size !== 1 ? 's' : ''} selected
+          </span>
+          <div className="flex-1" />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const eligibleIds = Array.from(selectedIds).filter(id => !uploadingFileIds.has(id));
+              if (eligibleIds.length > 0) {
+                onBulkUpload?.(eligibleIds);
+              }
+              clearSelection();
+            }}
+            disabled={!remoteEnabled}
+            className="h-7 text-xs"
+          >
+            ☁ Upload to Cloud
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={clearSelection}
+            className="h-7 text-xs"
+          >
+            Clear
+          </Button>
         </div>
       )}
 
@@ -550,6 +683,28 @@ export function FileList({
                         className="relative group"
                         style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}
                       >
+                        <div className="absolute top-1.5 left-1.5 z-10">
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(file.id)}
+                            onChange={() => file.storage_kind !== 'remote' && !uploadingFileIds.has(file.id) && toggleSelection(file.id)}
+                            disabled={file.storage_kind === 'remote' || uploadingFileIds.has(file.id)}
+                            className="h-3.5 w-3.5 rounded border-white/80 accent-primary shadow-sm disabled:opacity-30"
+                          />
+                        </div>
+                        {uploadingFileIds.has(file.id) ? (
+                          <div className="absolute top-1.5 right-1.5 z-10 bg-background/80 rounded-full p-0.5">
+                            <Loader2 className="h-3 w-3 animate-spin text-amber-600 dark:text-amber-400" />
+                          </div>
+                        ) : file.storage_kind === 'remote' ? (
+                          <div className="absolute top-1.5 right-1.5 z-10 bg-background/80 rounded-full p-0.5">
+                            <Cloud className="h-3 w-3 text-primary/70" />
+                          </div>
+                        ) : (
+                          <div className="absolute top-1.5 right-1.5 z-10 bg-background/80 rounded-full p-0.5">
+                            <HardDrive className="h-3 w-3 text-muted-foreground/40" />
+                          </div>
+                        )}
                         <button
                           type="button"
                           onClick={() => onFileClick?.(file)}
