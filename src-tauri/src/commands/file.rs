@@ -1609,19 +1609,39 @@ pub struct FileMoveCategoryResponse {
     pub new_path: String,
 }
 
-/// Translate a user-typed query into a safe FTS5 MATCH expression.
+/// Minimum query length, in Unicode characters, for an FTS5 trigram lookup.
+/// Trigram only indexes 3-character windows, so anything shorter has no
+/// rows in the index and must use a `LIKE '%q%'` fallback instead.
+const TRIGRAM_MIN_CHARS: usize = 3;
+
+/// What kind of SQL filter to apply for a typed search query. Returned by
+/// [`prepare_search_filter`] so `file_search` can pick the matching SQL.
+enum SearchFilter {
+    /// Use FTS5 `MATCH` with the given expression. Fast, ranked.
+    Fts(String),
+    /// Use `display_name LIKE %p% OR path LIKE %p%` with the given pattern
+    /// (already wrapped with `%` and SQL wildcards escaped). Used for
+    /// queries shorter than the trigram window.
+    Like(String),
+}
+
+/// Translate a user-typed query into either an FTS5 MATCH expression or a
+/// LIKE fallback for sub-trigram-length queries.
 ///
 /// Strategy:
 ///   1. Replace every FTS5 operator character (`"'`:()-+*^`) with a space
 ///      so we never accidentally parse a user's punctuation as syntax.
-///   2. Split on whitespace, trim empty tokens.
-///   3. Append `*` to every token so FTS5 does a prefix match — lets a user
-///      typing "三" find a file named "三体" without learning the syntax.
+///   2. Split on whitespace; if the longest remaining token is < 3 chars,
+///      fall back to `LIKE '%q%'` against the trimmed raw query — trigram
+///      indexes 3-character windows and returns nothing for shorter input.
+///   3. Otherwise quote each token and AND them together. The trigram
+///      tokenizer matches substrings inside indexed text, so we don't need
+///      a `*` prefix marker.
 ///
-/// Returns None if the query has no usable tokens after sanitization (all
-/// whitespace, all punctuation, etc.) — callers should treat that as
-/// "no filter" rather than issuing an empty MATCH (which FTS5 rejects).
-fn build_fts_query(raw: &str) -> Option<String> {
+/// Returns None if the query has no usable content (all whitespace, all
+/// punctuation, etc.) — callers should treat that as "no filter" rather
+/// than issuing an empty MATCH (which FTS5 rejects).
+fn prepare_search_filter(raw: &str) -> Option<SearchFilter> {
     let sanitized: String = raw
         .chars()
         .map(|c| match c {
@@ -1630,17 +1650,36 @@ fn build_fts_query(raw: &str) -> Option<String> {
         })
         .collect();
 
-    let terms: Vec<String> = sanitized
+    let terms: Vec<&str> = sanitized
         .split_whitespace()
         .filter(|t| !t.is_empty())
-        .map(|t| format!("{}*", t))
         .collect();
 
     if terms.is_empty() {
-        None
-    } else {
-        Some(terms.join(" "))
+        return None;
     }
+
+    let longest = terms.iter().map(|t| t.chars().count()).max().unwrap_or(0);
+    if longest < TRIGRAM_MIN_CHARS {
+        // Below the trigram window — fall back to a LIKE scan over the
+        // raw trimmed query. Escape `%`, `_`, and `\` so the user can't
+        // smuggle wildcards into the pattern.
+        let pattern = raw
+            .trim()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        if pattern.is_empty() {
+            return None;
+        }
+        return Some(SearchFilter::Like(format!("%{}%", pattern)));
+    }
+
+    // Quote each term so spaces, slashes, and other token-internal
+    // punctuation are searched literally rather than parsed as FTS5
+    // syntax. Trigram needs the entire term as a contiguous substring.
+    let quoted: Vec<String> = terms.iter().map(|t| format!("\"{}\"", t)).collect();
+    Some(SearchFilter::Fts(quoted.join(" ")))
 }
 
 #[tauri::command]
@@ -1663,7 +1702,7 @@ pub async fn file_search(
     // with total = 0. The frontend routes empty queries to `file_list`, so
     // this path really only covers the all-punctuation / all-whitespace
     // edge case.
-    let Some(fts_expr) = build_fts_query(&query) else {
+    let Some(filter) = prepare_search_filter(&query) else {
         return Ok(FileListResponse { files: Vec::new(), total: 0 });
     };
 
@@ -1674,31 +1713,52 @@ pub async fn file_search(
         where_tail.push_str(&format!(" AND f.category_id = {}", cat_id));
     }
 
-    let row_query = format!(
-        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.created_at, f.updated_at \
-         FROM files f \
-         JOIN files_fts ON files_fts.rowid = f.id \
-         WHERE files_fts MATCH ?{} \
-         ORDER BY f.created_at DESC LIMIT {} OFFSET {}",
-        where_tail, limit, offset
-    );
-    let files: Vec<FileEntry> = sqlx::query_as(&row_query)
-        .bind(&fts_expr)
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (row_query, count_query, bind_value) = match &filter {
+        SearchFilter::Fts(expr) => (
+            format!(
+                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.created_at, f.updated_at \
+                 FROM files f \
+                 JOIN files_fts ON files_fts.rowid = f.id \
+                 WHERE files_fts MATCH ?{} \
+                 ORDER BY f.created_at DESC LIMIT {} OFFSET {}",
+                where_tail, limit, offset
+            ),
+            format!(
+                "SELECT COUNT(*) FROM files f \
+                 JOIN files_fts ON files_fts.rowid = f.id \
+                 WHERE files_fts MATCH ?{}",
+                where_tail
+            ),
+            expr.clone(),
+        ),
+        SearchFilter::Like(pattern) => (
+            format!(
+                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.created_at, f.updated_at \
+                 FROM files f \
+                 WHERE (f.display_name LIKE ? ESCAPE '\\' OR f.path LIKE ? ESCAPE '\\'){} \
+                 ORDER BY f.created_at DESC LIMIT {} OFFSET {}",
+                where_tail, limit, offset
+            ),
+            format!(
+                "SELECT COUNT(*) FROM files f \
+                 WHERE (f.display_name LIKE ? ESCAPE '\\' OR f.path LIKE ? ESCAPE '\\'){}",
+                where_tail
+            ),
+            pattern.clone(),
+        ),
+    };
 
-    let count_query = format!(
-        "SELECT COUNT(*) FROM files f \
-         JOIN files_fts ON files_fts.rowid = f.id \
-         WHERE files_fts MATCH ?{}",
-        where_tail
-    );
-    let total: (i64,) = sqlx::query_as(&count_query)
-        .bind(&fts_expr)
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut row_stmt = sqlx::query_as::<_, FileEntry>(&row_query).bind(&bind_value);
+    if matches!(filter, SearchFilter::Like(_)) {
+        row_stmt = row_stmt.bind(&bind_value);
+    }
+    let files: Vec<FileEntry> = row_stmt.fetch_all(&pool).await.map_err(|e| e.to_string())?;
+
+    let mut count_stmt = sqlx::query_as::<_, (i64,)>(&count_query).bind(&bind_value);
+    if matches!(filter, SearchFilter::Like(_)) {
+        count_stmt = count_stmt.bind(&bind_value);
+    }
+    let total: (i64,) = count_stmt.fetch_one(&pool).await.map_err(|e| e.to_string())?;
 
     let items = hydrate_file_items(&pool, files).await?;
 
@@ -1888,34 +1948,64 @@ mod filename_tests {
         );
     }
 
-    #[test]
-    fn test_build_fts_query_single_token_prefix_matched() {
-        assert_eq!(build_fts_query("三体").as_deref(), Some("三体*"));
+    fn fts_expr(raw: &str) -> Option<String> {
+        match prepare_search_filter(raw)? {
+            SearchFilter::Fts(s) => Some(s),
+            SearchFilter::Like(_) => None,
+        }
+    }
+
+    fn like_pattern(raw: &str) -> Option<String> {
+        match prepare_search_filter(raw)? {
+            SearchFilter::Like(s) => Some(s),
+            SearchFilter::Fts(_) => None,
+        }
     }
 
     #[test]
-    fn test_build_fts_query_multiple_tokens_joined_by_space() {
+    fn search_filter_single_token_quoted_for_fts() {
+        // Trigram tokenizer matches substrings inside indexed text, so the
+        // quoted whole-token form is enough — no `*` prefix marker needed.
+        assert_eq!(fts_expr("三体老师").as_deref(), Some("\"三体老师\""));
+    }
+
+    #[test]
+    fn search_filter_multiple_tokens_anded_with_quotes() {
         assert_eq!(
-            build_fts_query("三体 刘慈欣").as_deref(),
-            Some("三体* 刘慈欣*")
+            fts_expr("三体老师 刘慈欣").as_deref(),
+            Some("\"三体老师\" \"刘慈欣\"")
         );
     }
 
     #[test]
-    fn test_build_fts_query_strips_fts5_operators() {
-        // Quotes, colon, parens, +, -, *, ^ become spaces so they can never
-        // be parsed as FTS5 syntax.
+    fn search_filter_strips_fts5_operators() {
         assert_eq!(
-            build_fts_query("foo(bar):baz").as_deref(),
-            Some("foo* bar* baz*")
+            fts_expr("hello(world):today").as_deref(),
+            Some("\"hello\" \"world\" \"today\"")
         );
     }
 
     #[test]
-    fn test_build_fts_query_empty_or_whitespace_returns_none() {
-        assert!(build_fts_query("").is_none());
-        assert!(build_fts_query("   ").is_none());
-        assert!(build_fts_query("\"\"()").is_none());
+    fn search_filter_short_query_falls_back_to_like() {
+        // Below the trigram window — must use LIKE with the raw pattern.
+        assert_eq!(like_pattern("体").as_deref(), Some("%体%"));
+        assert_eq!(like_pattern("三体").as_deref(), Some("%三体%"));
+    }
+
+    #[test]
+    fn search_filter_short_query_escapes_like_wildcards() {
+        // SQL wildcards in user input must be escaped so a literal `%` or
+        // `_` can't expand the match. We escape with `\` and bind `ESCAPE '\\'`.
+        assert_eq!(like_pattern("a%").as_deref(), Some("%a\\%%"));
+        assert_eq!(like_pattern("a_").as_deref(), Some("%a\\_%"));
+        assert_eq!(like_pattern("\\a").as_deref(), Some("%\\\\a%"));
+    }
+
+    #[test]
+    fn search_filter_empty_or_punctuation_returns_none() {
+        assert!(prepare_search_filter("").is_none());
+        assert!(prepare_search_filter("   ").is_none());
+        assert!(prepare_search_filter("\"\"()").is_none());
     }
 }
 

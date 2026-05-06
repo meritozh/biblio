@@ -101,5 +101,29 @@ pub fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 5,
+            description: "rebuild files_fts with trigram tokenizer",
+            // The default `unicode61` tokenizer treats CJK runs as one
+            // token and only supports left-anchored prefix queries, so
+            // typing a middle character (e.g. `体` for `三体`) or a
+            // mid-word Latin substring returned nothing. `trigram` indexes
+            // every 3-character window, giving substring search natively.
+            // Queries shorter than 3 chars must fall back to LIKE in the
+            // command layer — trigram has no rows below the window size.
+            sql: "
+                DROP TABLE IF EXISTS files_fts;
+                CREATE VIRTUAL TABLE files_fts USING fts5(
+                    display_name,
+                    path,
+                    content='files',
+                    content_rowid='id',
+                    tokenize='trigram'
+                );
+                INSERT INTO files_fts(rowid, display_name, path)
+                    SELECT id, display_name, path FROM files;
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }

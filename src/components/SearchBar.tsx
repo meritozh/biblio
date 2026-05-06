@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Search, X } from 'lucide-react';
@@ -7,6 +8,9 @@ interface SearchBarProps {
   onChange: (value: string) => void;
   onSearch: (query: string) => void;
   placeholder?: string;
+  /** Delay before auto-committing the typed value via `onSearch`. Enter and
+   *  the clear button bypass this and fire immediately. */
+  debounceMs?: number;
 }
 
 export function SearchBar({
@@ -14,7 +18,26 @@ export function SearchBar({
   onChange,
   onSearch,
   placeholder = 'Search files...',
+  debounceMs = 300,
 }: SearchBarProps) {
+  // Latest onSearch in a ref so the debounce effect doesn't re-arm just
+  // because the parent re-rendered with a new function identity.
+  const onSearchRef = useRef(onSearch);
+  useEffect(() => {
+    onSearchRef.current = onSearch;
+  }, [onSearch]);
+
+  // Skip the initial commit so mounting with a pre-filled value doesn't
+  // fire a redundant search before the user has typed anything.
+  const initialValueRef = useRef(value);
+  useEffect(() => {
+    if (value === initialValueRef.current) return;
+    const id = window.setTimeout(() => {
+      onSearchRef.current(value);
+    }, debounceMs);
+    return () => window.clearTimeout(id);
+  }, [value, debounceMs]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       onSearch(value);

@@ -18,9 +18,24 @@ impl Phase1Node for MimeDetectNode {
     }
 
     fn run(&self, ctx: &mut FileContext, _env: &PipelineEnv) -> Result<(), NodeError> {
-        let bytes = std::fs::read(&ctx.file_path)
-            .map_err(|e| NodeError(format!("Failed to read file: {e}")))?;
-        let sample = &bytes[..bytes.len().min(8192)];
+        // Read only the bytes `infer` actually inspects. The previous
+        // `std::fs::read` slurped the whole file (multi-GB for comic
+        // archives) — with 8-way Phase-1 concurrency that put enough
+        // pressure on RAM to spill into macOS swap, which is why disk
+        // usage grew per import and only recovered on reboot.
+        use std::io::Read;
+        let mut file = std::fs::File::open(&ctx.file_path)
+            .map_err(|e| NodeError(format!("Failed to open file: {e}")))?;
+        let mut buf = [0u8; 8192];
+        let mut filled = 0usize;
+        while filled < buf.len() {
+            match file.read(&mut buf[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) => return Err(NodeError(format!("Failed to read file: {e}"))),
+            }
+        }
+        let sample = &buf[..filled];
 
         let mime_type = match infer::get(sample) {
             Some(t) => t.mime_type().to_string(),
