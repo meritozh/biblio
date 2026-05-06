@@ -73,5 +73,57 @@ pub fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "add image_folder filename prompt",
+            // Folder-as-comic imports take their author from the picked
+            // root folder (cleaned via the existing folder-name LLM
+            // pass), so the per-folder filename extraction should NOT
+            // re-extract authors. A dedicated prompt makes that
+            // separation explicit and keeps the archive prompt unchanged.
+            // Cover-pick reasoning is identical to archives, so we do
+            // NOT seed a separate `(image_folder, cover_pick)` prompt —
+            // the comic pipeline keeps using `(archive, cover_pick)`
+            // for both source kinds.
+            sql: "
+                INSERT INTO prompts (name, content, category, mime_group, step, is_default) VALUES (
+                    'Image Folder Filename Extraction',
+                    'Extract metadata from this image-folder name only. The author is already extracted separately from the parent folder, so DO NOT extract authors here. Rules:
+- display_name: clean comic title (strip site prefixes like [sxsy.org], scanlator brackets like [天蝎座汉化] / [镜面光折射汉化], date prefixes like [2022.12], and any volume/chapter markers like 第01-10话/Vol.5/Ch.42)
+- authors: always return an empty list. Authors are NOT extracted from folder names in this prompt.
+- progress: combine volume/chapter range + status when present, e.g. ''第1-10话 连载中'', ''第1卷-第5卷 完结'', ''第42话''. Use null when no progress markers exist.
+- Use null for unknown fields (other than authors, which is always empty).',
+                    'image_folder_filename',
+                    'image_folder',
+                    'filename',
+                    1
+                );
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 5,
+            description: "rebuild files_fts with trigram tokenizer",
+            // The default `unicode61` tokenizer treats CJK runs as one
+            // token and only supports left-anchored prefix queries, so
+            // typing a middle character (e.g. `体` for `三体`) or a
+            // mid-word Latin substring returned nothing. `trigram` indexes
+            // every 3-character window, giving substring search natively.
+            // Queries shorter than 3 chars must fall back to LIKE in the
+            // command layer — trigram has no rows below the window size.
+            sql: "
+                DROP TABLE IF EXISTS files_fts;
+                CREATE VIRTUAL TABLE files_fts USING fts5(
+                    display_name,
+                    path,
+                    content='files',
+                    content_rowid='id',
+                    tokenize='trigram'
+                );
+                INSERT INTO files_fts(rowid, display_name, path)
+                    SELECT id, display_name, path FROM files;
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
