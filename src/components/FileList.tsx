@@ -77,6 +77,32 @@ function StorageBadge({ storageKind, isUploading }: { storageKind?: string; isUp
   );
 }
 
+// Grid-card status pill. Identical geometry across all three states — only the
+// icon and color change — so the badge reads as one consistent visual element.
+function CardStatus({ storageKind, isUploading }: { storageKind?: string; isUploading: boolean }) {
+  const wrapper =
+    'flex items-center justify-center h-6 w-6 rounded-full bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm';
+  if (isUploading) {
+    return (
+      <div className={wrapper} title="Uploading…" aria-label="Uploading">
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600 dark:text-amber-400" />
+      </div>
+    );
+  }
+  if (storageKind === 'remote') {
+    return (
+      <div className={wrapper} title="Synced to cloud" aria-label="Synced to cloud">
+        <Cloud className="h-3.5 w-3.5 text-primary" />
+      </div>
+    );
+  }
+  return (
+    <div className={wrapper} title="Local only" aria-label="Local only">
+      <HardDrive className="h-3.5 w-3.5 text-muted-foreground" />
+    </div>
+  );
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const ROW_HEIGHT = 48;
@@ -677,42 +703,49 @@ export function FileList({
                 >
                   {slice.map((row) => {
                     const file = row.original;
+                    const blocked = file.storage_kind === 'remote' || uploadingFileIds.has(file.id);
+                    const inSelectionMode = selectedIds.size > 0;
                     return (
                       <div
                         key={row.id}
                         className="relative group"
                         style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}
                       >
-                        <div className="absolute top-1.5 left-1.5 z-10">
-                          <input
-                            type="checkbox"
-                            checked={selectedIds.has(file.id)}
-                            onChange={() => file.storage_kind !== 'remote' && !uploadingFileIds.has(file.id) && toggleSelection(file.id)}
-                            disabled={file.storage_kind === 'remote' || uploadingFileIds.has(file.id)}
-                            className="h-3.5 w-3.5 rounded border-white/80 accent-primary shadow-sm disabled:opacity-30"
-                          />
+                        {/* Selection checkbox — hidden until hover or until selection mode is active */}
+                        <div
+                          className={`absolute top-2 left-2 z-10 transition-opacity duration-150 ${
+                            inSelectionMode
+                              ? 'opacity-100'
+                              : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'
+                          }`}
+                        >
+                          <label className="flex items-center justify-center h-6 w-6 rounded-full bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm cursor-pointer hover:bg-background transition-colors">
+                            <input
+                              type="checkbox"
+                              checked={blocked ? false : selectedIds.has(file.id)}
+                              onChange={() => !blocked && toggleSelection(file.id)}
+                              onClick={(e) => e.stopPropagation()}
+                              disabled={blocked}
+                              className="h-3.5 w-3.5 rounded border-border accent-primary disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+                              aria-label={`Select ${file.display_name}`}
+                            />
+                          </label>
                         </div>
-                        {uploadingFileIds.has(file.id) ? (
-                          <div className="absolute top-1.5 right-1.5 z-10 bg-background/80 rounded-full p-0.5">
-                            <Loader2 className="h-3 w-3 animate-spin text-amber-600 dark:text-amber-400" />
-                          </div>
-                        ) : file.storage_kind === 'remote' ? (
-                          <div className="absolute top-1.5 right-1.5 z-10 bg-background/80 rounded-full p-0.5">
-                            <Cloud className="h-3 w-3 text-primary/70" />
-                          </div>
-                        ) : (
-                          <div className="absolute top-1.5 right-1.5 z-10 bg-background/80 rounded-full p-0.5">
-                            <HardDrive className="h-3 w-3 text-muted-foreground/40" />
-                          </div>
-                        )}
                         <button
                           type="button"
                           onClick={() => onFileClick?.(file)}
                           className="w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 hover:bg-muted/50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
                           aria-label={`View ${file.display_name}`}
                         >
-                          <div className="aspect-[2/3] w-full rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
+                          <div className="relative aspect-[2/3] w-full rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
                             <CardCover fileId={file.id} />
+                            {/* Status indicator — overlays the cover at bottom-left, identical geometry across states */}
+                            <div className="absolute bottom-1.5 left-1.5">
+                              <CardStatus
+                                storageKind={file.storage_kind}
+                                isUploading={uploadingFileIds.has(file.id)}
+                              />
+                            </div>
                           </div>
                           <div className="space-y-0.5 min-w-0 px-0.5">
                             <p
@@ -729,7 +762,7 @@ export function FileList({
                           </div>
                         </button>
                         {onFileEdit && onFileDelete && (
-                          <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                          <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity z-10">
                             <FileContextMenu
                               file={file}
                               onEdit={onFileEdit}

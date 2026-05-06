@@ -37,6 +37,7 @@ pub struct FileEntry {
     pub in_storage: bool,
     pub original_path: Option<String>,
     pub progress: Option<String>,
+    pub storage_kind: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -93,6 +94,7 @@ pub struct FileListItem {
     pub in_storage: bool,
     pub original_path: Option<String>,
     pub progress: Option<String>,
+    pub storage_kind: Option<String>,
     pub description: Option<String>,
     pub created_at: String,
     pub updated_at: String,
