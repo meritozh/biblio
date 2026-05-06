@@ -83,6 +83,8 @@ pub fn run() {
             commands::remote::remote_config_get,
             commands::remote::remote_login,
             commands::remote::remote_logout,
+            commands::remote::remote_get_authorize_url,
+            commands::remote::file_upload_to_remote,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
