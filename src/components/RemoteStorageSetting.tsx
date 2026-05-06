@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, Check, Eye, EyeOff, Loader2, LogOut } from 'lucide-react';
+import { AlertCircle, Check, ChevronRight, Eye, EyeOff, Loader2, LogOut, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
-import { remoteConfigGet, remoteLogin, remoteLogout } from '@/lib/tauri';
-import type { RemoteAuthMode, RemoteConfig } from '@/types';
+import { remoteConfigGet, remoteLogin, remoteLogout, remoteGetAuthorizeUrl } from '@/lib/tauri';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { parseTokenInput } from '@/lib/baidu_oauth';
+import type { RemoteConfig } from '@/types';
 
 const DEFAULT_APP_ROOT = '/apps/biblio';
 
@@ -17,10 +19,8 @@ export function RemoteStorageSetting() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const [authMode, setAuthMode] = useState<RemoteAuthMode>('openlist_proxy');
-  const [refreshToken, setRefreshToken] = useState('');
-  const [clientId, setClientId] = useState('');
-  const [clientSecret, setClientSecret] = useState('');
+  const [appKey, setAppKey] = useState('');
+  const [tokenInput, setTokenInput] = useState('');
   const [appRoot, setAppRoot] = useState(DEFAULT_APP_ROOT);
   const [showToken, setShowToken] = useState(false);
 
@@ -28,29 +28,52 @@ export function RemoteStorageSetting() {
     remoteConfigGet()
       .then((cfg) => {
         setConfig(cfg);
-        setAuthMode(cfg.auth_mode as RemoteAuthMode);
-        setClientId(cfg.client_id ?? '');
-        setClientSecret(cfg.client_secret ?? '');
+        setAppKey(cfg.app_key ?? '');
         setAppRoot(cfg.app_root || DEFAULT_APP_ROOT);
         setLoading(false);
       })
       .catch(() => setLoading(false));
   }, []);
 
+  const handleOpenAuthUrl = async () => {
+    if (!appKey.trim()) {
+      setError('Enter your AppKey first.');
+      return;
+    }
+    try {
+      const url = await remoteGetAuthorizeUrl(appKey.trim());
+      await openUrl(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const handleLogin = async () => {
     setBusy(true);
     setError(null);
     setSuccess(null);
+
+    const parsed = parseTokenInput(tokenInput);
+    if (!parsed) {
+      setError('Please paste the access token or redirect URL.');
+      setBusy(false);
+      return;
+    }
+    if (!appKey.trim()) {
+      setError('AppKey is required.');
+      setBusy(false);
+      return;
+    }
+
     try {
       const updated = await remoteLogin({
-        auth_mode: authMode,
-        refresh_token: refreshToken.trim(),
-        client_id: authMode === 'self_app' ? clientId.trim() : null,
-        client_secret: authMode === 'self_app' ? clientSecret.trim() : null,
+        app_key: appKey.trim(),
+        access_token: parsed.access_token,
+        expires_in_secs: parsed.expires_in_secs,
         app_root: appRoot.trim() || null,
       });
       setConfig(updated);
-      setRefreshToken('');
+      setTokenInput('');
       setSuccess('Connected — access token stored.');
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
@@ -83,7 +106,11 @@ export function RemoteStorageSetting() {
   const isConnected = config?.enabled ?? false;
   const expiresInSecs = config ? config.access_token_expires_at - Math.floor(Date.now() / 1000) : 0;
   const expiresHumanReadable =
-    expiresInSecs > 0 ? `${Math.floor(expiresInSecs / 60)} min` : 'expired';
+    expiresInSecs > 0
+      ? expiresInSecs > 86400
+        ? `${Math.floor(expiresInSecs / 86400)}d ${Math.floor((expiresInSecs % 86400) / 3600)}h`
+        : `${Math.floor(expiresInSecs / 3600)}h ${Math.floor((expiresInSecs % 3600) / 60)}m`
+      : 'expired';
 
   return (
     <div className="space-y-4">
@@ -97,55 +124,74 @@ export function RemoteStorageSetting() {
 
       {isConnected && config ? (
         <div className="space-y-3 rounded-xl border border-success/30 bg-success-muted dark:bg-success/10 p-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <Badge variant="green">
                 <Check className="h-3 w-3 mr-1" /> Connected
               </Badge>
-              <span className="text-xs text-muted-foreground">
-                {config.auth_mode === 'openlist_proxy' ? 'via OpenList proxy' : 'self-hosted app'}
-              </span>
             </div>
-            <Button variant="outline" size="sm" onClick={handleLogout} disabled={busy}>
-              <LogOut className="h-3 w-3 mr-1" /> Sign out
-            </Button>
+            <div className="flex items-center gap-2">
+              {expiresInSecs > 0 && expiresInSecs < 604800 && (
+                <span className="text-xs text-amber-500 flex items-center gap-1">
+                  <AlertCircle className="h-3 w-3" /> Expires soon
+                </span>
+              )}
+              {expiresInSecs <= 0 && (
+                <span className="text-xs text-destructive">Token expired — please re-authenticate</span>
+              )}
+              <Button variant="outline" size="sm" onClick={handleLogout} disabled={busy}>
+                <LogOut className="h-3 w-3 mr-1" /> Sign out
+              </Button>
+            </div>
           </div>
           <div className="text-xs text-muted-foreground space-y-0.5">
+            <div>AppKey: <span className="font-mono">{config.app_key.slice(0, 8)}...</span></div>
             <div>Upload root: <span className="font-mono">{config.app_root}</span></div>
             <div>Access token: {expiresHumanReadable}</div>
           </div>
         </div>
       ) : (
         <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label className="text-xs">Authentication</Label>
-            <div className="grid grid-cols-1 gap-2">
-              <AuthModeOption
-                label="OpenList proxy (recommended)"
-                description="OpenList holds the Baidu AppKey; you only paste the refresh token from their authorize URL."
-                selected={authMode === 'openlist_proxy'}
-                onSelect={() => setAuthMode('openlist_proxy')}
-              />
-              <AuthModeOption
-                label="Self-hosted Baidu app"
-                description="Use your own AppKey + Secret registered at pan.baidu.com/union/console."
-                selected={authMode === 'self_app'}
-                onSelect={() => setAuthMode('self_app')}
-              />
-            </div>
-          </div>
+          <CollapsibleHelp title="How to get your AppKey and Access Token">
+            <ol className="text-xs text-muted-foreground space-y-1 list-decimal list-inside">
+              <li>Create an app at{' '}
+                <a href="https://pan.baidu.com/union/console" target="_blank" rel="noreferrer"
+                   className="text-primary underline">pan.baidu.com/union/console</a>
+              </li>
+              <li>Copy the AppKey from your app's settings</li>
+              <li>Enter the AppKey below and click "Open Authorization Page"</li>
+              <li>Log into Baidu and authorize the app</li>
+              <li>On the redirect page, copy the <code className="font-mono bg-secondary px-1 rounded">access_token</code> from the URL</li>
+              <li>Paste it in the Access Token field below</li>
+            </ol>
+          </CollapsibleHelp>
 
           <div className="space-y-1.5">
-            <Label htmlFor="baidu-refresh-token" className="text-xs">
-              Refresh Token
+            <Label htmlFor="baidu-app-key" className="text-xs">AppKey</Label>
+            <Input
+              id="baidu-app-key"
+              value={appKey}
+              onChange={(e) => setAppKey(e.target.value)}
+              placeholder="Your Baidu AppKey from pan.baidu.com/union/console"
+              className="text-sm"
+            />
+          </div>
+
+          <Button variant="outline" size="sm" onClick={handleOpenAuthUrl} disabled={!appKey.trim()}>
+            Open Authorization Page
+          </Button>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="baidu-token" className="text-xs">
+              Access Token
             </Label>
             <div className="relative">
               <Input
-                id="baidu-refresh-token"
+                id="baidu-token"
                 type={showToken ? 'text' : 'password'}
-                value={refreshToken}
-                onChange={(e) => setRefreshToken(e.target.value)}
-                placeholder="Paste the refresh_token from your Baidu authorize flow"
+                value={tokenInput}
+                onChange={(e) => setTokenInput(e.target.value)}
+                placeholder="Paste the access_token or full redirect URL here"
                 className="text-sm pr-10"
               />
               <button
@@ -157,35 +203,10 @@ export function RemoteStorageSetting() {
                 {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              After authorizing in the browser, copy the access token from the redirect page and paste it here.
+            </p>
           </div>
-
-          {authMode === 'self_app' && (
-            <>
-              <div className="space-y-1.5">
-                <Label htmlFor="baidu-client-id" className="text-xs">
-                  Client ID (AppKey)
-                </Label>
-                <Input
-                  id="baidu-client-id"
-                  value={clientId}
-                  onChange={(e) => setClientId(e.target.value)}
-                  className="text-sm"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="baidu-client-secret" className="text-xs">
-                  Client Secret
-                </Label>
-                <Input
-                  id="baidu-client-secret"
-                  type="password"
-                  value={clientSecret}
-                  onChange={(e) => setClientSecret(e.target.value)}
-                  className="text-sm"
-                />
-              </div>
-            </>
-          )}
 
           <div className="space-y-1.5">
             <Label htmlFor="baidu-app-root" className="text-xs">
@@ -199,12 +220,18 @@ export function RemoteStorageSetting() {
               className="text-sm font-mono"
             />
             <p className="text-xs text-muted-foreground">
-              Absolute path under your Baidu Pan. Must live inside an `/apps/…` directory
-              when using the Baidu OpenAPI; biblio creates it implicitly on first upload.
+              Absolute path under your Baidu Pan. Must live inside an <code className="font-mono bg-secondary px-1 rounded">/apps/...</code> directory;
+              biblio creates it implicitly on first upload.
             </p>
+            {appRoot && !appRoot.startsWith('/apps/') && (
+              <p className="text-xs text-destructive flex items-center gap-1">
+                <AlertCircle className="h-3 w-3" />
+                Baidu OpenAPI requires paths under /apps/ — uploads may fail
+              </p>
+            )}
           </div>
 
-          <Button size="sm" onClick={handleLogin} disabled={busy || !refreshToken.trim()}>
+          <Button size="sm" onClick={handleLogin} disabled={busy || !tokenInput.trim() || !appKey.trim()}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
             Connect
           </Button>
@@ -212,9 +239,12 @@ export function RemoteStorageSetting() {
       )}
 
       {error && (
-        <div className="flex items-center gap-2 text-xs text-destructive">
-          <AlertCircle className="h-3 w-3" />
-          {error}
+        <div className="flex items-start gap-2 text-xs text-destructive bg-destructive/5 rounded-lg p-2">
+          <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />
+          <span className="break-words flex-1">{error}</span>
+          <button type="button" onClick={() => setError(null)} className="shrink-0 hover:text-destructive/80">
+            <X className="h-3 w-3" />
+          </button>
         </div>
       )}
       {success && (
@@ -227,36 +257,19 @@ export function RemoteStorageSetting() {
   );
 }
 
-function AuthModeOption({
-  label,
-  description,
-  selected,
-  onSelect,
-}: {
-  label: string;
-  description: string;
-  selected: boolean;
-  onSelect: () => void;
-}) {
+function CollapsibleHelp({ title, children }: { title: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={cn(
-        'flex items-start gap-2 p-2 rounded-lg border text-left transition-colors duration-200',
-        selected ? 'border-primary bg-primary/5' : 'hover:bg-secondary'
-      )}
-    >
-      <span
-        className={cn(
-          'mt-1 h-3 w-3 rounded-full border shrink-0',
-          selected ? 'border-primary bg-primary' : 'border-muted-foreground/40'
-        )}
-      />
-      <span>
-        <span className="block text-sm font-medium">{label}</span>
-        <span className="block text-xs text-muted-foreground">{description}</span>
-      </span>
-    </button>
+    <div className="rounded-lg border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 w-full p-2 text-xs font-medium text-left hover:bg-secondary/50 transition-colors duration-200"
+      >
+        <ChevronRight className={cn('h-3 w-3 transition-transform duration-200', open && 'rotate-90')} />
+        {title}
+      </button>
+      {open && <div className="px-2 pb-2">{children}</div>}
+    </div>
   );
 }
