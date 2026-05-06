@@ -15,8 +15,9 @@ import type {
   LlmConfig,
   Prompt,
   PromptCreatePayload,
-  RemoteAuthMode,
   RemoteConfig,
+  RemoteUploadProgress,
+  RemoteUploadResponse,
 } from '@/types';
 
 export async function fileList(
@@ -77,25 +78,37 @@ export async function remoteConfigGet(): Promise<RemoteConfig> {
 }
 
 export interface RemoteLoginParams {
-  auth_mode: RemoteAuthMode;
-  refresh_token: string;
-  client_id?: string | null;
-  client_secret?: string | null;
+  app_key: string;
+  access_token: string;
+  expires_in_secs: number;
   app_root?: string | null;
 }
 
 export async function remoteLogin(params: RemoteLoginParams): Promise<RemoteConfig> {
   return invoke('remote_login', {
-    authMode: params.auth_mode,
-    refreshToken: params.refresh_token,
-    clientId: params.client_id ?? null,
-    clientSecret: params.client_secret ?? null,
+    appKey: params.app_key,
+    accessToken: params.access_token,
+    expiresInSecs: params.expires_in_secs,
     appRoot: params.app_root ?? null,
   });
 }
 
+export async function remoteGetAuthorizeUrl(appKey: string): Promise<string> {
+  return invoke('remote_get_authorize_url', { appKey });
+}
+
 export async function remoteLogout(): Promise<void> {
   return invoke('remote_logout');
+}
+
+export async function fileUploadToRemote(fileIds: number[]): Promise<RemoteUploadResponse> {
+  return invoke('file_upload_to_remote', { fileIds });
+}
+
+export function onRemoteUploadProgress(
+  callback: (progress: RemoteUploadProgress) => void
+): Promise<UnlistenFn> {
+  return listen<RemoteUploadProgress>('remote-upload-progress', (event) => callback(event.payload));
 }
 
 export async function fileUpdate(
@@ -337,6 +350,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   FILE_LOCKED: 'File is in use by another application.',
   DISK_FULL: 'Not enough disk space to complete the operation.',
   NO_ACTIVE_PROMPT: 'No active prompt configured — set one in /prompts.',
+  REMOTE_NOT_AUTHENTICATED: 'Baidu Pan not configured. Please sign in via Settings > Storage.',
+  ACCESS_TOKEN_EXPIRED: 'Baidu Pan token expired. Re-authenticate in Settings > Storage.',
 };
 
 export function translateError(error: string): string {

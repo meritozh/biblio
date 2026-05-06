@@ -27,6 +27,8 @@ export interface FileEntry {
   tags?: Tag[];
   authors?: Author[];
   metadata?: Metadata[];
+  storage_kind?: StorageKind;
+  remote_provider?: string | null;
 }
 
 export interface Tag {
@@ -202,17 +204,32 @@ export interface LlmConfig {
   analyze_content: boolean;
 }
 
-export type RemoteAuthMode = 'openlist_proxy' | 'self_app';
-
 export interface RemoteConfig {
   enabled: boolean;
-  auth_mode: RemoteAuthMode;
-  refresh_token: string;
-  client_id: string | null;
-  client_secret: string | null;
+  app_key: string;
   access_token: string;
   access_token_expires_at: number;
   app_root: string;
+}
+
+export interface RemoteUploadProgress {
+  file_id: number;
+  file_name: string;
+  status: 'uploading' | 'success' | 'error' | 'skipped';
+  error?: string;
+  current: number;
+  total: number;
+}
+
+export interface FileUploadResult {
+  file_id: number;
+  success: boolean;
+  error?: string;
+  remote_path?: string;
+}
+
+export interface RemoteUploadResponse {
+  results: FileUploadResult[];
 }
 
 /** Mime-type group a prompt applies to. */
