@@ -8,14 +8,21 @@ import { CategorySidebar } from '@/components/CategorySidebar';
 import { ProcessingPipeline } from '@/components/ProcessingPipeline';
 import { RemoteUploadProgressPanel } from '@/components/RemoteUploadProgress';
 import { fetchFiles } from '@/stores';
-import { useRemoteUploadStore, startUpload, dismissPanel } from '@/stores/remoteUploadStore';
+import {
+  useRemoteUploadStore,
+  enqueueUpload,
+  dismissPanel,
+  clearCompleted,
+  minimizePanel,
+  expandPanel,
+} from '@/stores/remoteUploadStore';
 import {
   fileCreate,
   coverSet,
   storageGetPath,
   storageCheckAccess,
-  settingsGet,
   remoteConfigGet,
+  enqueueImport,
 } from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
@@ -45,9 +52,11 @@ const EMPTY_FORM_VALUES: DynamicMetadataFormValues = {
   metadata: [],
 };
 
-// How many files to fetch per request. Loaded rows accumulate in memory,
-// client-side pagination (FileList) pages within whatever is loaded.
-const FILES_PAGE_SIZE = 100;
+// Load the whole visible category in a single fetch so client-side filters
+// (FileList header) operate over the complete row set instead of whatever's
+// happened to scroll into view. Sized for realistic single-user libraries;
+// the load-more virtualizer trigger remains as a safety net beyond this.
+const FILES_PAGE_SIZE = 5000;
 
 export const Route = createFileRoute('/')({
   component: HomePage,
@@ -224,11 +233,26 @@ function HomePage() {
 
     if (kept.length === 0) return;
 
-    setSelectedFiles(kept);
-    setSelectedPathFolderRoots(keptFolderRoots);
+    // Producer-consumer: appending instead of replacing means new picks while
+    // the dialog is open join the in-flight queue instead of clobbering it.
+    // The backend worker drains everything serially.
+    setSelectedFiles((prev) => {
+      const seen = new Set(prev);
+      const additions = kept.filter((p) => !seen.has(p));
+      return additions.length === 0 ? prev : [...prev, ...additions];
+    });
+    setSelectedPathFolderRoots((prev) => ({ ...prev, ...keptFolderRoots }));
     setFormValues(EMPTY_FORM_VALUES);
     setAddDialogOpen(false);
     setPipelineOpen(true);
+
+    // Push the new paths to the import worker. Returns immediately; per-file
+    // events drive the dialog state via the existing listeners. Logging the
+    // failure path keeps the dev console useful — placeholder items would
+    // otherwise sit in `pending` forever with no diagnostic.
+    enqueueImport(kept, keptFolderRoots).catch((err) => {
+      console.error('enqueue_import failed:', err);
+    });
   };
 
   const handleAddFile = async () => {
@@ -317,16 +341,45 @@ function HomePage() {
         fileNames.set(f.id, f.display_name);
       }
     }
-    startUpload(fileIds, fileNames);
+    void enqueueUpload(fileIds, fileNames);
   }, [files]);
 
-  const prevUploadingRef = useRef(false);
+  // Per-task refresh: when any upload transitions to `success`, debounce a
+  // file-list refetch so a burst of completions collapses to one IPC call.
+  // The unbounded queue model means there's no batch boundary to wait on.
+  const prevSuccessIdsRef = useRef<Set<number>>(new Set());
+  const refreshTimerRef = useRef<number | null>(null);
   useEffect(() => {
-    if (prevUploadingRef.current && !uploadState.isUploading) {
-      void loadFiles();
+    const currentSuccessIds = new Set(
+      uploadState.uploads
+        .filter((u) => u.status === 'success')
+        .map((u) => u.file_id)
+    );
+    let hasNew = false;
+    for (const id of currentSuccessIds) {
+      if (!prevSuccessIdsRef.current.has(id)) {
+        hasNew = true;
+        break;
+      }
     }
-    prevUploadingRef.current = uploadState.isUploading;
-  }, [uploadState.isUploading, loadFiles]);
+    prevSuccessIdsRef.current = currentSuccessIds;
+    if (!hasNew) return;
+    if (refreshTimerRef.current !== null) {
+      window.clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void loadFiles();
+    }, 250);
+  }, [uploadState.uploads, loadFiles]);
+  useEffect(
+    () => () => {
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+      }
+    },
+    []
+  );
 
   return (
     <div className="flex h-screen bg-background">
@@ -440,6 +493,7 @@ function HomePage() {
               onFileDelete={handleFileDeleteClick}
               onBulkUpload={handleBulkUpload}
               remoteEnabled={remoteEnabled}
+              availableTags={tags}
             />
           )}
         </div>
@@ -447,7 +501,11 @@ function HomePage() {
         {uploadState.showPanel && (
           <RemoteUploadProgressPanel
             uploads={uploadState.uploads}
-            onClose={dismissPanel}
+            minimized={uploadState.minimized}
+            onMinimize={minimizePanel}
+            onExpand={expandPanel}
+            onDismiss={dismissPanel}
+            onClearCompleted={clearCompleted}
           />
         )}
       </main>
@@ -476,7 +534,15 @@ function HomePage() {
 
       <ProcessingPipeline
         open={pipelineOpen}
-        onOpenChange={setPipelineOpen}
+        onOpenChange={(open) => {
+          setPipelineOpen(open);
+          if (!open) {
+            // Clearing on close ensures the next open starts fresh — without
+            // it, the dialog would re-init from the previous session's paths.
+            setSelectedFiles([]);
+            setSelectedPathFolderRoots({});
+          }
+        }}
         paths={selectedFiles}
         pathFolderRoots={selectedPathFolderRoots}
         categories={categories}

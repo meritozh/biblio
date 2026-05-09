@@ -6,9 +6,8 @@
 //! the frontend obtains the access_token directly via the authorize URL
 //! redirect and passes it here for storage.
 
-use base64::Engine;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tauri_plugin_sql::{DbInstances, DbPool};
 
 use crate::providers::baidu_netdisk::{
@@ -199,191 +198,25 @@ pub async fn delete_on_remote(pool: &sqlx::SqlitePool, remote_path: &str) -> Res
         .map_err(|e: BaiduError| e.0)
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct FileUploadResult {
-    pub file_id: i64,
-    pub success: bool,
-    pub error: Option<String>,
-    pub remote_path: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RemoteUploadProgressEvent {
-    pub file_id: i64,
-    pub file_name: String,
-    pub status: String,
-    pub error: Option<String>,
-    pub current: usize,
-    pub total: usize,
-}
-
+/// Push a batch of file IDs into the upload worker queue and return immediately.
+///
+/// Producer-consumer model: the worker drains jobs serially and emits
+/// `remote-upload-progress` events per state transition. The user can call
+/// this again while previous uploads are in flight; new IDs append to the
+/// queue.
 #[tauri::command]
 pub async fn file_upload_to_remote(
     app: tauri::AppHandle,
     file_ids: Vec<i64>,
-) -> Result<Vec<FileUploadResult>, String> {
-    let instances = app.state::<DbInstances>();
-    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+) -> Result<(), String> {
+    use crate::services::upload_worker::{UploadJob, UploadQueueSender};
 
-    let remote_cfg = load_config(&pool).await;
-    if !remote_cfg.enabled {
-        return Err("REMOTE_STORAGE_NOT_CONFIGURED".to_string());
+    let sender = app.state::<UploadQueueSender>();
+    for file_id in file_ids {
+        sender
+            .0
+            .send(UploadJob { file_id })
+            .map_err(|e| format!("Upload queue is closed: {e}"))?;
     }
-
-    let mut results = Vec::new();
-
-    for (idx, &file_id) in file_ids.iter().enumerate() {
-        let row: Option<(String, String, Option<String>, String)> = sqlx::query_as(
-            "SELECT path, display_name, progress, COALESCE(storage_kind, 'local') FROM files WHERE id = ?"
-        )
-        .bind(file_id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        let Some((local_path, display_name, _progress, storage_kind)) = row else {
-            results.push(FileUploadResult {
-                file_id,
-                success: false,
-                error: Some("File not found".to_string()),
-                remote_path: None,
-            });
-            continue;
-        };
-
-        if storage_kind != "local" {
-            results.push(FileUploadResult {
-                file_id,
-                success: false,
-                error: Some("File is not local storage".to_string()),
-                remote_path: None,
-            });
-            continue;
-        }
-
-        let source_path = std::path::PathBuf::from(&local_path);
-        if !source_path.exists() {
-            results.push(FileUploadResult {
-                file_id,
-                success: false,
-                error: Some("Local file not found".to_string()),
-                remote_path: None,
-            });
-            continue;
-        }
-
-        let stem = source_path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-        let ext = source_path.extension().and_then(|e| e.to_str());
-        let encoded_stem = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(stem.as_bytes());
-        let encoded_filename = match ext {
-            Some(e) if !e.is_empty() => format!("{encoded_stem}.{e}"),
-            _ => encoded_stem.clone(),
-        };
-
-        let app_root = remote_cfg.app_root.trim_end_matches('/');
-        let mut remote_path = format!("{app_root}/{encoded_filename}");
-
-        let mut counter = 1u32;
-        loop {
-            let existing: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM files WHERE path = ? AND id != ?"
-            )
-            .bind(&remote_path)
-            .bind(file_id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-            if existing.is_none() {
-                break;
-            }
-
-            remote_path = match ext {
-                Some(e) if !e.is_empty() => format!("{app_root}/{encoded_stem}_{counter}.{e}"),
-                _ => format!("{app_root}/{encoded_stem}_{counter}"),
-            };
-            counter += 1;
-        }
-
-        let _ = app.emit(
-            "remote-upload-progress",
-            &RemoteUploadProgressEvent {
-                file_id,
-                file_name: display_name.clone(),
-                status: "uploading".to_string(),
-                error: None,
-                current: idx + 1,
-                total: file_ids.len(),
-            },
-        );
-
-        match upload_to_remote(&pool, &source_path, &remote_path).await {
-            Ok(upload) => {
-                sqlx::query(
-                    "UPDATE files SET \
-                     path = ?, storage_kind = 'remote', remote_provider = 'baidu_netdisk', \
-                     remote_fs_id = ?, remote_md5 = ?, remote_size = ?, \
-                     in_storage = 0, original_path = ?, file_status = 'available' \
-                     WHERE id = ?"
-                )
-                .bind(&remote_path)
-                .bind(&upload.fs_id)
-                .bind(&upload.md5)
-                .bind(upload.size)
-                .bind(&local_path)
-                .bind(file_id)
-                .execute(&pool)
-                .await
-                .map_err(|e| e.to_string())?;
-
-                if let Err(e) = std::fs::remove_file(&source_path) {
-                    eprintln!(
-                        "Remote upload succeeded but local delete failed ({}): {e}",
-                        source_path.display()
-                    );
-                }
-
-                let _ = app.emit(
-                    "remote-upload-progress",
-                    &RemoteUploadProgressEvent {
-                        file_id,
-                        file_name: display_name.clone(),
-                        status: "success".to_string(),
-                        error: None,
-                        current: idx + 1,
-                        total: file_ids.len(),
-                    },
-                );
-
-                results.push(FileUploadResult {
-                    file_id,
-                    success: true,
-                    error: None,
-                    remote_path: Some(remote_path),
-                });
-            }
-            Err(e) => {
-                let _ = app.emit(
-                    "remote-upload-progress",
-                    &RemoteUploadProgressEvent {
-                        file_id,
-                        file_name: display_name.clone(),
-                        status: "error".to_string(),
-                        error: Some(e.clone()),
-                        current: idx + 1,
-                        total: file_ids.len(),
-                    },
-                );
-
-                results.push(FileUploadResult {
-                    file_id,
-                    success: false,
-                    error: Some(e),
-                    remote_path: None,
-                });
-            }
-        }
-    }
-
-    Ok(results)
+    Ok(())
 }

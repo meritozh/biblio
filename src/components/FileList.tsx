@@ -1,53 +1,55 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import {
-  useReactTable,
-  getCoreRowModel,
-  getSortedRowModel,
-  flexRender,
-  type VisibilityState,
-  type SortingState,
-} from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Button } from '@/components/ui/button';
-import { ArrowUpDown, Loader2, BookOpen, Cloud, HardDrive } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  ArrowUp,
+  ArrowDown,
+  BookOpen,
+  ChevronDown,
+  Cloud,
+  Filter as FilterIcon,
+  HardDrive,
+  Loader2,
+  X,
+} from 'lucide-react';
 import { FileContextMenu } from '@/components/FileContextMenu';
+import { FilterEditor } from '@/components/FilterEditor';
+import { NovelCover } from '@/components/NovelCover';
 import { coverGet } from '@/lib/tauri';
-import { schemaForPath, isImportable, KIND_REGISTRY } from '@/lib/fileKind';
+import { isImportable, kindForPath } from '@/lib/fileKind';
 import { useRemoteUploadStore } from '@/stores/remoteUploadStore';
-import type { FileEntry } from '@/types';
+import { applyConditions, describeCondition, type Condition } from '@/lib/filters';
+import type { FileEntry, Tag } from '@/types';
 
-// ── CoverCell ─────────────────────────────────────────────────────────────────
+// ── Subcomponents ─────────────────────────────────────────────────────────────
 
-function CoverCell({ fileId }: { fileId: number }) {
+/** Comic cover: lazy-fetches stored cover art, falls back to a book icon. */
+function ComicCover({ fileId }: { fileId: number }) {
   const [src, setSrc] = useState<string | null>(null);
-
   useEffect(() => {
     coverGet(fileId)
       .then(({ data, mime_type }) => setSrc(`data:${mime_type};base64,${data}`))
       .catch(() => {});
   }, [fileId]);
-
-  return src ? (
-    <img src={src} alt="Cover" className="h-8 w-6 object-cover rounded-sm shrink-0" />
-  ) : (
-    <div className="flex items-center justify-center h-8 w-6">
-      <BookOpen className="h-3.5 w-3.5 text-muted-foreground/40" />
-    </div>
-  );
-}
-
-/** Larger cover variant for the grid card. Fills the parent (which carries
- *  the aspect-ratio constraint). Same lazy-fetch contract as `CoverCell`. */
-function CardCover({ fileId }: { fileId: number }) {
-  const [src, setSrc] = useState<string | null>(null);
-
-  useEffect(() => {
-    coverGet(fileId)
-      .then(({ data, mime_type }) => setSrc(`data:${mime_type};base64,${data}`))
-      .catch(() => {});
-  }, [fileId]);
-
   return src ? (
     <img src={src} alt="Cover" className="h-full w-full object-cover" />
   ) : (
@@ -55,30 +57,17 @@ function CardCover({ fileId }: { fileId: number }) {
   );
 }
 
-function StorageBadge({ storageKind, isUploading }: { storageKind?: string; isUploading: boolean }) {
-  if (isUploading) {
-    return (
-      <span className="inline-flex items-center gap-0.5 ml-1 text-[10px] text-amber-600 dark:text-amber-400">
-        <Loader2 className="h-3 w-3 animate-spin" />
-      </span>
-    );
+/** Routes a card cover to NovelCover (procedural) for novels and ComicCover
+ *  (real artwork) for comics, so the grid stays visually rich for both. */
+function CardCover({ file }: { file: FileEntry }) {
+  if (kindForPath(file.path) === 'novel') {
+    return <NovelCover tags={file.tags} fileId={file.id} displayName={file.display_name} />;
   }
-  if (storageKind === 'remote') {
-    return (
-      <span className="inline-flex items-center gap-0.5 ml-1 text-[10px] text-primary/70">
-        <Cloud className="h-3 w-3" />
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-0.5 ml-1 text-[10px] text-muted-foreground/50">
-      <HardDrive className="h-3 w-3" />
-    </span>
-  );
+  return <ComicCover fileId={file.id} />;
 }
 
-// Grid-card status pill. Identical geometry across all three states — only the
-// icon and color change — so the badge reads as one consistent visual element.
+/** Storage status pill — identical geometry across states; only icon and color
+ *  change so the badge reads as one consistent visual element. */
 function CardStatus({ storageKind, isUploading }: { storageKind?: string; isUploading: boolean }) {
   const wrapper =
     'flex items-center justify-center h-6 w-6 rounded-full bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm';
@@ -105,30 +94,27 @@ function CardStatus({ storageKind, isUploading }: { storageKind?: string; isUplo
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const ROW_HEIGHT = 48;
-const ACTIONS_WIDTH = 52;
-const COVER_WIDTH = 52;
-const SCROLLBAR_BUFFER = 10;
-const OVERSCAN = 10;
-const LOAD_MORE_THRESHOLD = 5;
-const DEBOUNCE_MS = 150;
-const MAX_VISIBLE_TAGS = 3;
-
-const CHECKBOX_WIDTH = 40;
-
-const DEFAULT_COL_SIZES: Record<string, number> = {
-  display_name: 300,
-  description: 280,
-  tags: 200,
-  authors: 180,
-  progress: 120,
-};
-
-// Grid layout sizing — comic emphasis, ~4–6 columns at typical widths.
 const CARD_WIDTH = 180;
 const CARD_HEIGHT = 280;
 const GRID_GAP = 16;
-const GRID_PAD = 4; // matches scroll container's interior padding
+const GRID_PAD = 4;
+const OVERSCAN = 4;
+const LOAD_MORE_THRESHOLD = 5;
+const DEBOUNCE_MS = 150;
+
+type SortKey = 'name' | 'created' | 'updated';
+
+const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
+  { value: 'name', label: 'Name' },
+  { value: 'created', label: 'Date added' },
+  { value: 'updated', label: 'Last updated' },
+];
+
+function compareFiles(a: FileEntry, b: FileEntry, key: SortKey): number {
+  if (key === 'name') return a.display_name.localeCompare(b.display_name);
+  if (key === 'created') return a.created_at.localeCompare(b.created_at);
+  return a.updated_at.localeCompare(b.updated_at);
+}
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -143,6 +129,8 @@ interface FileListProps {
   onFileDelete?: (file: FileEntry) => void;
   onBulkUpload?: (fileIds: number[]) => void;
   remoteEnabled?: boolean;
+  /** All defined tags, used by the filter editor's tag picker. */
+  availableTags?: ReadonlyArray<Tag>;
 }
 
 // ── FileList ──────────────────────────────────────────────────────────────────
@@ -158,14 +146,35 @@ export function FileList({
   onFileDelete,
   onBulkUpload,
   remoteEnabled = false,
+  availableTags = [],
 }: FileListProps) {
-  const [sorting, setSorting] = useState<SortingState>([]);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [sortBy, setSortBy] = useState<SortKey>('name');
+  const [sortDesc, setSortDesc] = useState(false);
+  const [conditions, setConditions] = useState<Condition[]>([]);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
+  // Map for chip rendering — looks up tag names by id.
+  const tagsById = useMemo(() => {
+    const m = new Map<number, Tag>();
+    for (const t of availableTags) m.set(t.id, t);
+    return m;
+  }, [availableTags]);
+
   const uploadState = useRemoteUploadStore();
-  const uploadingFileIds = useMemo(
-    () => new Set(uploadState.uploads.filter(u => u.status === 'uploading').map(u => u.file_id)),
+  // Files that are queued OR actively uploading. Both states block re-selection
+  // and re-enqueue — without `pending`, a queued-but-not-yet-running file
+  // would still be selectable because its `storage_kind` is still `local`
+  // until the worker flips it on success.
+  const inFlightUploadIds = useMemo(
+    () =>
+      new Set(
+        uploadState.uploads
+          .filter((u) => u.status === 'pending' || u.status === 'uploading')
+          .map((u) => u.file_id)
+      ),
     [uploadState.uploads]
   );
 
@@ -173,315 +182,119 @@ export function FileList({
   const prevFilterKeyRef = useRef(filterKey);
 
   // Drop legacy rows whose extension is no longer in the supported set
-  // (.epub / .pdf / standalone images from the pre-removal era). Their DB
-  // rows stay intact; we just don't surface them in the list.
-  const files = useMemo(
+  // (.epub / .pdf / standalone images from the pre-removal era).
+  const importable = useMemo(
     () => rawFiles.filter((f) => isImportable(f.path)),
     [rawFiles]
   );
 
-  // Scroll to top when the filter (category / search) changes
+  // Filter + sort, derived. Keeps virtualizer / interaction state in lockstep
+  // with whatever the user has chosen above the grid.
+  const files = useMemo(() => {
+    const filtered = applyConditions(importable, conditions);
+    const sorted = [...filtered].sort((a, b) => {
+      const cmp = compareFiles(a, b, sortBy);
+      return sortDesc ? -cmp : cmp;
+    });
+    return sorted;
+  }, [importable, conditions, sortBy, sortDesc]);
+
+  // Scroll to top + reset selection + clear filter conditions when
+  // category/search changes. Conditions are scoped to the current view.
   useEffect(() => {
     if (prevFilterKeyRef.current === filterKey) return;
     prevFilterKeyRef.current = filterKey;
     scrollContainerRef.current?.scrollTo(0, 0);
-  }, [filterKey]);
-
-  useEffect(() => {
     setSelectedIds(new Set());
+    setSelectionMode(false);
+    setConditions([]);
+    setFilterOpen(false);
   }, [filterKey]);
 
-  // Schema picks the layout (table vs grid) and column visibility from the
-  // first file's kind. Categories are typically homogeneous, so the first
-  // file determines the rendering for the whole list. Falls back to the
-  // novel schema when the list is empty.
-  const schema = useMemo(
-    () => schemaForPath(files[0]?.path) ?? KIND_REGISTRY.novel,
-    [files[0]?.path] // eslint-disable-line react-hooks/exhaustive-deps
-  );
-  const layout = schema.layout;
-  const columnVisibility = useMemo<VisibilityState>(
-    () => ({ ...schema.columns }),
-    [schema]
-  );
-
-  const toggleSelection = (id: number) => {
-    setSelectedIds(prev => {
+  const toggleSelection = useCallback((id: number) => {
+    setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  };
+  }, []);
 
-  const selectAll = useCallback(() => {
-    setSelectedIds(new Set(files.filter(f => f.storage_kind !== 'remote' && !uploadingFileIds.has(f.id)).map(f => f.id)));
-  }, [files, uploadingFileIds]);
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
 
-  const clearSelection = () => setSelectedIds(new Set());
-
-  const allLocalSelected = files.length > 0 &&
-    files.filter(f => f.storage_kind !== 'remote' && !uploadingFileIds.has(f.id)).every(f => selectedIds.has(f.id));
-
-  const columns = useMemo(
-    () => [
-      {
-        id: 'select',
-        header: () => (
-          <div className="flex items-center justify-center" style={{ width: CHECKBOX_WIDTH }}>
-            <input
-              type="checkbox"
-              checked={allLocalSelected}
-              onChange={() => allLocalSelected ? clearSelection() : selectAll()}
-              className="h-3.5 w-3.5 rounded border-border accent-primary"
-            />
-          </div>
-        ),
-        cell: ({ row }: { row: { original: FileEntry } }) => {
-          const file = row.original;
-          const blocked = file.storage_kind === 'remote' || uploadingFileIds.has(file.id);
-          return (
-            <div className="flex items-center justify-center" style={{ width: CHECKBOX_WIDTH }}>
-              <input
-                type="checkbox"
-                checked={blocked ? false : selectedIds.has(file.id)}
-                onChange={() => !blocked && toggleSelection(file.id)}
-                disabled={blocked}
-                className="h-3.5 w-3.5 rounded border-border accent-primary disabled:opacity-30"
-              />
-            </div>
-          );
-        },
-        size: CHECKBOX_WIDTH,
-        minSize: CHECKBOX_WIDTH,
-        maxSize: CHECKBOX_WIDTH,
-        enableSorting: false,
-        enableResizing: false,
-        enableHiding: false,
-      },
-      {
-        id: 'cover',
-        header: 'Cover',
-        enableHiding: true,
-        enableResizing: false,
-        enableSorting: false,
-        cell: ({ row }: { row: { original: FileEntry } }) => (
-          <CoverCell fileId={row.original.id} />
-        ),
-        size: COVER_WIDTH,
-        minSize: COVER_WIDTH,
-        maxSize: COVER_WIDTH,
-      },
-      {
-        accessorKey: 'display_name',
-        enableHiding: false,
-        header: ({
-          column,
-        }: {
-          column: { getIsSorted: () => string | false; toggleSorting: (desc?: boolean) => void };
-        }) => (
-          <Button
-            variant="ghost"
-            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-            aria-label={`Sort by name ${column.getIsSorted() === 'asc' ? 'descending' : 'ascending'}`}
-            className="-ml-3"
-          >
-            Name
-            <ArrowUpDown className="ml-2 h-4 w-4" aria-hidden="true" />
-          </Button>
-        ),
-        cell: ({ row }: { row: { original: FileEntry } }) => {
-          const file = row.original;
-          return (
-            <span className="flex items-center truncate">
-              {file.display_name}
-              <StorageBadge storageKind={file.storage_kind} isUploading={uploadingFileIds.has(file.id)} />
-            </span>
-          );
-        },
-        size: DEFAULT_COL_SIZES.display_name,
-        minSize: 150,
-        maxSize: 600,
-      },
-      {
-        id: 'description',
-        header: 'Description',
-        enableHiding: true,
-        cell: ({ row }: { row: { original: FileEntry } }) => {
-          const d = row.original.description;
-          return d ? (
-            <span className="text-sm block truncate" title={d}>
-              {d}
-            </span>
-          ) : (
-            <span className="text-muted-foreground text-sm">—</span>
-          );
-        },
-        size: DEFAULT_COL_SIZES.description,
-        minSize: 120,
-        maxSize: 600,
-      },
-      {
-        id: 'tags',
-        header: 'Tags',
-        enableHiding: true,
-        cell: ({ row }: { row: { original: FileEntry } }) => {
-          const tags = row.original.tags;
-          if (!tags?.length) return <span className="text-muted-foreground text-sm">—</span>;
-          return (
-            <div className="flex items-center gap-1">
-              {tags.slice(0, MAX_VISIBLE_TAGS).map((tag) => (
-                <Badge key={tag.id} variant="gray" className="text-xs font-normal shrink-0">
-                  {tag.name}
-                </Badge>
-              ))}
-            </div>
-          );
-        },
-        size: DEFAULT_COL_SIZES.tags,
-        minSize: 100,
-        maxSize: 400,
-      },
-      {
-        id: 'authors',
-        header: 'Authors',
-        enableHiding: true,
-        cell: ({ row }: { row: { original: FileEntry } }) => {
-          const authors = row.original.authors;
-          if (!authors?.length) return <span className="text-muted-foreground text-sm">—</span>;
-          return <span className="text-sm">{authors.map((a) => a.name).join(', ')}</span>;
-        },
-        size: DEFAULT_COL_SIZES.authors,
-        minSize: 80,
-        maxSize: 400,
-      },
-      {
-        id: 'progress',
-        header: 'Progress',
-        enableHiding: true,
-        cell: ({ row }: { row: { original: FileEntry } }) => {
-          const p = row.original.progress;
-          return p ? (
-            <span className="text-sm">{p}</span>
-          ) : (
-            <span className="text-muted-foreground text-sm">—</span>
-          );
-        },
-        size: DEFAULT_COL_SIZES.progress,
-        minSize: 80,
-        maxSize: 300,
-      },
-      {
-        id: 'actions',
-        enableHiding: false,
-        enableResizing: false,
-        enableSorting: false,
-        cell: ({ row }: { row: { original: FileEntry } }) => (
-          <div className="flex justify-end" role="group" aria-label="File actions">
-            {onFileEdit && onFileDelete && (
-              <FileContextMenu
-                file={row.original}
-                onEdit={onFileEdit}
-                onDelete={onFileDelete}
-              />
-            )}
-          </div>
-        ),
-        size: ACTIONS_WIDTH,
-        minSize: ACTIONS_WIDTH,
-        maxSize: ACTIONS_WIDTH,
-      },
-    ],
-    [onFileEdit, onFileDelete, selectedIds, allLocalSelected, selectAll]
+  /** Quick-select the first N eligible files in the current sort/filter view.
+   *  Eligibility matches the per-card block check: skip files already remote
+   *  and files with an in-flight upload entry. Replaces the existing
+   *  selection (`+10` would be a different action; this is "set to first N"). */
+  const selectFirstN = useCallback(
+    (n: number) => {
+      const eligible: number[] = [];
+      for (const f of files) {
+        if (f.storage_kind === 'remote' || inFlightUploadIds.has(f.id)) continue;
+        eligible.push(f.id);
+        if (eligible.length >= n) break;
+      }
+      setSelectedIds(new Set(eligible));
+    },
+    [files, inFlightUploadIds]
   );
 
-  const table = useReactTable({
-    data: files,
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    onSortingChange: setSorting,
-    state: { sorting, columnVisibility },
-    columnResizeMode: 'onChange',
-    enableColumnResizing: true,
-  });
+  const exitSelectionMode = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  }, []);
 
-  // Keep a ref so ResizeObserver callback always reads latest table state
-  const tableRef = useRef(table);
-  tableRef.current = table;
+  const removeCondition = useCallback((id: string) => {
+    setConditions((prev) => prev.filter((c) => c.id !== id));
+  }, []);
 
-  const rows = table.getRowModel().rows;
+  const handleCardClick = useCallback(
+    (file: FileEntry) => {
+      if (selectionMode) {
+        const blocked = file.storage_kind === 'remote' || inFlightUploadIds.has(file.id);
+        if (!blocked) toggleSelection(file.id);
+      } else {
+        onFileClick?.(file);
+      }
+    },
+    [selectionMode, inFlightUploadIds, toggleSelection, onFileClick]
+  );
 
-  // ── Virtualizers (both always created so hook order stays stable) ────────
-  // Table mode: one virtual item per row. Grid mode: one per grid row, each
-  // holding `colCount` cards.
+  // ── Grid sizing ──────────────────────────────────────────────────────────
   const colCount = Math.max(
     1,
     Math.floor((containerWidth - GRID_PAD * 2 + GRID_GAP) / (CARD_WIDTH + GRID_GAP))
   );
-  const gridRowCount = Math.ceil(rows.length / colCount);
+  const gridRowCount = Math.ceil(files.length / colCount);
 
-  const tableVirtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => scrollContainerRef.current,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: OVERSCAN,
-  });
-  const gridVirtualizer = useVirtualizer({
+  const virtualizer = useVirtualizer({
     count: gridRowCount,
     getScrollElement: () => scrollContainerRef.current,
     estimateSize: () => CARD_HEIGHT + GRID_GAP,
-    overscan: 4,
+    overscan: OVERSCAN,
   });
-  const activeVirtualizer = layout === 'grid' ? gridVirtualizer : tableVirtualizer;
-  const virtualItems = activeVirtualizer.getVirtualItems();
-  const totalVirtualSize = activeVirtualizer.getTotalSize();
+  const virtualItems = virtualizer.getVirtualItems();
+  const totalVirtualSize = virtualizer.getTotalSize();
 
-  // Trigger server-side load-more when the last virtual element is near the
-  // end. In table mode "end" = last row; in grid mode "end" = last grid row.
+  // Trigger backend load-more when the last virtual row is near the end.
+  // Compare against the *unfiltered* loaded count (`rawFiles.length`) so an
+  // active filter pill shrinking `files` doesn't fake a "we need more rows"
+  // signal. With the route's bumped page size this is normally a no-op, but
+  // it stays correct if pagination ever returns.
   useEffect(() => {
     const lastItem = virtualItems[virtualItems.length - 1];
-    if (!lastItem || loadingMore || files.length >= (total ?? 0)) return;
-    const totalCount = layout === 'grid' ? gridRowCount : rows.length;
-    if (lastItem.index >= totalCount - 1 - LOAD_MORE_THRESHOLD) {
+    if (!lastItem || loadingMore || rawFiles.length >= (total ?? 0)) return;
+    if (lastItem.index >= gridRowCount - 1 - LOAD_MORE_THRESHOLD) {
       onLoadMore?.();
     }
-  }, [virtualItems, gridRowCount, rows.length, files.length, total, loadingMore, onLoadMore, layout]);
+  }, [virtualItems, gridRowCount, rawFiles.length, total, loadingMore, onLoadMore]);
 
-  // Column auto-sizing for table mode. Grid mode just needs containerWidth
-  // for column-count math; the ResizeObserver below feeds both.
-  const applyFitSizing = useCallback((width: number) => {
-    const t = tableRef.current;
-    const coverVisible = t.getColumn('cover')?.getIsVisible() ?? false;
-    const coverW = coverVisible ? COVER_WIDTH : 0;
-    const visibleResizable = Object.entries(DEFAULT_COL_SIZES).filter(
-      ([id]) => t.getColumn(id)?.getIsVisible() !== false
-    );
-    const resizableTotal = visibleResizable.reduce((a, [, b]) => a + b, 0);
-    const available = Math.max(0, width - ACTIONS_WIDTH - coverW - CHECKBOX_WIDTH - SCROLLBAR_BUFFER);
-    const ratio = resizableTotal > 0 ? available / resizableTotal : 1;
-
-    const newSizing: Record<string, number> = { actions: ACTIONS_WIDTH, cover: COVER_WIDTH, select: CHECKBOX_WIDTH };
-    for (const [id, base] of Object.entries(DEFAULT_COL_SIZES)) {
-      const col = t.getColumn(id);
-      if (!col) continue;
-      newSizing[id] = Math.min(
-        col.columnDef.maxSize ?? 600,
-        Math.max(col.columnDef.minSize ?? 60, Math.round(base * ratio))
-      );
-    }
-    t.setColumnSizing(newSizing);
-  }, []);
-
+  // ResizeObserver feeds containerWidth, which drives column-count math.
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
     let timeoutId: number | null = null;
-    const recompute = () => {
-      const w = el.clientWidth;
-      setContainerWidth(w);
-      applyFitSizing(w);
-    };
+    const recompute = () => setContainerWidth(el.clientWidth);
     recompute();
     const observer = new ResizeObserver(() => {
       if (timeoutId !== null) window.clearTimeout(timeoutId);
@@ -492,237 +305,211 @@ export function FileList({
       if (timeoutId !== null) window.clearTimeout(timeoutId);
       observer.disconnect();
     };
-  }, [applyFitSizing]);
-
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (el) applyFitSizing(el.clientWidth);
-  }, [columnVisibility, applyFitSizing]); // re-measure when file type changes
-
-  // Sort control above the grid — the table mode sorts via the column
-  // header; cards have no header so it lives in a small toolbar.
-  const nameSort = sorting.find((s) => s.id === 'display_name');
-  const toggleNameSort = () => {
-    table.getColumn('display_name')?.toggleSorting(nameSort?.desc !== true);
-  };
+  }, []);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {layout === 'grid' && (
-        <div className="flex items-center justify-end gap-2 pb-2 shrink-0">
-          <button
-            type="button"
-            onClick={toggleNameSort}
-            className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border bg-background hover:bg-secondary/60 transition-colors"
-            aria-label="Toggle name sort"
+      {/* ── Header bar ──────────────────────────────────────────────────── */}
+      {!selectionMode ? (
+        <div className="flex items-center gap-2 pb-3 shrink-0 flex-wrap">
+          <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortKey)}>
+            <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
+              <span className="text-muted-foreground">Sort</span>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {SORT_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            aria-label={sortDesc ? 'Sort descending' : 'Sort ascending'}
+            onClick={() => setSortDesc((d) => !d)}
           >
-            Name
-            <ArrowUpDown className="h-3 w-3" aria-hidden="true" />
-            {nameSort && (
-              <span className="text-muted-foreground">
-                {nameSort.desc ? 'Z–A' : 'A–Z'}
-              </span>
+            {sortDesc ? (
+              <ArrowDown className="h-3.5 w-3.5" />
+            ) : (
+              <ArrowUp className="h-3.5 w-3.5" />
             )}
-          </button>
-        </div>
-      )}
-
-      {selectedIds.size > 0 && (
-        <div className="flex items-center gap-3 p-2 bg-primary/10 border border-primary/20 rounded-xl mb-2 shrink-0">
-          <span className="text-xs font-medium text-primary">
-            {selectedIds.size} file{selectedIds.size !== 1 ? 's' : ''} selected
-          </span>
+          </Button>
+          <span className="h-5 w-px bg-border mx-1" aria-hidden="true" />
+          <Popover open={filterOpen} onOpenChange={setFilterOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant={conditions.length > 0 ? 'default' : 'outline'}
+                size="sm"
+                className="h-8 text-xs gap-1.5"
+              >
+                <FilterIcon className="h-3.5 w-3.5" />
+                Filter
+                {conditions.length > 0 && (
+                  <span className="ml-0.5 rounded-full bg-background/30 px-1.5 text-[10px] leading-tight">
+                    {conditions.length}
+                  </span>
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" sideOffset={6} className="w-auto p-3">
+              <FilterEditor
+                conditions={conditions}
+                onConditionsChange={setConditions}
+                tags={availableTags}
+              />
+            </PopoverContent>
+          </Popover>
+          {conditions.map((c) => (
+            <div
+              key={c.id}
+              className="inline-flex items-center rounded-full border bg-secondary/50 hover:bg-secondary transition-colors h-8"
+            >
+              <button
+                type="button"
+                onClick={() => setFilterOpen(true)}
+                className="text-xs pl-3 pr-1.5 h-full text-foreground/80 focus:outline-none"
+                aria-label={`Edit condition: ${describeCondition(c, tagsById)}`}
+              >
+                {describeCondition(c, tagsById)}
+              </button>
+              <button
+                type="button"
+                onClick={() => removeCondition(c.id)}
+                className="px-1.5 h-full text-muted-foreground hover:text-foreground rounded-r-full focus:outline-none"
+                aria-label="Remove condition"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
           <div className="flex-1" />
           <Button
             variant="outline"
             size="sm"
-            onClick={() => {
-              const eligibleIds = Array.from(selectedIds).filter(id => !uploadingFileIds.has(id));
-              if (eligibleIds.length > 0) {
-                onBulkUpload?.(eligibleIds);
-              }
-              clearSelection();
-            }}
-            disabled={!remoteEnabled}
-            className="h-7 text-xs"
+            className="h-8 text-xs"
+            onClick={() => setSelectionMode(true)}
+            disabled={files.length === 0}
           >
-            ☁ Upload to Cloud
+            Select
           </Button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-3 pb-3 shrink-0">
+          <span className="text-sm font-medium text-foreground">
+            {selectedIds.size === 0
+              ? 'Select files'
+              : `${selectedIds.size} file${selectedIds.size === 1 ? '' : 's'} selected`}
+          </span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5">
+                Select first
+                <ChevronDown className="h-3 w-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {[10, 25, 50, 100].map((n) => (
+                <DropdownMenuItem
+                  key={n}
+                  className="text-xs"
+                  onClick={() => selectFirstN(n)}
+                >
+                  First {n}
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="text-xs"
+                onClick={() => selectFirstN(files.length)}
+              >
+                All eligible
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <div className="flex-1" />
+          {selectedIds.size > 0 && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                onClick={clearSelection}
+              >
+                Clear
+              </Button>
+              <Button
+                size="sm"
+                className="h-8 text-xs"
+                disabled={!remoteEnabled}
+                onClick={() => {
+                  const eligibleIds = Array.from(selectedIds).filter(
+                    (id) => !inFlightUploadIds.has(id)
+                  );
+                  if (eligibleIds.length > 0) onBulkUpload?.(eligibleIds);
+                  exitSelectionMode();
+                }}
+              >
+                ☁ Upload to Cloud
+              </Button>
+            </>
+          )}
           <Button
             variant="ghost"
             size="sm"
-            onClick={clearSelection}
-            className="h-7 text-xs"
+            className="h-8 text-xs"
+            onClick={exitSelectionMode}
+            aria-label="Cancel selection"
           >
-            Clear
+            <X className="h-3.5 w-3.5 mr-1" />
+            Cancel
           </Button>
         </div>
       )}
 
-      <div
-        ref={scrollContainerRef}
-        className={`flex-1 min-h-0 overflow-auto ${
-          layout === 'grid' ? '' : 'rounded-md border'
-        }`}
-      >
-        {layout === 'table' ? (
-          // ── Table mode ───────────────────────────────────────────────
-          // display:grid on table/thead/tbody lets tbody use position:
-          // relative + height for the scroll area, and thead use position:
-          // sticky without breaking table layout.
-          <table style={{ display: 'grid', width: table.getTotalSize() }}>
-            <thead
-              style={{ display: 'grid', position: 'sticky', top: 0, zIndex: 1 }}
-              className="bg-background border-b"
-            >
-              {table.getHeaderGroups().map((headerGroup) => (
-                <tr key={headerGroup.id} style={{ display: 'flex', width: '100%' }}>
-                  {headerGroup.headers.map((header) => (
-                    <th
-                      key={header.id}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        width: header.getSize(),
-                        position: 'relative',
-                        overflow: 'hidden',
-                      }}
-                      className="px-3 h-10 text-left text-xs font-medium text-muted-foreground"
+      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-auto">
+        <div
+          style={{ height: totalVirtualSize, position: 'relative', padding: GRID_PAD }}
+        >
+          {virtualItems.map((virtualRow) => {
+            const startIdx = virtualRow.index * colCount;
+            const endIdx = Math.min(startIdx + colCount, files.length);
+            const slice = files.slice(startIdx, endIdx);
+            return (
+              <div
+                key={virtualRow.index}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  transform: `translateY(${virtualRow.start}px)`,
+                  width: '100%',
+                  paddingLeft: GRID_PAD,
+                  paddingRight: GRID_PAD,
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(${colCount}, ${CARD_WIDTH}px)`,
+                  gap: GRID_GAP,
+                  justifyContent: 'start',
+                }}
+              >
+                {slice.map((file) => {
+                  const blocked = file.storage_kind === 'remote' || inFlightUploadIds.has(file.id);
+                  const isSelected = selectedIds.has(file.id);
+                  return (
+                    <div
+                      key={file.id}
+                      className="relative group"
+                      style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}
                     >
-                      {header.isPlaceholder
-                        ? null
-                        : flexRender(header.column.columnDef.header, header.getContext())}
-                      {header.column.getCanResize() && (
-                        <div
-                          onMouseDown={(e) => {
-                            e.stopPropagation();
-                            header.getResizeHandler()(e);
-                          }}
-                          onTouchStart={(e) => {
-                            e.stopPropagation();
-                            header.getResizeHandler()(e);
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                          className={`absolute top-0 right-0 h-full w-1 cursor-col-resize select-none touch-none hover:bg-primary/40 ${
-                            header.column.getIsResizing() ? 'bg-primary' : ''
-                          }`}
-                          aria-label="Resize column"
-                        />
-                      )}
-                    </th>
-                  ))}
-                </tr>
-              ))}
-            </thead>
-            <tbody
-              style={{
-                display: 'grid',
-                height: totalVirtualSize,
-                position: 'relative',
-              }}
-            >
-              {virtualItems.map((virtualRow) => {
-                const row = rows[virtualRow.index];
-                if (!row) return null;
-                return (
-                  <tr
-                    key={row.id}
-                    style={{
-                      display: 'flex',
-                      position: 'absolute',
-                      transform: `translateY(${virtualRow.start}px)`,
-                      width: '100%',
-                      height: ROW_HEIGHT,
-                      alignItems: 'center',
-                    }}
-                    className={`border-b border-border/50 ${
-                      onFileClick ? 'cursor-pointer hover:bg-muted/50' : ''
-                    }`}
-                    onClick={() => onFileClick?.(row.original)}
-                    tabIndex={onFileClick ? 0 : undefined}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && onFileClick) onFileClick(row.original);
-                    }}
-                    role={onFileClick ? 'button' : undefined}
-                    aria-label={
-                      onFileClick ? `View ${row.original.display_name}` : undefined
-                    }
-                  >
-                    {row.getVisibleCells().map((cell) => (
-                      <td
-                        key={cell.id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          width: cell.column.getSize(),
-                          overflow: 'hidden',
-                        }}
-                        className="px-3 whitespace-nowrap"
-                      >
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        ) : (
-          // ── Grid mode ────────────────────────────────────────────────
-          // One virtual item per "grid row" (a horizontal strip of N cards).
-          // Each grid row absolutely positioned within a relative tbody-
-          // equivalent so we can reuse the same scroll container + virtualizer
-          // pattern as table mode.
-          <div
-            style={{
-              height: totalVirtualSize,
-              position: 'relative',
-              padding: GRID_PAD,
-            }}
-          >
-            {virtualItems.map((virtualRow) => {
-              const startIdx = virtualRow.index * colCount;
-              const endIdx = Math.min(startIdx + colCount, rows.length);
-              const slice = rows.slice(startIdx, endIdx);
-              return (
-                <div
-                  key={virtualRow.index}
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    transform: `translateY(${virtualRow.start}px)`,
-                    width: '100%',
-                    paddingLeft: GRID_PAD,
-                    paddingRight: GRID_PAD,
-                    display: 'grid',
-                    gridTemplateColumns: `repeat(${colCount}, ${CARD_WIDTH}px)`,
-                    gap: GRID_GAP,
-                    justifyContent: 'start',
-                  }}
-                >
-                  {slice.map((row) => {
-                    const file = row.original;
-                    const blocked = file.storage_kind === 'remote' || uploadingFileIds.has(file.id);
-                    const inSelectionMode = selectedIds.size > 0;
-                    return (
-                      <div
-                        key={row.id}
-                        className="relative group"
-                        style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}
-                      >
-                        {/* Selection checkbox — hidden until hover or until selection mode is active */}
-                        <div
-                          className={`absolute top-2 left-2 z-10 transition-opacity duration-150 ${
-                            inSelectionMode
-                              ? 'opacity-100'
-                              : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'
-                          }`}
-                        >
+                      {selectionMode && (
+                        <div className="absolute top-2 left-2 z-10">
                           <label className="flex items-center justify-center h-6 w-6 rounded-full bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm cursor-pointer hover:bg-background transition-colors">
                             <input
                               type="checkbox"
-                              checked={blocked ? false : selectedIds.has(file.id)}
+                              checked={blocked ? false : isSelected}
                               onChange={() => !blocked && toggleSelection(file.id)}
                               onClick={(e) => e.stopPropagation()}
                               disabled={blocked}
@@ -731,57 +518,67 @@ export function FileList({
                             />
                           </label>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => onFileClick?.(file)}
-                          className="w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 hover:bg-muted/50 transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
-                          aria-label={`View ${file.display_name}`}
-                        >
-                          <div className="relative aspect-[2/3] w-full rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
-                            <CardCover fileId={file.id} />
-                            {/* Status indicator — overlays the cover at bottom-left, identical geometry across states */}
-                            <div className="absolute bottom-1.5 left-1.5">
-                              <CardStatus
-                                storageKind={file.storage_kind}
-                                isUploading={uploadingFileIds.has(file.id)}
-                              />
-                            </div>
-                          </div>
-                          <div className="space-y-0.5 min-w-0 px-0.5">
-                            <p
-                              className="text-sm font-medium leading-tight truncate"
-                              title={file.display_name}
-                            >
-                              {file.display_name}
-                            </p>
-                            {file.authors && file.authors.length > 0 && (
-                              <p className="text-xs text-muted-foreground line-clamp-1">
-                                {file.authors.map((a) => a.name).join(', ')}
-                              </p>
-                            )}
-                          </div>
-                        </button>
-                        {onFileEdit && onFileDelete && (
-                          <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity z-10">
-                            <FileContextMenu
-                              file={file}
-                              onEdit={onFileEdit}
-                              onDelete={onFileDelete}
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleCardClick(file)}
+                        className={`w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring ${
+                          isSelected
+                            ? 'bg-primary/10 ring-1 ring-primary/40'
+                            : 'hover:bg-muted/50'
+                        }`}
+                        aria-label={
+                          selectionMode
+                            ? `Toggle selection of ${file.display_name}`
+                            : `View ${file.display_name}`
+                        }
+                        aria-pressed={selectionMode ? isSelected : undefined}
+                      >
+                        <div className="relative aspect-[2/3] w-full rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
+                          <CardCover file={file} />
+                          <div className="absolute bottom-1.5 left-1.5">
+                            <CardStatus
+                              storageKind={file.storage_kind}
+                              isUploading={inFlightUploadIds.has(file.id)}
                             />
                           </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-        )}
+                        </div>
+                        <div className="space-y-0.5 min-w-0 px-0.5">
+                          <p
+                            className="text-sm font-medium leading-tight truncate"
+                            title={file.display_name}
+                          >
+                            {file.display_name}
+                          </p>
+                          {file.authors && file.authors.length > 0 && (
+                            <p className="text-xs text-muted-foreground line-clamp-1">
+                              {file.authors.map((a) => a.name).join(', ')}
+                            </p>
+                          )}
+                        </div>
+                      </button>
+                      {!selectionMode && onFileEdit && onFileDelete && (
+                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity z-10">
+                          <FileContextMenu
+                            file={file}
+                            onEdit={onFileEdit}
+                            onDelete={onFileDelete}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
 
         {files.length === 0 && (
           <div className="flex items-center justify-center h-24 text-sm text-muted-foreground">
-            No files in library.
+            {importable.length === 0
+              ? 'No files in library.'
+              : 'No files match the active filters.'}
           </div>
         )}
 

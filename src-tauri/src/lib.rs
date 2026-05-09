@@ -2,6 +2,7 @@ mod commands;
 mod database;
 mod pipeline;
 mod providers;
+mod services;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -17,6 +18,17 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(ProcessingCancelled(Arc::new(AtomicBool::new(false))))
+        .setup(|app| {
+            // Long-running worker queues: spawn early so commands can push
+            // jobs to the channels via the senders stashed in app state.
+            use tauri::Manager;
+            let app_handle = app.handle().clone();
+            let upload_tx = services::upload_worker::spawn(app_handle.clone());
+            let import_tx = services::import_worker::spawn(app_handle);
+            app.manage(services::upload_worker::UploadQueueSender(upload_tx));
+            app.manage(services::import_worker::ImportQueueSender(import_tx));
+            Ok(())
+        })
         .plugin(
             tauri_plugin_sql::Builder::new()
                 .add_migrations("sqlite:biblio.db", migrations)
@@ -72,7 +84,7 @@ pub fn run() {
             database::recovery::db_create_backup,
             database::recovery::db_optimize,
             database::recovery::db_get_stats,
-            commands::processing::file_prepare_import,
+            commands::processing::enqueue_import,
             commands::processing::cancel_processing,
             commands::llm::llm_config_get,
             commands::llm::llm_config_set,

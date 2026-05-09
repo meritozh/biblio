@@ -11,14 +11,15 @@ use crate::ProcessingCancelled;
 use crate::pipeline::{
     self, FileContext, NodeError, Phase2Node, PipelineEnv, PipelineSettings,
 };
+use crate::services::import_worker::{ImportJob, ImportQueueSender};
 
 // Re-export the pipeline types that appear in FilePreparedImport's serde
 // shape. Keeping them under this path preserves existing call sites; new
 // code can import them from crate::pipeline directly.
 pub use crate::pipeline::{DuplicateInfo, ExtractedField};
 
-/// The per-file result returned by `file_prepare_import` and streamed to the
-/// frontend via the `file-prepared` event. Serde shape must stay stable.
+/// The per-file result streamed to the frontend via the `file-prepared`
+/// event. Serde shape must stay stable.
 #[derive(Debug, Clone, Serialize)]
 pub struct FilePreparedImport {
     pub path: String,
@@ -37,11 +38,22 @@ pub struct FilePreparedImport {
     pub progress: Option<String>,
     pub suggested_tags: Vec<String>,
     pub duplicate_of: Option<DuplicateInfo>,
+    /// Cross-batch duplicate signal. Set to None under the queue model;
+    /// cross-session duplicate detection now lives client-side because
+    /// "the batch" no longer has a defined boundary.
     pub batch_duplicate_group: Option<String>,
     /// True when the source path is a directory of images. Tells the
     /// review UI to surface a "Folder → .zip" hint, since the import
     /// flow will package the folder on commit.
     pub source_is_directory: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProcessingProgressEvent {
+    current: usize,
+    total: usize,
+    current_file: String,
+    status: String,
 }
 
 fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
@@ -58,33 +70,107 @@ pub async fn cancel_processing(app: tauri::AppHandle) {
     cancelled.0.store(true, Ordering::Relaxed);
 }
 
-/// Prepare a batch of paths for import: run both pipelines, stream
-/// per-file `file-prepared` events, and return the final list.
+/// Push a batch of paths into the import worker queue and return immediately.
 ///
-/// `path_folder_roots` is a per-path map of source folder — keys are
-/// entries in `paths`, values are the absolute folder paths the user
-/// picked. Empty/None for non-folder picks. Drives per-comic parent-dir
-/// author hints; each unique folder root gets one LLM cleanup call
-/// regardless of how many comics were scanned out of it.
+/// The worker drains jobs serially in the order received; the user can call
+/// this again while previous work is in flight and the new paths append to
+/// the queue. Each call resets the shared cancel flag so a prior cancel
+/// doesn't poison new work.
+///
+/// `path_folder_roots` is a per-path map of source folder — keys are entries
+/// in `paths`, values are the absolute folder paths the user picked. Empty
+/// for non-folder picks. Drives per-comic parent-dir author hints; the
+/// suppression rule is applied per call (a folder pick that lands one comic
+/// IS-the-root suppresses the candidate, matching the previous behavior).
 #[tauri::command]
-pub async fn file_prepare_import(
+pub async fn enqueue_import(
     app: tauri::AppHandle,
     paths: Vec<String>,
     path_folder_roots: Option<HashMap<String, String>>,
-) -> Result<Vec<FilePreparedImport>, String> {
+) -> Result<(), String> {
+    // Reset cancellation so new work after a prior cancel proceeds normally.
+    app.state::<ProcessingCancelled>()
+        .0
+        .store(false, Ordering::Relaxed);
+
+    let path_folder_roots = path_folder_roots.unwrap_or_default();
+    let parent_authors = derive_parent_authors(&paths, &path_folder_roots);
+
+    let sender = app.state::<ImportQueueSender>();
+    for raw in paths {
+        let path = PathBuf::from(&raw);
+        let candidates = parent_authors.get(&path).cloned().unwrap_or_default();
+        let job = ImportJob {
+            path,
+            parent_authors: candidates,
+        };
+        sender.0.send(job).map_err(|e| {
+            format!("Import queue is closed: {e}. The worker has stopped accepting jobs.")
+        })?;
+    }
+
+    Ok(())
+}
+
+/// Per-path analysis driver invoked by the import worker. Builds the env,
+/// dispatches by kind, and lets the pipeline's nodes emit
+/// `processing-progress` and `file-prepared` events as it runs.
+pub(crate) async fn process_import_path(
+    app: &tauri::AppHandle,
+    path: PathBuf,
+    parent_authors: Vec<String>,
+) -> Result<(), String> {
+    use crate::pipeline::nodes::{FileKind, kind_for_path};
+
+    // Bail early on unsupported extensions so the frontend's placeholder
+    // doesn't sit in pending forever.
+    let Some(kind) = kind_for_path(&path) else {
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string_lossy().to_string());
+        let _ = app.emit(
+            "processing-progress",
+            &ProcessingProgressEvent {
+                current: 1,
+                total: 1,
+                current_file: file_name,
+                status: "error".into(),
+            },
+        );
+        return Ok(());
+    };
+
+    let env = build_pipeline_env(app).await?;
+
+    let pipeline = match kind {
+        FileKind::Novel => pipeline::nodes::novel_pipeline()
+            .add_phase2(EmitPreparedNode)
+            .build(),
+        FileKind::Comic => pipeline::nodes::comic_pipeline()
+            .add_phase2(EmitPreparedNode)
+            .build(),
+    };
+
+    let mut candidates_map: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    candidates_map.insert(path.clone(), parent_authors);
+
+    pipeline
+        .run_batch(vec![path], Arc::clone(&env), candidates_map)
+        .await;
+
+    Ok(())
+}
+
+async fn build_pipeline_env(app: &tauri::AppHandle) -> Result<Arc<PipelineEnv>, String> {
     use super::{Author, Category, FileEntry, Tag};
 
-    // Reset the cancellation flag at the start of every batch so a cancel
-    // from a previous import doesn't poison this one.
-    let cancelled_state = app.state::<ProcessingCancelled>();
-    cancelled_state.0.store(false, Ordering::Relaxed);
-    let cancelled: Arc<std::sync::atomic::AtomicBool> = Arc::clone(&cancelled_state.0);
+    let cancelled: Arc<std::sync::atomic::AtomicBool> =
+        Arc::clone(&app.state::<ProcessingCancelled>().0);
 
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    // Fetch every piece of shared state the pipeline needs, up front, so
-    // per-file nodes don't hit the DB in their hot paths.
     let categories: Vec<Category> = sqlx::query_as(
         "SELECT id, name, description, icon, is_default, folder_name, created_at FROM categories",
     )
@@ -103,7 +189,7 @@ pub async fn file_prepare_import(
         .map_err(|e| format!("Failed to load tags: {e}"))?;
 
     let existing_files: Vec<FileEntry> = sqlx::query_as(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files",
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, created_at, updated_at FROM files",
     )
     .fetch_all(&pool)
     .await
@@ -136,7 +222,7 @@ pub async fn file_prepare_import(
     let llm_config = super::llm::load_config(&pool).await?;
     let analyze_content = llm_config.analyze_content;
 
-    let env = Arc::new(PipelineEnv {
+    Ok(Arc::new(PipelineEnv {
         pool,
         llm_config,
         app: app.clone(),
@@ -148,64 +234,39 @@ pub async fn file_prepare_import(
         tag_names,
         existing_files,
         settings: PipelineSettings { analyze_content },
-    });
+    }))
+}
 
-    // EmitPreparedNode is command-layer: it knows how to convert a
-    // FileContext to the command's public FilePreparedImport shape, which
-    // the pipeline module is deliberately agnostic about.
-    //
-    // Two pipelines, one dispatcher: extension picks novel vs comic.
-    // We still want streaming `file-prepared` events ordered by completion,
-    // so EmitPreparedNode is appended to BOTH compositions.
-    let novel_pipeline = pipeline::nodes::novel_pipeline()
-        .add_phase2(EmitPreparedNode)
-        .build();
-    let comic_pipeline = pipeline::nodes::comic_pipeline()
-        .add_phase2(EmitPreparedNode)
-        .build();
+/// Apply the existing per-root parent-author candidate logic to a single
+/// enqueue's paths. Each call is its own mini-batch — folder picks that
+/// arrive together get the suppression rule (skip when the only comic from
+/// a root IS the root directory itself); paths from different enqueue
+/// calls don't cross-contaminate.
+fn derive_parent_authors(
+    paths: &[String],
+    path_folder_roots: &HashMap<String, String>,
+) -> HashMap<PathBuf, Vec<String>> {
+    use crate::pipeline::nodes::{FileKind, kind_for_path};
 
-    // Frontend filters by extension before invoking, but skip anything
-    // that slipped past (drag-drop, IPC abuse, future code paths). The
-    // missing entries surface in the result map's final-sync as errored
-    // items, matching the existing "Analysis failed" UX.
-    let mut novel_paths: Vec<PathBuf> = Vec::new();
-    let mut comic_paths: Vec<PathBuf> = Vec::new();
-    for raw in paths {
-        let pb = PathBuf::from(raw);
-        match pipeline::nodes::kind_for_path(&pb) {
-            Some(pipeline::nodes::FileKind::Comic) => comic_paths.push(pb),
-            Some(pipeline::nodes::FileKind::Novel) => novel_paths.push(pb),
-            None => {} // dropped; frontend final-sync flags it as failed
-        }
-    }
-
-    // Per-path parent-dir author candidates. For every unique folder root
-    // in `path_folder_roots`, derive an author candidate from the picked
-    // folder name and fan it out across every comic scanned from that
-    // root. Non-folder picks and novels get an empty candidate list.
-    //
-    // Cleanup is a static rule (`[author]` → `author`, see
-    // `clean_folder_author_name`), not an LLM call — folder authors
-    // overwhelmingly follow the bracket convention, the LLM round-trip
-    // was both slow and brittle (one malformed JSON response sank the
-    // whole batch).
-    //
-    // Trivial-pick suppression is per root: when a root contributes
-    // exactly one comic AND that comic IS the root directory itself
-    // (image-folder pick that auto-zips on commit), the basename would
-    // duplicate the comic's own name as its author — skip it.
-    let path_folder_roots = path_folder_roots.unwrap_or_default();
+    // Group only comics by their picked root. Novels never get parent-dir
+    // author hints (they have their own metadata pipeline).
     let mut comics_per_root: HashMap<String, Vec<PathBuf>> = HashMap::new();
-    for path in &comic_paths {
-        let key = path.to_string_lossy().to_string();
-        if let Some(root) = path_folder_roots.get(&key) {
-            comics_per_root.entry(root.clone()).or_default().push(path.clone());
+    for raw in paths {
+        let path = PathBuf::from(raw);
+        if !matches!(kind_for_path(&path), Some(FileKind::Comic)) {
+            continue;
+        }
+        if let Some(root) = path_folder_roots.get(raw) {
+            comics_per_root
+                .entry(root.clone())
+                .or_default()
+                .push(path);
         }
     }
 
-    let mut parent_author_candidates_by_path: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    let mut by_path: HashMap<PathBuf, Vec<String>> = HashMap::new();
     for (root, comics_in_root) in comics_per_root {
-        let root_path = std::path::PathBuf::from(&root);
+        let root_path = PathBuf::from(&root);
         let Some(name) = root_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -232,70 +293,15 @@ pub async fn file_prepare_import(
         let candidates = vec![cleaned];
 
         for path in comics_in_root {
-            parent_author_candidates_by_path.insert(path, candidates.clone());
+            by_path.insert(path, candidates.clone());
         }
     }
 
-    // Run sequentially: both pipelines emit `processed_ordinal` starting
-    // from 1, so concurrent execution would surface two interleaved
-    // counters in the UI. Empty path lists short-circuit `run_batch`, so
-    // the common single-type import pays nothing for the unused branch.
-    let novel_ctxs = novel_pipeline
-        .run_batch(novel_paths, Arc::clone(&env), HashMap::new())
-        .await;
-    let comic_ctxs = comic_pipeline
-        .run_batch(comic_paths, Arc::clone(&env), parent_author_candidates_by_path)
-        .await;
-
-    let mut results: Vec<FilePreparedImport> = novel_ctxs
-        .into_iter()
-        .chain(comic_ctxs.into_iter())
-        .map(prepared_from_ctx)
-        .collect();
-
-    // Phase 3 — batch-level duplicate detection (same display_name across
-    // files being imported together). Runs on the collected results so the
-    // grouping is stable across streaming order.
-    detect_batch_duplicates(&mut results);
-
-    Ok(results)
+    by_path
 }
 
-/// Build a FilePreparedImport from an owned FileContext at the end of the
-/// batch. Also used (cloned version) by EmitPreparedNode for the per-file
-/// streaming emission.
-fn prepared_from_ctx(ctx: FileContext) -> FilePreparedImport {
-    use base64::Engine;
-    let (cover_data, cover_mime_type) = match ctx.cover {
-        Some(c) => (
-            Some(base64::engine::general_purpose::STANDARD.encode(&c.data)),
-            Some(c.mime_type),
-        ),
-        None => (None, None),
-    };
-    let display_name = ctx.display_name.unwrap_or_else(|| ctx.file_name.clone());
-    let source_is_directory = ctx.file_path.is_dir();
-    FilePreparedImport {
-        path: ctx.file_path.to_string_lossy().to_string(),
-        file_name: ctx.file_name,
-        display_name,
-        category_id: ctx.category_id,
-        tag_ids: ctx.tag_ids,
-        author_ids: ctx.author_ids,
-        metadata: ctx.extracted_metadata,
-        unresolved_author_names: ctx.unresolved_authors,
-        cover_data,
-        cover_mime_type,
-        progress: ctx.progress,
-        suggested_tags: ctx.suggested_tags,
-        duplicate_of: ctx.duplicate_of,
-        batch_duplicate_group: None,
-        source_is_directory,
-    }
-}
-
-/// Streaming-emission variant that clones the cover bytes so the
-/// FileContext can be reused downstream. Called from EmitPreparedNode.
+/// Streaming-emission variant that clones cover bytes so the FileContext
+/// can be reused downstream. Called from EmitPreparedNode.
 fn prepared_from_ctx_ref(ctx: &FileContext) -> FilePreparedImport {
     use base64::Engine;
     let (cover_data, cover_mime_type) = match ctx.cover.as_ref() {
@@ -374,30 +380,6 @@ fn clean_folder_author_name(raw: &str) -> String {
     trimmed.to_string()
 }
 
-/// Tag each file in a batch that shares a display_name AND category with
-/// another file so the frontend can group and warn about same-batch
-/// duplicates. Same name in different categories (e.g. a novel and a
-/// comic that share a title) is not a duplicate.
-fn detect_batch_duplicates(results: &mut [FilePreparedImport]) {
-    let mut name_groups: HashMap<(String, Option<i64>), Vec<usize>> = HashMap::new();
-    for (idx, result) in results.iter().enumerate() {
-        let normalized = result.display_name.trim().to_lowercase();
-        name_groups
-            .entry((normalized, result.category_id))
-            .or_default()
-            .push(idx);
-    }
-
-    for ((name, _category_id), indices) in &name_groups {
-        if indices.len() > 1 {
-            let group_id = format!("batch_{}", name);
-            for &idx in indices {
-                results[idx].batch_duplicate_group = Some(group_id.clone());
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,58 +413,5 @@ mod tests {
     fn clean_folder_author_ignores_unbalanced_or_nested() {
         assert_eq!(clean_folder_author_name("[unterminated"), "[unterminated");
         assert_eq!(clean_folder_author_name("title [extra]"), "title [extra]");
-    }
-
-    fn prepared_with(name: &str, category_id: Option<i64>) -> FilePreparedImport {
-        FilePreparedImport {
-            path: format!("/tmp/{name}"),
-            file_name: name.to_string(),
-            display_name: name.to_string(),
-            category_id,
-            tag_ids: vec![],
-            author_ids: vec![],
-            metadata: vec![],
-            unresolved_author_names: vec![],
-            cover_data: None,
-            cover_mime_type: None,
-            progress: None,
-            suggested_tags: vec![],
-            duplicate_of: None,
-            batch_duplicate_group: None,
-            source_is_directory: false,
-        }
-    }
-
-    #[test]
-    fn batch_dup_groups_same_name_same_category() {
-        let mut results = vec![
-            prepared_with("三体", Some(1)),
-            prepared_with("三体", Some(1)),
-        ];
-        detect_batch_duplicates(&mut results);
-        assert!(results[0].batch_duplicate_group.is_some());
-        assert_eq!(results[0].batch_duplicate_group, results[1].batch_duplicate_group);
-    }
-
-    #[test]
-    fn batch_dup_skips_same_name_different_category() {
-        let mut results = vec![
-            prepared_with("三体", Some(1)),
-            prepared_with("三体", Some(2)),
-        ];
-        detect_batch_duplicates(&mut results);
-        assert!(results[0].batch_duplicate_group.is_none());
-        assert!(results[1].batch_duplicate_group.is_none());
-    }
-
-    #[test]
-    fn batch_dup_groups_when_both_categories_unset() {
-        let mut results = vec![
-            prepared_with("三体", None),
-            prepared_with("三体", None),
-        ];
-        detect_batch_duplicates(&mut results);
-        assert!(results[0].batch_duplicate_group.is_some());
-        assert_eq!(results[0].batch_duplicate_group, results[1].batch_duplicate_group);
     }
 }

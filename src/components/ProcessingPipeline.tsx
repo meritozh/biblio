@@ -24,7 +24,6 @@ import {
 import { SuggestedTagChip } from '@/components/SuggestedTagChip';
 import { DuplicateWarning } from '@/components/DuplicateWarning';
 import {
-  filePrepareImport,
   fileCreate,
   fileReplace,
   fileDeleteSource,
@@ -215,55 +214,66 @@ export function ProcessingPipeline({
   onImportComplete,
 }: ProcessingPipelineProps) {
   const [fileItems, setFileItems] = useState<FileItemState[]>([]);
-  const [analyzing, setAnalyzing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<TabKey>('review');
-  const analysisStarted = useRef(false);
+
+  // Refs so the long-lived listener callbacks always read the latest props
+  // / context without re-subscribing on every parent re-render.
+  const remoteEnabledRef = useRef<boolean>(true);
+  const categoriesRef = useRef(categories);
+  const onAuthorCreateRef = useRef(onAuthorCreate);
+  const createdAuthorIdsRef = useRef<Record<string, number>>({});
+  const listenersRef = useRef<{
+    progress?: UnlistenFn;
+    prepared?: UnlistenFn;
+  }>({});
 
   useEffect(() => {
-    if (!open || paths.length === 0) {
-      analysisStarted.current = false;
+    categoriesRef.current = categories;
+  }, [categories]);
+  useEffect(() => {
+    onAuthorCreateRef.current = onAuthorCreate;
+  }, [onAuthorCreate]);
+
+  // Listener-setup effect: runs on dialog open, tears down on close. The
+  // worker emits per-file events for everything the route enqueues; we
+  // listen once and route by path.
+  useEffect(() => {
+    if (!open) {
+      listenersRef.current.progress?.();
+      listenersRef.current.prepared?.();
+      listenersRef.current = {};
+      // Cancel any queued analysis so the worker doesn't burn LLM tokens
+      // on files the user is no longer reviewing. Mirrors the original
+      // pre-queue behavior where closing the dialog ended the batch.
+      void cancelProcessing();
+      setFileItems([]);
+      setExpandedIds(new Set());
+      createdAuthorIdsRef.current = {};
       return;
     }
 
-    if (analysisStarted.current) return;
-    analysisStarted.current = true;
+    let cancelled = false;
 
-    const createdAuthorIds: Record<string, number> = {};
-
-    const runAnalysis = async () => {
-      setAnalyzing(true);
-
+    void (async () => {
       // Comic schema defaults to remote, but the user may have disabled
       // remote uploads in Debug Settings. Honor that override at import
-      // time so dropped/picked comics start out as `local` instead.
-      const remoteRaw = await settingsGet('debug_remote_upload_enabled');
-      const remoteEnabled = remoteRaw !== 'false';
+      // time so dropped/picked comics start out as `local`. Fetched once
+      // per dialog open; cached in a ref so the path-diff effect can read
+      // it synchronously.
+      try {
+        const remoteRaw = await settingsGet('debug_remote_upload_enabled');
+        remoteEnabledRef.current = remoteRaw !== 'false';
+      } catch {
+        // Default true on settings read failure.
+        remoteEnabledRef.current = true;
+      }
 
-      const initialItems: FileItemState[] = paths.map((path) => {
-        const fileName = path.substring(Math.max(0, path.lastIndexOf('/') + 1)) || path;
-        return {
-          path,
-          fileName,
-          status: 'pending' as FileStatus,
-          selected: true, // default-include; Failed items will be auto-unchecked on transition
-          formValues: { ...EMPTY_FORM_VALUES, display_name: fileName },
-          userEdited: false,
-          suggestedTags: [],
-          duplicateAction: null,
-          storageKind: defaultStorageKind(fileName, remoteEnabled),
-        };
-      });
-      setFileItems(initialItems);
-      setImporting(false);
-      setExpandedIds(new Set()); // start all collapsed; Review items auto-expand on arrival
-
-      let unlistenProgress: UnlistenFn | null = null;
-      let unlistenPrepared: UnlistenFn | null = null;
+      if (cancelled) return;
 
       try {
-        unlistenProgress = await listenProcessingProgress((p) => {
+        const unsub = await listenProcessingProgress((p) => {
           setFileItems((prev) =>
             prev.map((item) =>
               item.path === p.current_file
@@ -272,18 +282,24 @@ export function ProcessingPipeline({
             )
           );
         });
+        if (cancelled) {
+          unsub();
+        } else {
+          listenersRef.current.progress = unsub;
+        }
       } catch (error) {
         console.error('Failed to listen for progress:', error);
       }
 
       try {
-        unlistenPrepared = await listenFilePrepared(async (result) => {
-          // Auto-create any unresolved authors for THIS file (deduped across batch)
+        const unsub = await listenFilePrepared(async (result) => {
+          // Auto-create unresolved authors. The cache is dialog-scoped via
+          // the ref so multiple enqueues within one open share dedup.
           for (const name of result.unresolved_author_names) {
-            if (!createdAuthorIds[name]) {
+            if (!createdAuthorIdsRef.current[name]) {
               try {
-                const newAuthor = await onAuthorCreate(name);
-                createdAuthorIds[name] = newAuthor.id;
+                const newAuthor = await onAuthorCreateRef.current(name);
+                createdAuthorIdsRef.current[name] = newAuthor.id;
               } catch {
                 // Already exists or creation failed — ignore
               }
@@ -292,7 +308,7 @@ export function ProcessingPipeline({
 
           const allAuthorIds = [...result.author_ids];
           for (const name of result.unresolved_author_names) {
-            const id = createdAuthorIds[name];
+            const id = createdAuthorIdsRef.current[name];
             if (id && !allAuthorIds.includes(id)) {
               allAuthorIds.push(id);
             }
@@ -302,17 +318,14 @@ export function ProcessingPipeline({
             prev.map((item) => {
               if (item.path !== result.path) return item;
 
-              // When the LLM didn't pick a category, fall back to the
-              // kind's default (e.g. comics → "comic" category) so the
-              // user doesn't have to set it manually for every import.
-              // Folder imports have no extension, so trust the backend's
-              // `source_is_directory` flag and route them to comic.
               const itemKind = result.source_is_directory
                 ? 'comic'
                 : kindForPath(item.path);
               const resolvedCategoryId =
                 result.category_id ??
-                (itemKind ? defaultCategoryIdForKind(itemKind, categories) : null);
+                (itemKind
+                  ? defaultCategoryIdForKind(itemKind, categoriesRef.current)
+                  : null);
               const formValues: DynamicMetadataFormValues = item.userEdited
                 ? item.formValues
                 : {
@@ -346,11 +359,7 @@ export function ProcessingPipeline({
             })
           );
 
-          // Review items auto-expand so duplicate & partial signals are visible;
-          // Ready items stay collapsed to keep the list dense.
-          const needsReview =
-            result.duplicate_of !== null && result.duplicate_of !== undefined;
-          if (needsReview) {
+          if (result.duplicate_of) {
             setExpandedIds((prev) => {
               const next = new Set(prev);
               next.add(result.path);
@@ -358,54 +367,62 @@ export function ProcessingPipeline({
             });
           }
         });
+        if (cancelled) {
+          unsub();
+        } else {
+          listenersRef.current.prepared = unsub;
+        }
       } catch (error) {
         console.error('Failed to listen for file-prepared:', error);
       }
+    })();
 
-      try {
-        const results = await filePrepareImport(paths, pathFolderRoots);
-
-        // Final sync: backfill anything the streaming events missed + mark
-        // items that never produced a result as errored.
-        setFileItems((prev) => {
-          const resultsByPath = new Map(results.map((r) => [r.path, r] as const));
-          return prev.map((item) => {
-            const r = resultsByPath.get(item.path);
-            if (!r) {
-              return {
-                ...item,
-                status: 'error' as FileStatus,
-                error: 'Analysis failed',
-                selected: false,
-              };
-            }
-            return {
-              ...item,
-              preparedImport: r,
-              duplicateAction:
-                item.duplicateAction ?? r.duplicate_of?.recommendation ?? null,
-            };
-          });
-        });
-      } catch (error) {
-        console.error('Analysis failed:', error);
-        setFileItems((prev) =>
-          prev.map((item) => ({
-            ...item,
-            status: 'error' as FileStatus,
-            error: String(error),
-            selected: false,
-          }))
-        );
-      } finally {
-        if (unlistenProgress) unlistenProgress();
-        if (unlistenPrepared) unlistenPrepared();
-        setAnalyzing(false);
-      }
+    return () => {
+      cancelled = true;
     };
+  }, [open]);
 
-    runAnalysis();
-  }, [open, paths, pathFolderRoots, onAuthorCreate]);
+  // Path-diff effect: append placeholder items for paths the dialog hasn't
+  // seen yet. Existing items keep their state (analysis results, user
+  // edits) so an enqueue mid-review doesn't clobber the user's work.
+  useEffect(() => {
+    if (!open || paths.length === 0) return;
+    setFileItems((prev) => {
+      const known = new Set(prev.map((i) => i.path));
+      const additions: FileItemState[] = [];
+      for (const path of paths) {
+        if (known.has(path)) continue;
+        const fileName =
+          path.substring(Math.max(0, path.lastIndexOf('/') + 1)) || path;
+        additions.push({
+          path,
+          fileName,
+          status: 'pending' as FileStatus,
+          selected: true,
+          formValues: { ...EMPTY_FORM_VALUES, display_name: fileName },
+          userEdited: false,
+          suggestedTags: [],
+          duplicateAction: null,
+          storageKind: defaultStorageKind(fileName, remoteEnabledRef.current),
+        });
+      }
+      return additions.length === 0 ? prev : [...prev, ...additions];
+    });
+    setImporting(false);
+  }, [open, paths]);
+
+  // `analyzing` is derived from item statuses now that the queue model has
+  // no batch boundary — true while any item is in a non-terminal state.
+  const analyzing = useMemo(
+    () =>
+      fileItems.some(
+        (i) =>
+          i.status === 'pending' ||
+          i.status === 'extracting_name' ||
+          i.status === 'analyzing_content'
+      ),
+    [fileItems]
+  );
 
   // Auto-deselect items that transitioned to error after initial analysis.
   // (The streaming path can mark a file ready → we then import it and it
@@ -427,8 +444,8 @@ export function ProcessingPipeline({
 
   const handleCancelAnalysis = useCallback(async () => {
     await cancelProcessing();
-    analysisStarted.current = false;
-    setAnalyzing(false);
+    // Mid-flight items roll back to `pending` for visibility; the dialog
+    // close clears state via the listener-setup effect's cleanup branch.
     setFileItems((prev) =>
       prev.map((item) =>
         item.status === 'extracting_name' || item.status === 'analyzing_content'
@@ -703,7 +720,7 @@ export function ProcessingPipeline({
   ).length;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} modal={false}>
       <DialogContent
         className="max-w-3xl max-h-[90vh] flex flex-col overflow-hidden"
         onInteractOutside={(e) => e.preventDefault()}

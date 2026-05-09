@@ -17,7 +17,6 @@ import type {
   PromptCreatePayload,
   RemoteConfig,
   RemoteUploadProgress,
-  RemoteUploadResponse,
 } from '@/types';
 
 export async function fileList(
@@ -101,7 +100,11 @@ export async function remoteLogout(): Promise<void> {
   return invoke('remote_logout');
 }
 
-export async function fileUploadToRemote(fileIds: number[]): Promise<RemoteUploadResponse> {
+/** Push a batch of file IDs into the remote-upload worker queue. Returns
+ *  immediately; subscribe via {@link onRemoteUploadProgress} for per-task
+ *  state changes. The user can call this again while previous uploads are
+ *  in flight — new IDs append to the queue. */
+export async function enqueueRemoteUpload(fileIds: number[]): Promise<void> {
   return invoke('file_upload_to_remote', { fileIds });
 }
 
@@ -375,11 +378,15 @@ export function translateError(error: string): string {
   return error;
 }
 
-export async function filePrepareImport(
+/** Push a batch of paths into the import worker queue. Returns immediately;
+ *  subscribe via {@link listenProcessingProgress} and {@link listenFilePrepared}
+ *  for per-file state changes. The user can call this again while previous
+ *  analysis is in flight — new paths append to the queue. */
+export async function enqueueImport(
   paths: string[],
   pathFolderRoots?: Record<string, string>
-): Promise<FilePreparedImport[]> {
-  return invoke('file_prepare_import', {
+): Promise<void> {
+  return invoke('enqueue_import', {
     paths,
     pathFolderRoots: pathFolderRoots && Object.keys(pathFolderRoots).length > 0
       ? pathFolderRoots

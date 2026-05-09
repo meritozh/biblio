@@ -219,21 +219,10 @@ export interface RemoteConfig {
 export interface RemoteUploadProgress {
   file_id: number;
   file_name: string;
-  status: 'uploading' | 'success' | 'error' | 'skipped';
+  /** `pending` is the queued-but-not-yet-running state in the producer-consumer
+   *  worker. The backend emits `uploading` once the worker picks the job up. */
+  status: 'pending' | 'uploading' | 'success' | 'error' | 'skipped';
   error?: string;
-  current: number;
-  total: number;
-}
-
-export interface FileUploadResult {
-  file_id: number;
-  success: boolean;
-  error?: string;
-  remote_path?: string;
-}
-
-export interface RemoteUploadResponse {
-  results: FileUploadResult[];
 }
 
 /** Mime-type group a prompt applies to. */

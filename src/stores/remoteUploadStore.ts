@@ -1,81 +1,149 @@
 import { Store, useStore } from '@tanstack/react-store';
-import { fileUploadToRemote, onRemoteUploadProgress, translateError } from '@/lib/tauri';
+import { enqueueRemoteUpload, onRemoteUploadProgress, translateError } from '@/lib/tauri';
 import type { RemoteUploadProgress } from '@/types';
-import type { UnlistenFn } from '@tauri-apps/api/event';
 
 interface RemoteUploadState {
+  /** Append-only queue across the session. Includes pending, in-flight, and
+   *  finished entries; finished rows linger until the user clears them so
+   *  they remain visible while new work is enqueued. */
   uploads: RemoteUploadProgress[];
-  isUploading: boolean;
+  /** Whether the bottom-anchored panel is visible at all. */
   showPanel: boolean;
+  /** Collapsed state. While in-flight work exists, the user can minimize
+   *  the panel (tucking it into a single-line strip) but not fully dismiss
+   *  it; full dismissal is only allowed once the queue is idle. */
+  minimized: boolean;
 }
 
 const initialState: RemoteUploadState = {
   uploads: [],
-  isUploading: false,
   showPanel: false,
+  minimized: false,
 };
 
 const store = new Store<RemoteUploadState>(initialState);
+
+// One long-lived progress listener for the whole session. The worker emits
+// per-file events; we look up the matching upload by file_id and patch its
+// status. Setting this up once means subsequent enqueueUpload calls don't
+// race on listener setup, and finished rows stay updated even after the
+// caller's enqueue promise resolves.
+let listenerStarted = false;
+let listenerPromise: Promise<void> | null = null;
+
+async function ensureListener(): Promise<void> {
+  if (listenerStarted) return;
+  if (listenerPromise) {
+    await listenerPromise;
+    return;
+  }
+  listenerPromise = (async () => {
+    await onRemoteUploadProgress((event) => {
+      store.setState((s) => ({
+        ...s,
+        uploads: s.uploads.map((u) =>
+          u.file_id === event.file_id
+            ? { ...u, status: event.status, error: event.error, file_name: event.file_name || u.file_name }
+            : u
+        ),
+      }));
+    });
+    listenerStarted = true;
+  })();
+  await listenerPromise;
+}
 
 export function useRemoteUploadStore(): RemoteUploadState {
   return useStore(store, (s) => s);
 }
 
-export async function startUpload(fileIds: number[], fileNames: Map<number, string>) {
-  const uploads: RemoteUploadProgress[] = fileIds.map((id) => ({
+/** True when at least one upload is queued or actively running. Drives the
+ *  panel's "can the user fully dismiss this?" gating. */
+function hasInFlight(s: RemoteUploadState): boolean {
+  return s.uploads.some((u) => u.status === 'pending' || u.status === 'uploading');
+}
+
+/** Push file IDs into the upload worker queue. Skips any IDs that already
+ *  have an in-flight (pending/uploading) row to prevent duplicate queueing
+ *  when the user re-selects files mid-upload. Auto-expands the panel so
+ *  newly enqueued work is visible. */
+export async function enqueueUpload(
+  fileIds: number[],
+  fileNames: Map<number, string>
+): Promise<void> {
+  await ensureListener();
+
+  const inFlightIds = new Set(
+    store.state.uploads
+      .filter((u) => u.status === 'pending' || u.status === 'uploading')
+      .map((u) => u.file_id)
+  );
+  const newIds = fileIds.filter((id) => !inFlightIds.has(id));
+  if (newIds.length === 0) return;
+
+  const newRows: RemoteUploadProgress[] = newIds.map((id) => ({
     file_id: id,
     file_name: fileNames.get(id) ?? `File ${id}`,
-    status: 'uploading' as const,
-    current: 0,
-    total: fileIds.length,
+    status: 'pending',
   }));
 
   store.setState((s) => ({
     ...s,
-    uploads,
-    isUploading: true,
+    uploads: [...s.uploads, ...newRows],
     showPanel: true,
+    // New work always pops the panel back to expanded so the user sees it.
+    minimized: false,
   }));
 
-  let unlisten: UnlistenFn | undefined;
-
   try {
-    unlisten = await onRemoteUploadProgress((event) => {
-      store.setState((s) => ({
-        ...s,
-        uploads: s.uploads.map((u) =>
-          u.file_id === event.file_id ? { ...event } : u
-        ),
-      }));
-
-      const allDone = store.state.uploads.every(
-        (u) => u.status !== 'uploading'
-      );
-      if (allDone) {
-        store.setState((s) => ({ ...s, isUploading: false }));
-      }
-    });
-
-    await fileUploadToRemote(fileIds);
+    await enqueueRemoteUpload(newIds);
   } catch (err) {
+    // The backend rejected the enqueue (queue closed, plugin error, etc.).
+    // Mark the rows we just added as errored so the user sees the failure
+    // instead of a perpetually pending row.
+    const ids = new Set(newIds);
+    const errMsg = translateError(err instanceof Error ? err.message : String(err));
     store.setState((s) => ({
       ...s,
-      isUploading: false,
       uploads: s.uploads.map((u) =>
-        u.status === 'uploading'
-          ? { ...u, status: 'error' as const, error: translateError(err instanceof Error ? err.message : String(err)) }
+        ids.has(u.file_id) && u.status === 'pending'
+          ? { ...u, status: 'error', error: errMsg }
           : u
       ),
     }));
-  } finally {
-    unlisten?.();
   }
 }
 
-export function dismissPanel() {
-  store.setState((s) => ({ ...s, showPanel: false }));
+/** Collapse the panel into the minimized strip — preserves all queue state,
+ *  the worker keeps running, the user can re-expand any time. */
+export function minimizePanel(): void {
+  store.setState((s) => ({ ...s, minimized: true }));
 }
 
-export function clearUploads() {
+export function expandPanel(): void {
+  store.setState((s) => ({ ...s, minimized: false }));
+}
+
+/** Fully dismiss the panel. No-op while in-flight work exists — the user
+ *  must wait for the queue to drain (or click `Clear completed` after) so
+ *  they don't accidentally lose visibility into running tasks. */
+export function dismissPanel(): void {
+  store.setState((s) => {
+    if (hasInFlight(s)) return s;
+    return { ...s, showPanel: false, minimized: false };
+  });
+}
+
+/** Drop terminal-state rows (success / error / skipped) from the queue.
+ *  Pending and uploading entries are preserved so an in-flight session
+ *  isn't disrupted. */
+export function clearCompleted(): void {
+  store.setState((s) => ({
+    ...s,
+    uploads: s.uploads.filter((u) => u.status === 'pending' || u.status === 'uploading'),
+  }));
+}
+
+export function clearUploads(): void {
   store.setState(() => initialState);
 }

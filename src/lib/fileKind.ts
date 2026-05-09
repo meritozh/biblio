@@ -3,8 +3,8 @@
  *
  * Mirrors the backend `pipeline::nodes::kind_for_path` split: extension-based
  * dispatch, no DB column. One source of truth for the per-kind UI deltas:
- * which columns the file list shows, which fields the metadata form shows,
- * and where new imports default to (local vs remote storage).
+ * which fields the metadata form shows, and where new imports default to
+ * (local vs remote storage).
  *
  * Adding a new kind = one entry here. The list/dialog components consume
  * the registry; they don't branch on kind themselves.
@@ -29,25 +29,13 @@ export type FormFieldKey =
   | 'cover'
   | 'volume';
 
-/** How FileList should render this kind's data. Comics emphasize cover
- *  art via a card grid; novels read better as a sortable table. */
-export type FileListLayout = 'table' | 'grid';
-
 export interface KindSchema {
   /** Lowercased file extensions that route to this kind. */
   extensions: ReadonlyArray<string>;
   /** Default destination for fresh imports of this kind. */
   defaultStorage: StorageKind;
-  /**
-   * Column visibility passed to TanStack Table on FileList. Hideable
-   * column ids only — `display_name` and `actions` are always visible.
-   * Only consulted when `layout === 'table'`.
-   */
-  columns: Readonly<Record<string, boolean>>;
   /** Form section render list, in the order they should appear. */
   formFields: ReadonlyArray<FormFieldKey>;
-  /** Render shape for the file list. */
-  layout: FileListLayout;
   /**
    * Case-insensitive name of the category to auto-select on import when
    * the LLM didn't choose one. `null` means "leave it blank."
@@ -59,27 +47,12 @@ export const KIND_REGISTRY: Readonly<Record<FileKind, KindSchema>> = {
   comic: {
     extensions: ['cbz', 'zip', 'cbr', 'rar'],
     defaultStorage: 'remote',
-    columns: {
-      cover: true,
-      description: false,
-      tags: false,
-      authors: true,
-      progress: false,
-    },
     formFields: ['display_name', 'category', 'authors', 'cover'],
-    layout: 'grid',
     defaultCategoryName: 'comic',
   },
   novel: {
     extensions: ['txt'],
     defaultStorage: 'local',
-    columns: {
-      cover: false,
-      description: true,
-      tags: true,
-      authors: true,
-      progress: true,
-    },
     formFields: [
       'display_name',
       'category',
@@ -88,7 +61,6 @@ export const KIND_REGISTRY: Readonly<Record<FileKind, KindSchema>> = {
       'progress',
       'description',
     ],
-    layout: 'table',
     defaultCategoryName: null,
   },
 };
