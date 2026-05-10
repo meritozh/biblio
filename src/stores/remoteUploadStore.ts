@@ -1,5 +1,6 @@
 import { Store, useStore } from '@tanstack/react-store';
 import { enqueueRemoteUpload, onRemoteUploadProgress, translateError } from '@/lib/tauri';
+import { patchFile } from '@/stores/fileStore';
 import type { RemoteUploadProgress } from '@/types';
 
 interface RemoteUploadState {
@@ -47,6 +48,14 @@ async function ensureListener(): Promise<void> {
             : u
         ),
       }));
+      // On a successful upload, patch the file's row in the normalized
+      // store so the card's storage badge flips to cloud without any
+      // file-list refetch. The provider name isn't on the event payload,
+      // so we leave `remote_provider` alone — the row already has it from
+      // its initial load.
+      if (event.status === 'success') {
+        patchFile(event.file_id, { storage_kind: 'remote' });
+      }
     });
     listenerStarted = true;
   })();

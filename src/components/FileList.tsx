@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
+import { useStore } from '@tanstack/react-store';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Button } from '@/components/ui/button';
 import {
@@ -37,6 +38,7 @@ import { NovelCover } from '@/components/NovelCover';
 import { coverGet } from '@/lib/tauri';
 import { isImportable, kindForPath } from '@/lib/fileKind';
 import { useRemoteUploadStore } from '@/stores/remoteUploadStore';
+import { fileStore, useFile } from '@/stores/fileStore';
 import { applyConditions, describeCondition, type Condition } from '@/lib/filters';
 import type { FileEntry, Tag } from '@/types';
 
@@ -116,10 +118,108 @@ function compareFiles(a: FileEntry, b: FileEntry, key: SortKey): number {
   return a.updated_at.localeCompare(b.updated_at);
 }
 
+// ── FileCard ──────────────────────────────────────────────────────────────────
+
+interface FileCardProps {
+  id: number;
+  isSelected: boolean;
+  isUploading: boolean;
+  blocked: boolean;
+  selectionMode: boolean;
+  onCardClick: (file: FileEntry) => void;
+  onToggleSelect: (id: number) => void;
+  onEdit?: (file: FileEntry) => void;
+  onDelete?: (file: FileEntry) => void;
+}
+
+/** Per-row component subscribed to its own entry via `useFile(id)`. Wrapped
+ *  in `memo` so single-row patches in the store re-render only this card,
+ *  not the rest of the grid. */
+const FileCard = memo(function FileCard({
+  id,
+  isSelected,
+  isUploading,
+  blocked,
+  selectionMode,
+  onCardClick,
+  onToggleSelect,
+  onEdit,
+  onDelete,
+}: FileCardProps) {
+  const file = useFile(id);
+  // Brief absence is possible right after `removeFile(id)`: byId loses the
+  // row in the same setState that drops it from the view's ids, but a stale
+  // render frame can still ask for it. Render nothing instead of crashing.
+  if (!file) return null;
+
+  return (
+    <div
+      className="relative group"
+      style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}
+    >
+      {selectionMode && (
+        <div className="absolute top-2 left-2 z-10">
+          <label className="flex items-center justify-center h-6 w-6 rounded-full bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm cursor-pointer hover:bg-background transition-colors">
+            <input
+              type="checkbox"
+              checked={blocked ? false : isSelected}
+              onChange={() => !blocked && onToggleSelect(id)}
+              onClick={(e) => e.stopPropagation()}
+              disabled={blocked}
+              className="h-3.5 w-3.5 rounded border-border accent-primary disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+              aria-label={`Select ${file.display_name}`}
+            />
+          </label>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={() => onCardClick(file)}
+        className={`w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring ${
+          isSelected
+            ? 'bg-primary/10 ring-1 ring-primary/40'
+            : 'hover:bg-muted/50'
+        }`}
+        aria-label={
+          selectionMode
+            ? `Toggle selection of ${file.display_name}`
+            : `View ${file.display_name}`
+        }
+        aria-pressed={selectionMode ? isSelected : undefined}
+      >
+        <div className="relative aspect-[2/3] w-full rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
+          <CardCover file={file} />
+          <div className="absolute bottom-1.5 left-1.5">
+            <CardStatus storageKind={file.storage_kind} isUploading={isUploading} />
+          </div>
+        </div>
+        <div className="space-y-0.5 min-w-0 px-0.5">
+          <p
+            className="text-sm font-medium leading-tight truncate"
+            title={file.display_name}
+          >
+            {file.display_name}
+          </p>
+          {file.authors && file.authors.length > 0 && (
+            <p className="text-xs text-muted-foreground line-clamp-1">
+              {file.authors.map((a) => a.name).join(', ')}
+            </p>
+          )}
+        </div>
+      </button>
+      {!selectionMode && onEdit && onDelete && (
+        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity z-10">
+          <FileContextMenu file={file} onEdit={onEdit} onDelete={onDelete} />
+        </div>
+      )}
+    </div>
+  );
+});
+
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 interface FileListProps {
-  files: FileEntry[];
+  ids: number[];
   total?: number;
   loadingMore?: boolean;
   onLoadMore?: () => void;
@@ -136,7 +236,7 @@ interface FileListProps {
 // ── FileList ──────────────────────────────────────────────────────────────────
 
 export function FileList({
-  files: rawFiles,
+  ids,
   total,
   loadingMore = false,
   onLoadMore,
@@ -155,6 +255,13 @@ export function FileList({
   const [filterOpen, setFilterOpen] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+
+  // Subscribe to the entire byId map so filter/sort recomputes when any
+  // row's contents change. Per-card subscription lives inside <FileCard>;
+  // this top-level subscription only feeds the filter pipeline, which
+  // produces a new id ordering. Cards themselves still skip render via
+  // `memo` because their `id` prop is stable.
+  const byId = useStore(fileStore, (s) => s.byId);
 
   // Map for chip rendering — looks up tag names by id.
   const tagsById = useMemo(() => {
@@ -181,23 +288,29 @@ export function FileList({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const prevFilterKeyRef = useRef(filterKey);
 
-  // Drop legacy rows whose extension is no longer in the supported set
-  // (.epub / .pdf / standalone images from the pre-removal era).
-  const importable = useMemo(
-    () => rawFiles.filter((f) => isImportable(f.path)),
-    [rawFiles]
-  );
+  // Resolve incoming ids to their current entries. Drop any rows whose
+  // extension is no longer in the supported set (.epub / .pdf / standalone
+  // images from the pre-removal era). Missing ids (briefly possible during
+  // the ms between `removeFile` and the parent re-render) are skipped.
+  const importableEntries = useMemo(() => {
+    const out: FileEntry[] = [];
+    for (const id of ids) {
+      const f = byId.get(id);
+      if (f && isImportable(f.path)) out.push(f);
+    }
+    return out;
+  }, [ids, byId]);
 
   // Filter + sort, derived. Keeps virtualizer / interaction state in lockstep
   // with whatever the user has chosen above the grid.
-  const files = useMemo(() => {
-    const filtered = applyConditions(importable, conditions);
+  const visibleEntries = useMemo(() => {
+    const filtered = applyConditions(importableEntries, conditions);
     const sorted = [...filtered].sort((a, b) => {
       const cmp = compareFiles(a, b, sortBy);
       return sortDesc ? -cmp : cmp;
     });
     return sorted;
-  }, [importable, conditions, sortBy, sortDesc]);
+  }, [importableEntries, conditions, sortBy, sortDesc]);
 
   // Scroll to top + reset selection + clear filter conditions when
   // category/search changes. Conditions are scoped to the current view.
@@ -229,14 +342,14 @@ export function FileList({
   const selectFirstN = useCallback(
     (n: number) => {
       const eligible: number[] = [];
-      for (const f of files) {
+      for (const f of visibleEntries) {
         if (f.storage_kind === 'remote' || inFlightUploadIds.has(f.id)) continue;
         eligible.push(f.id);
         if (eligible.length >= n) break;
       }
       setSelectedIds(new Set(eligible));
     },
-    [files, inFlightUploadIds]
+    [visibleEntries, inFlightUploadIds]
   );
 
   const exitSelectionMode = useCallback(() => {
@@ -265,7 +378,7 @@ export function FileList({
     1,
     Math.floor((containerWidth - GRID_PAD * 2 + GRID_GAP) / (CARD_WIDTH + GRID_GAP))
   );
-  const gridRowCount = Math.ceil(files.length / colCount);
+  const gridRowCount = Math.ceil(visibleEntries.length / colCount);
 
   const virtualizer = useVirtualizer({
     count: gridRowCount,
@@ -277,17 +390,17 @@ export function FileList({
   const totalVirtualSize = virtualizer.getTotalSize();
 
   // Trigger backend load-more when the last virtual row is near the end.
-  // Compare against the *unfiltered* loaded count (`rawFiles.length`) so an
-  // active filter pill shrinking `files` doesn't fake a "we need more rows"
-  // signal. With the route's bumped page size this is normally a no-op, but
-  // it stays correct if pagination ever returns.
+  // Compare against the *unfiltered* loaded count so an active filter pill
+  // shrinking the view doesn't fake a "we need more rows" signal. With the
+  // route's bumped page size this is normally a no-op, but it stays correct
+  // if pagination ever returns.
   useEffect(() => {
     const lastItem = virtualItems[virtualItems.length - 1];
-    if (!lastItem || loadingMore || rawFiles.length >= (total ?? 0)) return;
+    if (!lastItem || loadingMore || ids.length >= (total ?? 0)) return;
     if (lastItem.index >= gridRowCount - 1 - LOAD_MORE_THRESHOLD) {
       onLoadMore?.();
     }
-  }, [virtualItems, gridRowCount, rawFiles.length, total, loadingMore, onLoadMore]);
+  }, [virtualItems, gridRowCount, ids.length, total, loadingMore, onLoadMore]);
 
   // ResizeObserver feeds containerWidth, which drives column-count math.
   useEffect(() => {
@@ -392,7 +505,7 @@ export function FileList({
             size="sm"
             className="h-8 text-xs"
             onClick={() => setSelectionMode(true)}
-            disabled={files.length === 0}
+            disabled={visibleEntries.length === 0}
           >
             Select
           </Button>
@@ -424,7 +537,7 @@ export function FileList({
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="text-xs"
-                onClick={() => selectFirstN(files.length)}
+                onClick={() => selectFirstN(visibleEntries.length)}
               >
                 All eligible
               </DropdownMenuItem>
@@ -476,8 +589,8 @@ export function FileList({
         >
           {virtualItems.map((virtualRow) => {
             const startIdx = virtualRow.index * colCount;
-            const endIdx = Math.min(startIdx + colCount, files.length);
-            const slice = files.slice(startIdx, endIdx);
+            const endIdx = Math.min(startIdx + colCount, visibleEntries.length);
+            const slice = visibleEntries.slice(startIdx, endIdx);
             return (
               <div
                 key={virtualRow.index}
@@ -499,74 +612,18 @@ export function FileList({
                   const blocked = file.storage_kind === 'remote' || inFlightUploadIds.has(file.id);
                   const isSelected = selectedIds.has(file.id);
                   return (
-                    <div
+                    <FileCard
                       key={file.id}
-                      className="relative group"
-                      style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}
-                    >
-                      {selectionMode && (
-                        <div className="absolute top-2 left-2 z-10">
-                          <label className="flex items-center justify-center h-6 w-6 rounded-full bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm cursor-pointer hover:bg-background transition-colors">
-                            <input
-                              type="checkbox"
-                              checked={blocked ? false : isSelected}
-                              onChange={() => !blocked && toggleSelection(file.id)}
-                              onClick={(e) => e.stopPropagation()}
-                              disabled={blocked}
-                              className="h-3.5 w-3.5 rounded border-border accent-primary disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
-                              aria-label={`Select ${file.display_name}`}
-                            />
-                          </label>
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => handleCardClick(file)}
-                        className={`w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring ${
-                          isSelected
-                            ? 'bg-primary/10 ring-1 ring-primary/40'
-                            : 'hover:bg-muted/50'
-                        }`}
-                        aria-label={
-                          selectionMode
-                            ? `Toggle selection of ${file.display_name}`
-                            : `View ${file.display_name}`
-                        }
-                        aria-pressed={selectionMode ? isSelected : undefined}
-                      >
-                        <div className="relative aspect-[2/3] w-full rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
-                          <CardCover file={file} />
-                          <div className="absolute bottom-1.5 left-1.5">
-                            <CardStatus
-                              storageKind={file.storage_kind}
-                              isUploading={inFlightUploadIds.has(file.id)}
-                            />
-                          </div>
-                        </div>
-                        <div className="space-y-0.5 min-w-0 px-0.5">
-                          <p
-                            className="text-sm font-medium leading-tight truncate"
-                            title={file.display_name}
-                          >
-                            {file.display_name}
-                          </p>
-                          {file.authors && file.authors.length > 0 && (
-                            <p className="text-xs text-muted-foreground line-clamp-1">
-                              {file.authors.map((a) => a.name).join(', ')}
-                            </p>
-                          )}
-                        </div>
-                      </button>
-                      {!selectionMode && onFileEdit && onFileDelete && (
-                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity z-10">
-                          <FileContextMenu
-                            file={file}
-                            onEdit={onFileEdit}
-                            onDelete={onFileDelete}
-                          />
-                        </div>
-                      )}
-                    </div>
+                      id={file.id}
+                      isSelected={isSelected}
+                      isUploading={inFlightUploadIds.has(file.id)}
+                      blocked={blocked}
+                      selectionMode={selectionMode}
+                      onCardClick={handleCardClick}
+                      onToggleSelect={toggleSelection}
+                      onEdit={onFileEdit}
+                      onDelete={onFileDelete}
+                    />
                   );
                 })}
               </div>
@@ -574,9 +631,9 @@ export function FileList({
           })}
         </div>
 
-        {files.length === 0 && (
+        {visibleEntries.length === 0 && (
           <div className="flex items-center justify-center h-24 text-sm text-muted-foreground">
-            {importable.length === 0
+            {importableEntries.length === 0
               ? 'No files in library.'
               : 'No files match the active filters.'}
           </div>
@@ -588,7 +645,7 @@ export function FileList({
             aria-live="polite"
           >
             <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-            {total != null ? `loading ${total - files.length} more…` : 'loading more…'}
+            {total != null ? `loading ${total - visibleEntries.length} more…` : 'loading more…'}
           </div>
         )}
       </div>

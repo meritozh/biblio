@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { FilePicker } from '@/components/FilePicker';
 import { SearchBar } from '@/components/SearchBar';
@@ -8,6 +8,8 @@ import { CategorySidebar } from '@/components/CategorySidebar';
 import { ProcessingPipeline } from '@/components/ProcessingPipeline';
 import { RemoteUploadProgressPanel } from '@/components/RemoteUploadProgress';
 import { fetchFiles } from '@/stores';
+import { fileStore } from '@/stores/fileStore';
+import { useView, type ViewFetcherResult } from '@/hooks/useView';
 import {
   useRemoteUploadStore,
   enqueueUpload,
@@ -63,9 +65,6 @@ export const Route = createFileRoute('/')({
 });
 
 function HomePage() {
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   // `searchQuery` is the live input value; `debouncedQuery` is the effective
@@ -98,43 +97,42 @@ function HomePage() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  const loadFiles = useCallback(async () => {
-    if (selectedCategoryId === null) {
-      setFiles([]);
-      setTotal(0);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    const result = await fetchFiles({
+  const viewKey = useMemo(
+    () => `home::category=${selectedCategoryId ?? 'none'}::query=${debouncedQuery}`,
+    [selectedCategoryId, debouncedQuery]
+  );
+
+  const fetchView = useCallback(async (): Promise<ViewFetcherResult> => {
+    if (selectedCategoryId === null) return { files: [], total: 0 };
+    return await fetchFiles({
       category_id: selectedCategoryId,
       query: debouncedQuery || undefined,
       limit: FILES_PAGE_SIZE,
       offset: 0,
     });
-    setFiles(result.files);
-    setTotal(result.total);
-    setLoading(false);
   }, [selectedCategoryId, debouncedQuery]);
 
+  const { ids, total, loading, reload, appendMore } = useView(viewKey, fetchView);
+
   const handleLoadMore = useCallback(async () => {
-    if (loadingMore) return;
+    if (loadingMore || selectedCategoryId === null) return;
     setLoadingMore(true);
-    const result = await fetchFiles({
-      category_id: selectedCategoryId,
-      query: debouncedQuery || undefined,
-      limit: FILES_PAGE_SIZE,
-      offset: files.length,
-    });
-    // Append; keep `total` in sync in case the DB changed between requests.
-    setFiles((prev) => [...prev, ...result.files]);
-    setTotal(result.total);
-    setLoadingMore(false);
-  }, [loadingMore, selectedCategoryId, debouncedQuery, files.length]);
+    try {
+      const result = await fetchFiles({
+        category_id: selectedCategoryId,
+        query: debouncedQuery || undefined,
+        limit: FILES_PAGE_SIZE,
+        offset: ids.length,
+      });
+      appendMore(result);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, selectedCategoryId, debouncedQuery, ids.length, appendMore]);
 
   // Shared dialog state + edit/delete handlers + supporting relation state.
-  // The hook also subscribes to tag/author change events and refreshes its
-  // own state plus calls `loadFiles` so tag renames/deletes flow through.
+  // The hook drives store mutations directly — it no longer needs a reload
+  // callback. Tag/author rename events trigger a view refresh internally.
   const {
     categories,
     tags,
@@ -152,7 +150,7 @@ function HomePage() {
     setDeleteDialogOpen,
     handleFileDeleteClick,
     handleFileDeleteConfirm,
-  } = useFileActions(loadFiles);
+  } = useFileActions();
 
   // Snap to a real category whenever the list changes:
   // - On first load, pick the first category (replaces the old "All Files"
@@ -185,10 +183,9 @@ function HomePage() {
   }, []);
 
   useEffect(() => {
-    void loadFiles();
     void checkStoragePath();
     remoteConfigGet().then(cfg => setRemoteEnabled(cfg.enabled)).catch(() => {});
-  }, [loadFiles, checkStoragePath]);
+  }, [checkStoragePath]);
 
   const handleSettingsOpenChange = useCallback(
     (open: boolean) => {
@@ -284,7 +281,7 @@ function HomePage() {
       setAddDialogOpen(false);
       setSelectedFiles([]);
       setFormValues(EMPTY_FORM_VALUES);
-      void loadFiles();
+      void reload();
     } catch (error) {
       console.error('Failed to add file:', error);
       alert(`Failed to add file: ${error}`);
@@ -336,50 +333,13 @@ function HomePage() {
 
   const handleBulkUpload = useCallback((fileIds: number[]) => {
     const fileNames = new Map<number, string>();
-    for (const f of files) {
-      if (fileIds.includes(f.id)) {
-        fileNames.set(f.id, f.display_name);
-      }
+    const byId = fileStore.state.byId;
+    for (const id of fileIds) {
+      const f = byId.get(id);
+      if (f) fileNames.set(id, f.display_name);
     }
     void enqueueUpload(fileIds, fileNames);
-  }, [files]);
-
-  // Per-task refresh: when any upload transitions to `success`, debounce a
-  // file-list refetch so a burst of completions collapses to one IPC call.
-  // The unbounded queue model means there's no batch boundary to wait on.
-  const prevSuccessIdsRef = useRef<Set<number>>(new Set());
-  const refreshTimerRef = useRef<number | null>(null);
-  useEffect(() => {
-    const currentSuccessIds = new Set(
-      uploadState.uploads
-        .filter((u) => u.status === 'success')
-        .map((u) => u.file_id)
-    );
-    let hasNew = false;
-    for (const id of currentSuccessIds) {
-      if (!prevSuccessIdsRef.current.has(id)) {
-        hasNew = true;
-        break;
-      }
-    }
-    prevSuccessIdsRef.current = currentSuccessIds;
-    if (!hasNew) return;
-    if (refreshTimerRef.current !== null) {
-      window.clearTimeout(refreshTimerRef.current);
-    }
-    refreshTimerRef.current = window.setTimeout(() => {
-      refreshTimerRef.current = null;
-      void loadFiles();
-    }, 250);
-  }, [uploadState.uploads, loadFiles]);
-  useEffect(
-    () => () => {
-      if (refreshTimerRef.current !== null) {
-        window.clearTimeout(refreshTimerRef.current);
-      }
-    },
-    []
-  );
+  }, []);
 
   return (
     <div className="flex h-screen bg-background">
@@ -483,7 +443,7 @@ function HomePage() {
             </div>
           ) : (
             <FileList
-              files={files}
+              ids={ids}
               total={total}
               loadingMore={loadingMore}
               onLoadMore={handleLoadMore}
@@ -555,7 +515,7 @@ function HomePage() {
           setPipelineOpen(false);
           setSelectedFiles([]);
           setSelectedPathFolderRoots({});
-          void loadFiles();
+          void reload();
         }}
       />
 

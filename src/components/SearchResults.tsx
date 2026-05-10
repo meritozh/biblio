@@ -2,13 +2,13 @@ import { FileList } from '@/components/FileList';
 import type { FileEntry } from '@/types';
 
 interface SearchResultsProps {
-  files: FileEntry[];
+  ids: number[];
   query: string;
   total: number;
   onFileClick?: (file: FileEntry) => void;
 }
 
-export function SearchResults({ files, query, total, onFileClick }: SearchResultsProps) {
+export function SearchResults({ ids, query, total, onFileClick }: SearchResultsProps) {
   if (!query) {
     return null;
   }
@@ -18,7 +18,7 @@ export function SearchResults({ files, query, total, onFileClick }: SearchResult
       <div className="text-sm text-muted-foreground">
         {total} result{total !== 1 ? 's' : ''} for "{query}"
       </div>
-      <FileList files={files} onFileClick={onFileClick} />
+      <FileList ids={ids} total={total} onFileClick={onFileClick} />
     </div>
   );
 }

@@ -214,7 +214,7 @@ pub async fn file_list(
     }
 
     let row_query = format!(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, created_at, updated_at FROM files{} ORDER BY created_at DESC LIMIT {} OFFSET {}",
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, created_at, updated_at FROM files{} ORDER BY created_at DESC LIMIT {} OFFSET {}",
         where_clause, limit, offset
     );
     let files: Vec<FileEntry> = sqlx::query_as(&row_query)
@@ -266,6 +266,7 @@ pub async fn file_list(
             original_path: file.original_path,
             progress: file.progress,
             storage_kind: file.storage_kind,
+            remote_provider: file.remote_provider,
             description,
             created_at: file.created_at,
             updated_at: file.updated_at,
@@ -330,6 +331,7 @@ async fn hydrate_file_items(
             original_path: file.original_path,
             progress: file.progress,
             storage_kind: file.storage_kind,
+            remote_provider: file.remote_provider,
             description,
             created_at: file.created_at,
             updated_at: file.updated_at,
@@ -347,7 +349,7 @@ pub(crate) async fn list_files_by_tag_impl(
 ) -> Result<Vec<FileListItem>, String> {
     let files: Vec<FileEntry> = sqlx::query_as(
         "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status,
-                f.in_storage, f.original_path, f.progress, f.storage_kind, f.created_at, f.updated_at
+                f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.created_at, f.updated_at
          FROM files f
          INNER JOIN file_tags ft ON ft.file_id = f.id
          WHERE ft.tag_id = ?
@@ -378,7 +380,7 @@ pub(crate) async fn list_files_by_author_impl(
 ) -> Result<Vec<FileListItem>, String> {
     let files: Vec<FileEntry> = sqlx::query_as(
         "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status,
-                f.in_storage, f.original_path, f.progress, f.storage_kind, f.created_at, f.updated_at
+                f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.created_at, f.updated_at
          FROM files f
          INNER JOIN file_authors fa ON fa.file_id = f.id
          WHERE fa.author_id = ?
@@ -411,7 +413,7 @@ pub async fn file_get(
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
     let file: FileEntry = sqlx::query_as(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files WHERE id = ?"
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, created_at, updated_at FROM files WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(&pool)
@@ -464,6 +466,8 @@ pub async fn file_get(
         in_storage: file.in_storage,
         original_path: file.original_path,
         progress: file.progress,
+        storage_kind: file.storage_kind,
+        remote_provider: file.remote_provider,
         created_at: file.created_at,
         updated_at: file.updated_at,
         category,
@@ -1718,7 +1722,7 @@ pub async fn file_search(
     let (row_query, count_query, bind_value) = match &filter {
         SearchFilter::Fts(expr) => (
             format!(
-                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.created_at, f.updated_at \
+                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.created_at, f.updated_at \
                  FROM files f \
                  JOIN files_fts ON files_fts.rowid = f.id \
                  WHERE files_fts MATCH ?{} \
@@ -1735,7 +1739,7 @@ pub async fn file_search(
         ),
         SearchFilter::Like(pattern) => (
             format!(
-                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.created_at, f.updated_at \
+                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.created_at, f.updated_at \
                  FROM files f \
                  WHERE (f.display_name LIKE ? ESCAPE '\\' OR f.path LIKE ? ESCAPE '\\'){} \
                  ORDER BY f.created_at DESC LIMIT {} OFFSET {}",
@@ -1782,7 +1786,7 @@ pub async fn file_check_status(
         Some(ids) => {
             let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let query = format!(
-                "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files WHERE id IN ({})",
+                "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, created_at, updated_at FROM files WHERE id IN ({})",
                 placeholders
             );
             sqlx::query_as(&query)
@@ -1791,7 +1795,7 @@ pub async fn file_check_status(
                 .map_err(|e| e.to_string())?
         }
         None => {
-            sqlx::query_as("SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, created_at, updated_at FROM files")
+            sqlx::query_as("SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, created_at, updated_at FROM files")
                 .fetch_all(&pool)
                 .await
                 .map_err(|e| e.to_string())?

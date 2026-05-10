@@ -40,6 +40,7 @@ function TagDetailPage() {
       icon={<TagIcon className="h-4 w-4" aria-hidden="true" />}
       backTo="/tags"
       fetcher={fetcher}
+      viewKey={`tag::${id}`}
       filterKey={`tag:${id}`}
     />
   );

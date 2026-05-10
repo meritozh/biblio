@@ -69,6 +69,8 @@ export interface FileWithDetails {
   in_storage: boolean;
   original_path: string | null;
   progress?: string | null;
+  storage_kind?: StorageKind;
+  remote_provider?: string | null;
   created_at: string;
   updated_at: string;
   category: Category | null;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { fetchCategories } from '@/stores';
+import { patchFile, refreshActiveView, removeFile } from '@/stores/fileStore';
 import {
   authorCreate,
   authorList,
@@ -8,6 +9,7 @@ import {
   coverDelete,
   coverSet,
   fileDelete,
+  fileGet,
   fileUpdate,
   listenTagAuthorChanges,
   metadataDelete,
@@ -25,17 +27,18 @@ import type { Author, Category, FileEntry, Tag } from '@/types';
  * place. Extracted from Library (`src/routes/index.tsx`) and FileDetailPage so
  * the two don't drift.
  *
- * The caller owns the "what files are shown" question and passes `reload` —
- * a zero-arg function that refetches whatever slice of files this surface
- * is currently showing. The hook calls `reload` after save + delete + after
- * any tag/author mutation fires from /tags or /authors.
+ * Mutations flow through the normalized `fileStore`:
+ *   - save → `fileGet` + `patchFile` so only the affected card re-renders
+ *   - delete → `removeFile`
+ *   - tag/author rename event → `refreshActiveView` (chip text is
+ *     denormalized onto each row, so a rename invalidates cached rows)
  *
  * Exposed state is fully controlled: open/close the dialogs via the setters,
  * wire up the form callbacks, pass `categories`/`tags`/`authors` into the
  * edit dialog and import pipeline. Optimistic mutators (`handle*Create`)
  * return the persisted record so dialogs can immediately use the new id.
  */
-export function useFileActions(reload: () => void | Promise<void>) {
+export function useFileActions() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [authors, setAuthors] = useState<Author[]>([]);
@@ -54,15 +57,15 @@ export function useFileActions(reload: () => void | Promise<void>) {
   }, []);
 
   // Keep relations fresh when the user edits them on /tags or /authors.
-  // Also reload the file list — a tag rename shows differently in a row, a
-  // tag delete removes the badge, etc.
+  // Also bump the active view so chip text picks up the rename — chips are
+  // denormalized onto each row, so a rename invalidates cached row content.
   useEffect(() => {
     let unlisten: UnlistenFn | null = null;
     let cancelled = false;
     listenTagAuthorChanges(() => {
       void tagList(true).then((r) => setTags(r.tags));
       void authorList(true).then((r) => setAuthors(r.authors));
-      void reload();
+      refreshActiveView();
     })
       .then((u) => {
         if (cancelled) u();
@@ -75,7 +78,7 @@ export function useFileActions(reload: () => void | Promise<void>) {
       cancelled = true;
       unlisten?.();
     };
-  }, [reload]);
+  }, []);
 
   const handleCategoryCreated = useCallback((newCategory: Category) => {
     setCategories((prev) => [...prev, newCategory]);
@@ -155,9 +158,12 @@ export function useFileActions(reload: () => void | Promise<void>) {
         await coverDelete(fileId);
       }
 
-      await reload();
+      // Refresh just this row in the store. Only this card re-renders;
+      // others keep their cover-image and DOM state intact.
+      const updated = await fileGet(fileId);
+      patchFile(fileId, updated);
     },
-    [editingFile, reload]
+    [editingFile]
   );
 
   const handleFileDeleteClick = useCallback((file: FileEntry) => {
@@ -170,13 +176,13 @@ export function useFileActions(reload: () => void | Promise<void>) {
     try {
       await fileDelete(deletingFile.id);
       setDeleteDialogOpen(false);
+      removeFile(deletingFile.id);
       setDeletingFile(null);
-      await reload();
     } catch (error) {
       console.error('Failed to delete:', error);
       alert(`Failed to delete: ${error}`);
     }
-  }, [deletingFile, reload]);
+  }, [deletingFile]);
 
   return {
     // Relation state + mutators

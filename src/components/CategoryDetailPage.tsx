@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { FileList } from '@/components/FileList';
 import { invoke } from '@tauri-apps/api/core';
+import { useView } from '@/hooks/useView';
 import type { FileEntry, Category } from '@/types';
 
 interface CategoryDetailPageProps {
@@ -8,40 +9,22 @@ interface CategoryDetailPageProps {
 }
 
 export function CategoryDetailPage({ categoryId }: CategoryDetailPageProps) {
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const id = parseInt(categoryId, 10);
   const [category, setCategory] = useState<Category | null>(null);
 
+  const fetcher = useCallback(async () => {
+    return await invoke<{ files: FileEntry[]; total: number }>('file_list', {
+      categoryId: id,
+    });
+  }, [id]);
+
+  const { ids, total, loading } = useView(`cat-detail::${id}`, fetcher);
+
   useEffect(() => {
-    const id = parseInt(categoryId, 10);
-
-    const loadCategory = async () => {
-      try {
-        const cat = await invoke<Category>('category_get', { id });
-        setCategory(cat);
-      } catch (error) {
-        console.error('Failed to load category:', error);
-      }
-    };
-
-    const loadFiles = async () => {
-      setLoading(true);
-      try {
-        const response = await invoke<{ files: FileEntry[]; total: number }>('file_list', {
-          category_id: id,
-        });
-        setFiles(response.files);
-        setTotal(response.total);
-      } catch (error) {
-        console.error('Failed to load files:', error);
-      }
-      setLoading(false);
-    };
-
-    loadCategory();
-    loadFiles();
-  }, [categoryId]);
+    invoke<Category>('category_get', { id })
+      .then(setCategory)
+      .catch((error) => console.error('Failed to load category:', error));
+  }, [id]);
 
   const handleFileClick = (file: FileEntry) => {
     console.log('File clicked:', file);
@@ -64,7 +47,7 @@ export function CategoryDetailPage({ categoryId }: CategoryDetailPageProps) {
         </h1>
         <p className="text-muted-foreground">{total} files</p>
       </div>
-      <FileList files={files} onFileClick={handleFileClick} />
+      <FileList ids={ids} total={total} onFileClick={handleFileClick} />
     </div>
   );
 }

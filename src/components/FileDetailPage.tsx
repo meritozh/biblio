@@ -1,4 +1,4 @@
-import { type ReactNode, useState, useEffect, useCallback } from 'react';
+import { type ReactNode, useCallback, useMemo } from 'react';
 import { Link } from '@tanstack/react-router';
 import { Button } from '@/components/ui/button';
 import { FileList } from '@/components/FileList';
@@ -6,6 +6,7 @@ import { EditFileDialog } from '@/components/EditFileDialog';
 import { ConfirmDeleteDialog } from '@/components/ConfirmDeleteDialog';
 import { ArrowLeft } from 'lucide-react';
 import { useFileActions } from '@/hooks/useFileActions';
+import { useView } from '@/hooks/useView';
 import type { FileEntry } from '@/types';
 
 interface FileDetailPageProps {
@@ -19,9 +20,10 @@ interface FileDetailPageProps {
   backTo: string;
   /** Async source of files for this page. Runs on mount + after mutations. */
   fetcher: () => Promise<FileEntry[]>;
-  /** Optional identity of the underlying record (e.g. tag id). Used as the
-   *  FileList filterKey so pagination resets if the consumer ever reuses
-   *  the same mounted instance across different records. */
+  /** Identity of the underlying record (e.g. tag id). Drives the view key
+   *  in the normalized store so different records keep separate slices. */
+  viewKey: string;
+  /** Optional FileList filterKey — defaults to viewKey. */
   filterKey?: string | number | null;
 }
 
@@ -30,8 +32,9 @@ interface FileDetailPageProps {
  * detail routes — they pass a `fetcher` that calls the corresponding reverse-
  * index command and the page handles loading, editing, and deletion.
  *
- * Dialog state + handlers + supporting relation state come from the shared
- * `useFileActions` hook so this page stays in sync with Library.
+ * Files are owned by the normalized `fileStore` via `useView`. Edit/delete
+ * mutations patch single rows in place; tag/author rename events refresh
+ * via the store's epoch counter.
  */
 export function FileDetailPage({
   title,
@@ -39,27 +42,15 @@ export function FileDetailPage({
   icon,
   backTo,
   fetcher,
+  viewKey,
   filterKey,
 }: FileDetailPageProps) {
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  const loadFiles = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await fetcher();
-      setFiles(result);
-    } catch (error) {
-      console.error('Failed to fetch files:', error);
-      setFiles([]);
-    } finally {
-      setLoading(false);
-    }
+  const wrappedFetcher = useCallback(async () => {
+    const files = await fetcher();
+    return { files, total: files.length };
   }, [fetcher]);
 
-  useEffect(() => {
-    void loadFiles();
-  }, [loadFiles]);
+  const { ids, total, loading } = useView(viewKey, wrappedFetcher);
 
   const {
     categories,
@@ -78,7 +69,12 @@ export function FileDetailPage({
     setDeleteDialogOpen,
     handleFileDeleteClick,
     handleFileDeleteConfirm,
-  } = useFileActions(loadFiles);
+  } = useFileActions();
+
+  const effectiveFilterKey = useMemo(
+    () => filterKey ?? viewKey,
+    [filterKey, viewKey]
+  );
 
   return (
     <div className="flex h-screen bg-background">
@@ -102,9 +98,9 @@ export function FileDetailPage({
               <h1 className="text-3xl text-foreground">{title}</h1>
               <span
                 className="font-serif-italic text-sm text-muted-foreground"
-                aria-label={`${files.length} files`}
+                aria-label={`${total} files`}
               >
-                — {files.length} {files.length === 1 ? 'volume' : 'volumes'}
+                — {total} {total === 1 ? 'volume' : 'volumes'}
               </span>
             </div>
           </div>
@@ -115,7 +111,7 @@ export function FileDetailPage({
             <div className="flex items-center justify-center h-32">
               <p className="text-sm text-muted-foreground font-serif-italic">Loading…</p>
             </div>
-          ) : files.length === 0 ? (
+          ) : ids.length === 0 ? (
             <div className="flex items-center justify-center h-32">
               <p className="text-sm text-muted-foreground font-serif-italic">
                 No files under this {kind.toLowerCase()}.
@@ -123,10 +119,12 @@ export function FileDetailPage({
             </div>
           ) : (
             <FileList
-              files={files}
-              filterKey={filterKey ?? null}
+              ids={ids}
+              total={total}
+              filterKey={effectiveFilterKey}
               onFileEdit={handleFileEdit}
               onFileDelete={handleFileDeleteClick}
+              availableTags={tags}
             />
           )}
         </div>

@@ -40,6 +40,7 @@ function AuthorDetailPage() {
       icon={<UserIcon className="h-4 w-4" aria-hidden="true" />}
       backTo="/authors"
       fetcher={fetcher}
+      viewKey={`author::${id}`}
       filterKey={`author:${id}`}
     />
   );
