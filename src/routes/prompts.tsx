@@ -1,6 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from '@tanstack/react-router';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -21,7 +20,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, Pencil, Trash2, ArrowLeft, MessageSquare, Star, Info } from 'lucide-react';
+import { Plus, Pencil, Trash2, MessageSquare, Star, Info } from 'lucide-react';
 import {
   promptList,
   promptCreate,
@@ -29,54 +28,40 @@ import {
   promptDelete,
   promptSetDefault,
 } from '@/lib/tauri';
-import type { Prompt, PromptMimeGroup, PromptStep } from '@/types';
+import type { Prompt, PromptStep, SchemaSlug } from '@/types';
+import {
+  PROMPT_STEPS_BY_SCHEMA,
+  SCHEMA_LABELS,
+  coerceSchemaSlug,
+} from '@/lib/categorySchema';
 
 interface PromptFormState {
-  mimeGroup: PromptMimeGroup;
+  schemaSlug: SchemaSlug;
   step: PromptStep;
 }
-
-const STEPS_BY_GROUP: Record<PromptMimeGroup, ReadonlyArray<{ step: PromptStep; label: string }>> = {
-  text: [
-    { step: 'filename', label: 'Filename extraction' },
-    { step: 'content', label: 'Content analysis' },
-  ],
-  archive: [
-    { step: 'filename', label: 'Filename extraction' },
-    { step: 'cover_pick', label: 'Cover detection' },
-  ],
-  image_folder: [
-    { step: 'filename', label: 'Filename extraction' },
-  ],
-};
-
-const GROUP_LABEL: Record<PromptMimeGroup, string> = {
-  text: 'Novel',
-  archive: 'Comic Archive',
-  image_folder: 'Comic Folder',
-};
 
 const STEP_LABEL: Record<PromptStep, string> = {
   filename: 'filename',
   content: 'content',
   cover_pick: 'cover',
+  filename_folder: 'folder filename',
 };
 
-function isValidStep(group: PromptMimeGroup, step: PromptStep): boolean {
-  return STEPS_BY_GROUP[group].some((s) => s.step === step);
+function isValidStep(slug: SchemaSlug, step: PromptStep): boolean {
+  return PROMPT_STEPS_BY_SCHEMA[slug].some((s) => s.step === step);
 }
 
-function promptHelpText(group: PromptMimeGroup, step: PromptStep): string {
-  if (group === 'text' && step === 'content') {
+function promptHelpText(slug: SchemaSlug, step: PromptStep): string {
+  if (slug === 'novel' && step === 'content') {
     return 'Categories, tags, and authors from your library are automatically appended at runtime.';
   }
-  if (group === 'text' && step === 'filename') {
+  if (slug === 'novel' && step === 'filename') {
     return 'Filename extraction has no runtime context — this prompt is used verbatim.';
   }
-  if (group === 'archive' && step === 'filename') {
+  if (slug === 'comic' && step === 'filename') {
     return 'Used for comic archive filenames (.zip / .cbz / .rar / .cbr). No runtime context appended.';
   }
-  if (group === 'image_folder' && step === 'filename') {
+  if (slug === 'comic' && step === 'filename_folder') {
     return 'Used for comic folder names. Author is taken from the parent folder separately, so this prompt does not extract authors. No runtime context appended.';
   }
   return 'Used to rank candidate cover filenames inside a comic archive. No runtime context appended.';
@@ -94,7 +79,7 @@ function PromptsPage() {
   const [newPromptName, setNewPromptName] = useState('');
   const [newPromptContent, setNewPromptContent] = useState('');
   const [newPromptForm, setNewPromptForm] = useState<PromptFormState>({
-    mimeGroup: 'text',
+    schemaSlug: 'novel',
     step: 'content',
   });
   const [saving, setSaving] = useState(false);
@@ -123,13 +108,13 @@ function PromptsPage() {
       await promptCreate({
         name: newPromptName.trim(),
         content: newPromptContent.trim(),
-        mime_group: newPromptForm.mimeGroup,
+        schema_slug: newPromptForm.schemaSlug,
         step: newPromptForm.step,
       });
       setCreateDialogOpen(false);
       setNewPromptName('');
       setNewPromptContent('');
-      setNewPromptForm({ mimeGroup: 'text', step: 'content' });
+      setNewPromptForm({ schemaSlug: 'novel', step: 'content' });
       void loadPrompts();
     } catch (error) {
       console.error('Failed to create prompt:', error);
@@ -152,7 +137,7 @@ function PromptsPage() {
       await promptUpdate(editingPrompt.id, {
         name: editName.trim(),
         content: editContent.trim(),
-        mime_group: editingPrompt.mime_group,
+        schema_slug: coerceSchemaSlug(editingPrompt.schema_slug),
         step: editingPrompt.step,
       });
       setEditDialogOpen(false);
@@ -203,32 +188,25 @@ function PromptsPage() {
   };
 
   return (
-    <div className="flex h-screen bg-background">
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <div
-          className="flex items-center justify-between px-8 pt-14 pb-4 border-b border-border"
-          data-tauri-drag-region
-        >
-          <div className="flex items-center gap-4">
-            <Link to="/">
-              <Button variant="ghost" size="sm">
-                <ArrowLeft className="h-4 w-4 mr-1" />
-                Back
-              </Button>
-            </Link>
-            <div>
-              <h1 className="text-xl font-bold text-foreground flex items-center gap-2">
-                <MessageSquare className="h-5 w-5" />
-                Prompts
-              </h1>
-              <p className="text-xs text-muted-foreground mt-0.5">{prompts.length} prompts</p>
-            </div>
-          </div>
-          <Button onClick={() => setCreateDialogOpen(true)}>
-            <Plus className="h-4 w-4 mr-1" />
-            Add Prompt
-          </Button>
+    <>
+      <div
+        className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
+        data-tauri-drag-region
+      >
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-3xl text-foreground flex items-center gap-3">
+            <MessageSquare className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+            Prompts
+          </h1>
+          <span className="font-serif-italic text-sm text-muted-foreground">
+            — {prompts.length} {prompts.length === 1 ? 'prompt' : 'prompts'}
+          </span>
         </div>
+        <Button onClick={() => setCreateDialogOpen(true)}>
+          <Plus className="h-4 w-4 mr-1" />
+          Add Prompt
+        </Button>
+      </div>
 
         <div className="flex-1 overflow-auto px-8 py-6">
           {/* Info banner */}
@@ -267,7 +245,7 @@ function PromptsPage() {
                           {prompt.name}
                         </h3>
                         <Badge variant="gray" className="text-xs">
-                          {GROUP_LABEL[prompt.mime_group]} · {STEP_LABEL[prompt.step]}
+                          {SCHEMA_LABELS[coerceSchemaSlug(prompt.schema_slug)]} · {STEP_LABEL[prompt.step]}
                         </Badge>
                         {prompt.is_default && (
                           <Badge variant="green" className="text-xs">
@@ -314,7 +292,6 @@ function PromptsPage() {
             </div>
           )}
         </div>
-      </main>
 
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent className="max-w-2xl">
@@ -324,22 +301,22 @@ function PromptsPage() {
           <div className="space-y-4 py-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium mb-2 block">Mime group</label>
+                <label className="text-sm font-medium mb-2 block">Schema</label>
                 <div className="flex flex-col gap-2">
-                  {(Object.keys(GROUP_LABEL) as PromptMimeGroup[]).map((g) => (
-                    <label key={g} className="flex items-center gap-2 cursor-pointer">
+                  {(Object.keys(SCHEMA_LABELS) as SchemaSlug[]).map((slug) => (
+                    <label key={slug} className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="radio"
-                        name="new-prompt-mime-group"
-                        checked={newPromptForm.mimeGroup === g}
+                        name="new-prompt-schema-slug"
+                        checked={newPromptForm.schemaSlug === slug}
                         onChange={() => {
-                          // Reset step to the first valid one for the new group.
-                          const firstStep = STEPS_BY_GROUP[g][0]!.step;
-                          setNewPromptForm({ mimeGroup: g, step: firstStep });
+                          // Reset step to the first valid one for the new schema.
+                          const firstStep = PROMPT_STEPS_BY_SCHEMA[slug][0]!.step;
+                          setNewPromptForm({ schemaSlug: slug, step: firstStep });
                         }}
                         className="accent-primary"
                       />
-                      <span className="text-sm">{GROUP_LABEL[g]}</span>
+                      <span className="text-sm">{SCHEMA_LABELS[slug]}</span>
                     </label>
                   ))}
                 </div>
@@ -347,7 +324,7 @@ function PromptsPage() {
               <div>
                 <label className="text-sm font-medium mb-2 block">Step</label>
                 <div className="flex flex-col gap-2">
-                  {STEPS_BY_GROUP[newPromptForm.mimeGroup].map(({ step, label }) => (
+                  {PROMPT_STEPS_BY_SCHEMA[newPromptForm.schemaSlug].map(({ step, label }) => (
                     <label key={step} className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="radio"
@@ -381,7 +358,7 @@ function PromptsPage() {
                 className="w-full min-h-[200px] px-3 py-2 text-sm rounded-xl border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
               />
               <p className="text-xs text-muted-foreground mt-1.5">
-                {promptHelpText(newPromptForm.mimeGroup, newPromptForm.step)}
+                {promptHelpText(newPromptForm.schemaSlug, newPromptForm.step)}
               </p>
             </div>
           </div>
@@ -395,7 +372,7 @@ function PromptsPage() {
                 saving ||
                 !newPromptName.trim() ||
                 !newPromptContent.trim() ||
-                !isValidStep(newPromptForm.mimeGroup, newPromptForm.step)
+                !isValidStep(newPromptForm.schemaSlug, newPromptForm.step)
               }
             >
               {saving ? 'Creating...' : 'Create'}
@@ -414,11 +391,14 @@ function PromptsPage() {
               <label className="text-sm font-medium mb-2 block">Type</label>
               <p className="text-sm text-muted-foreground">
                 {editingPrompt
-                  ? `${GROUP_LABEL[editingPrompt.mime_group]} · ${
-                      STEPS_BY_GROUP[editingPrompt.mime_group].find(
-                        (s) => s.step === editingPrompt.step
-                      )?.label ?? editingPrompt.step
-                    }`
+                  ? (() => {
+                      const slug = coerceSchemaSlug(editingPrompt.schema_slug);
+                      const stepLabel =
+                        PROMPT_STEPS_BY_SCHEMA[slug].find(
+                          (s) => s.step === editingPrompt.step
+                        )?.label ?? editingPrompt.step;
+                      return `${SCHEMA_LABELS[slug]} · ${stepLabel}`;
+                    })()
                   : ''}
               </p>
             </div>
@@ -440,7 +420,7 @@ function PromptsPage() {
               />
               <p className="text-xs text-muted-foreground mt-1.5">
                 {editingPrompt
-                  ? promptHelpText(editingPrompt.mime_group, editingPrompt.step)
+                  ? promptHelpText(coerceSchemaSlug(editingPrompt.schema_slug), editingPrompt.step)
                   : ''}
               </p>
             </div>
@@ -487,6 +467,6 @@ function PromptsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </>
   );
 }

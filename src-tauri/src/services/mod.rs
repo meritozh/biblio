@@ -6,5 +6,7 @@
 //! from the work itself, and lets the user keep enqueueing while previous
 //! work is in flight (the producer-consumer pattern).
 
+pub mod delete_worker;
+pub mod download_worker;
 pub mod import_worker;
 pub mod upload_worker;

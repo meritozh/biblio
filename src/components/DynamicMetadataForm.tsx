@@ -16,7 +16,8 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { coverGet } from '@/lib/tauri';
-import type { FormFieldKey } from '@/lib/fileKind';
+import type { CategorySchema, FormFieldKey } from '@/lib/categorySchema';
+import { schemaForCategoryId } from '@/lib/categorySchema';
 import type { Category, Tag, Author, MetadataType } from '@/types';
 
 export interface DynamicMetadataFormValues {
@@ -67,10 +68,15 @@ function ExistingCoverPreview({ fileId }: { fileId: number }) {
 interface DynamicMetadataFormProps {
   values: DynamicMetadataFormValues;
   onChange: (values: DynamicMetadataFormValues) => void;
-  /** Sections to render, in order. Resolved from the file's kind via the
-   *  KIND_REGISTRY at the call site so this component stays a pure
-   *  renderer. */
-  fields: ReadonlyArray<FormFieldKey>;
+  /** The schema whose `formFields` list drives section render order.
+   *  Callers can pass either a resolved `CategorySchema` (preferred —
+   *  e.g. resolved from `values.category_id`) or a literal field list
+   *  for dialogs that don't yet know the category (legacy). The form
+   *  watches `values.category_id` and re-resolves the schema from
+   *  `categories` when a `schema` isn't passed in directly, so editing
+   *  the category in-place re-renders the section list. */
+  schema?: CategorySchema;
+  fields?: ReadonlyArray<FormFieldKey>;
   categories: Category[];
   tags: Tag[];
   authors: Author[];
@@ -85,6 +91,7 @@ interface DynamicMetadataFormProps {
 export function DynamicMetadataForm({
   values,
   onChange,
+  schema,
   fields,
   categories,
   tags,
@@ -96,6 +103,15 @@ export function DynamicMetadataForm({
   inStorage,
   onCategoryChange,
 }: DynamicMetadataFormProps) {
+  // If the caller didn't pin a schema, resolve from the current
+  // category_id. This makes the form reactive to category changes:
+  // pick a different category in the dropdown → next render uses the
+  // new schema's `formFields`. Falls back to the literal `fields` list
+  // for legacy callers that pre-date the schema model.
+  const resolvedFields: ReadonlyArray<FormFieldKey> =
+    schema?.formFields ??
+    fields ??
+    schemaForCategoryId(values.category_id, categories).formFields;
   // State for category change confirmation dialog
   const [pendingCategoryId, setPendingCategoryId] = useState<number | null>(null);
   const [isMoving, setIsMoving] = useState(false);
@@ -371,7 +387,7 @@ export function DynamicMetadataForm({
 
   return (
     <div className="space-y-4">
-      {fields.map((field) => renderField(field))}
+      {resolvedFields.map((field) => renderField(field))}
 
       {/* Category Change Confirmation Dialog */}
       <AlertDialog

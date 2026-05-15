@@ -17,6 +17,8 @@ import type {
   PromptCreatePayload,
   RemoteConfig,
   RemoteUploadProgress,
+  RemoteDownloadProgress,
+  RemoteDeleteProgress,
 } from '@/types';
 
 export async function fileList(
@@ -114,6 +116,37 @@ export function onRemoteUploadProgress(
   return listen<RemoteUploadProgress>('remote-upload-progress', (event) => callback(event.payload));
 }
 
+/** Push a batch of file IDs into the remote-download worker queue. Cloud
+ *  copies stay in place; the worker writes each file to
+ *  `<storage_path>/.cache/` and records the cache path on the row.
+ *  Subscribe via {@link onRemoteDownloadProgress}. */
+export async function enqueueRemoteDownload(fileIds: number[]): Promise<void> {
+  return invoke('file_download_from_remote', { fileIds });
+}
+
+export function onRemoteDownloadProgress(
+  callback: (progress: RemoteDownloadProgress) => void
+): Promise<UnlistenFn> {
+  return listen<RemoteDownloadProgress>('remote-download-progress', (event) =>
+    callback(event.payload)
+  );
+}
+
+/** Push a batch of file IDs into the bulk-delete worker queue. For remote
+ *  files, the cloud blob is removed *strictly* (failure aborts the row's
+ *  removal so the user can retry). Subscribe via {@link onRemoteDeleteProgress}. */
+export async function enqueueRemoteDelete(fileIds: number[]): Promise<void> {
+  return invoke('file_delete_via_worker', { fileIds });
+}
+
+export function onRemoteDeleteProgress(
+  callback: (progress: RemoteDeleteProgress) => void
+): Promise<UnlistenFn> {
+  return listen<RemoteDeleteProgress>('remote-delete-progress', (event) =>
+    callback(event.payload)
+  );
+}
+
 export async function fileUpdate(
   id: number,
   params: { display_name?: string; category_id?: number | null; progress?: string | null }
@@ -136,6 +169,18 @@ export async function fileDeleteSource(path: string): Promise<void> {
 
 export async function listFilesInFolder(path: string): Promise<string[]> {
   return invoke('list_files_in_folder', { path });
+}
+
+/** Resolve an OS drag-drop path list: standalone files pass through;
+ *  folders are walked the same way `listFilesInFolder` walks them. The
+ *  returned `path_folder_roots` mirrors what `FilePicker` produces for
+ *  folder picks, so the rest of the import flow stays uniform. */
+export async function expandDropPaths(paths: string[]): Promise<{
+  files: string[];
+  path_folder_roots: Record<string, string>;
+  empty_folders: string[];
+}> {
+  return invoke('expand_drop_paths', { paths });
 }
 
 /** Post-import cleanup for folder picks. Removes empty subdirectories
@@ -178,17 +223,34 @@ export async function categoryGet(id: number): Promise<Category> {
   return invoke('category_get', { id });
 }
 
-export async function categoryCreate(name: string, icon?: string, description?: string): Promise<{ id: number }> {
-  return invoke('category_create', { name, icon: icon || null, description: description || null });
+export async function categoryCreate(
+  name: string,
+  icon?: string,
+  description?: string,
+  schemaSlug?: import('@/types').SchemaSlug
+): Promise<{ id: number }> {
+  return invoke('category_create', {
+    name,
+    icon: icon || null,
+    description: description || null,
+    schemaSlug: schemaSlug ?? null,
+  });
 }
 
 export async function categoryUpdate(
   id: number,
   name?: string,
   icon?: string,
-  description?: string
+  description?: string,
+  schemaSlug?: import('@/types').SchemaSlug
 ): Promise<{ success: boolean }> {
-  return invoke('category_update', { id, name, icon: icon || null, description: description ?? null });
+  return invoke('category_update', {
+    id,
+    name,
+    icon: icon || null,
+    description: description ?? null,
+    schemaSlug: schemaSlug ?? null,
+  });
 }
 
 export async function categoryDelete(
@@ -452,11 +514,11 @@ export async function llmTestConnection(): Promise<string> {
 }
 
 export async function promptList(filter?: {
-  mime_group?: string;
+  schema_slug?: import('@/types').SchemaSlug;
   step?: string;
 }): Promise<Prompt[]> {
   return invoke('prompt_list', {
-    mimeGroup: filter?.mime_group ?? null,
+    schemaSlug: filter?.schema_slug ?? null,
     step: filter?.step ?? null,
   });
 }

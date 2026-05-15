@@ -15,6 +15,201 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
     }
 }
 
+/// Build the `ORDER BY` fragment for a file listing query. The column whitelist
+/// keeps the caller from injecting arbitrary SQL via `sort_by`. `alias` is the
+/// table alias (`""` for unaliased, `"f"` when joining FTS); the trailing dot is
+/// added automatically when present.
+fn order_by_clause(sort_by: Option<&str>, sort_desc: bool, alias: &str) -> String {
+    let prefix = if alias.is_empty() {
+        String::new()
+    } else {
+        format!("{}.", alias)
+    };
+    let column = match sort_by.unwrap_or("created") {
+        "name" => format!("LOWER({}display_name)", prefix),
+        "updated" => format!("{}updated_at", prefix),
+        // "created" and any unknown value fall back to created_at, matching the
+        // historical default before per-call sorting was wired up.
+        _ => format!("{}created_at", prefix),
+    };
+    let direction = if sort_desc { "DESC" } else { "ASC" };
+    format!("ORDER BY {} {}", column, direction)
+}
+
+/// One row of the FilterPanel editor, deserialized loosely so a single shape
+/// covers the whole TS discriminated union. `field` and `op` together pick
+/// which of the value-bearing fields are read; the rest are ignored. The
+/// translator silently skips conditions whose value is missing — matches the
+/// frontend's "half-built row is a no-op" rule.
+#[derive(serde::Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct FilterCondition {
+    pub field: String,
+    pub op: String,
+    pub n: Option<i64>,
+    pub tag_id: Option<i64>,
+    pub text: Option<String>,
+    pub value: Option<String>,
+}
+
+/// Translate a list of `FilterCondition`s into a SQL fragment plus an ordered
+/// list of bind values. The fragment is appended verbatim after an existing
+/// `WHERE`-clause start, so it always begins with ` AND `. Caller binds the
+/// returned values in order on both the row query and the count query.
+///
+/// Only string-valued conditions go through bind; integer values (counts,
+/// tag ids) are formatted directly because they're typed `i64` and can't
+/// inject. Enum values (`file_status`, `storage_kind`) are whitelisted before
+/// formatting so an attacker controlling the JSON can't smuggle SQL through.
+fn build_filter_sql(
+    conditions: &[FilterCondition],
+    alias: &str,
+) -> (String, Vec<String>) {
+    let prefix = if alias.is_empty() {
+        String::new()
+    } else {
+        format!("{}.", alias)
+    };
+    let mut sql = String::new();
+    let mut binds: Vec<String> = Vec::new();
+    for c in conditions {
+        match c.field.as_str() {
+            "authors" => match c.op.as_str() {
+                "empty" => sql.push_str(&format!(
+                    " AND NOT EXISTS (SELECT 1 FROM file_authors WHERE file_id = {p}id)",
+                    p = prefix
+                )),
+                "not_empty" => sql.push_str(&format!(
+                    " AND EXISTS (SELECT 1 FROM file_authors WHERE file_id = {p}id)",
+                    p = prefix
+                )),
+                "count_gte" => {
+                    if let Some(n) = c.n {
+                        sql.push_str(&format!(
+                            " AND (SELECT COUNT(*) FROM file_authors WHERE file_id = {p}id) >= {n}",
+                            p = prefix,
+                            n = n
+                        ));
+                    }
+                }
+                "count_lt" => {
+                    if let Some(n) = c.n {
+                        sql.push_str(&format!(
+                            " AND (SELECT COUNT(*) FROM file_authors WHERE file_id = {p}id) < {n}",
+                            p = prefix,
+                            n = n
+                        ));
+                    }
+                }
+                _ => {}
+            },
+            "tags" => match c.op.as_str() {
+                "empty" => sql.push_str(&format!(
+                    " AND NOT EXISTS (SELECT 1 FROM file_tags WHERE file_id = {p}id)",
+                    p = prefix
+                )),
+                "not_empty" => sql.push_str(&format!(
+                    " AND EXISTS (SELECT 1 FROM file_tags WHERE file_id = {p}id)",
+                    p = prefix
+                )),
+                "count_gte" => {
+                    if let Some(n) = c.n {
+                        sql.push_str(&format!(
+                            " AND (SELECT COUNT(*) FROM file_tags WHERE file_id = {p}id) >= {n}",
+                            p = prefix,
+                            n = n
+                        ));
+                    }
+                }
+                "count_lt" => {
+                    if let Some(n) = c.n {
+                        sql.push_str(&format!(
+                            " AND (SELECT COUNT(*) FROM file_tags WHERE file_id = {p}id) < {n}",
+                            p = prefix,
+                            n = n
+                        ));
+                    }
+                }
+                "includes" => {
+                    if let Some(t) = c.tag_id {
+                        sql.push_str(&format!(
+                            " AND EXISTS (SELECT 1 FROM file_tags WHERE file_id = {p}id AND tag_id = {t})",
+                            p = prefix,
+                            t = t
+                        ));
+                    }
+                }
+                "excludes" => {
+                    if let Some(t) = c.tag_id {
+                        sql.push_str(&format!(
+                            " AND NOT EXISTS (SELECT 1 FROM file_tags WHERE file_id = {p}id AND tag_id = {t})",
+                            p = prefix,
+                            t = t
+                        ));
+                    }
+                }
+                _ => {}
+            },
+            "progress" => match c.op.as_str() {
+                "empty" => sql.push_str(&format!(
+                    " AND ({p}progress IS NULL OR TRIM({p}progress) = '')",
+                    p = prefix
+                )),
+                "not_empty" => sql.push_str(&format!(
+                    " AND {p}progress IS NOT NULL AND TRIM({p}progress) <> ''",
+                    p = prefix
+                )),
+                "contains" => {
+                    if let Some(t) = c.text.as_ref().filter(|s| !s.is_empty()) {
+                        sql.push_str(&format!(
+                            " AND LOWER({p}progress) LIKE ? ESCAPE '\\'",
+                            p = prefix
+                        ));
+                        // Escape the LIKE meta-characters so the user's text
+                        // is matched literally; `%text%` then performs a
+                        // case-insensitive substring search.
+                        let escaped = t
+                            .to_lowercase()
+                            .replace('\\', "\\\\")
+                            .replace('%', "\\%")
+                            .replace('_', "\\_");
+                        binds.push(format!("%{}%", escaped));
+                    }
+                }
+                _ => {}
+            },
+            "file_status" => {
+                if c.op == "is" {
+                    if let Some(v) = c.value.as_deref() {
+                        if matches!(v, "available" | "missing" | "moved") {
+                            sql.push_str(&format!(
+                                " AND {p}file_status = '{v}'",
+                                p = prefix,
+                                v = v
+                            ));
+                        }
+                    }
+                }
+            }
+            "storage_kind" => {
+                if c.op == "is" {
+                    if let Some(v) = c.value.as_deref() {
+                        if matches!(v, "local" | "remote") {
+                            sql.push_str(&format!(
+                                " AND {p}storage_kind = '{v}'",
+                                p = prefix,
+                                v = v
+                            ));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (sql, binds)
+}
+
 /// Generate a unique filename if file already exists
 fn get_unique_destination(dest: &std::path::Path) -> PathBuf {
     if !dest.exists() {
@@ -194,6 +389,9 @@ pub async fn file_list(
     category_id: Option<i64>,
     _tag_ids: Option<Vec<i64>>,
     status: Option<String>,
+    sort_by: Option<String>,
+    sort_desc: Option<bool>,
+    conditions: Option<Vec<FilterCondition>>,
     limit: Option<i32>,
     offset: Option<i32>,
 ) -> Result<FileListResponse, String> {
@@ -201,6 +399,13 @@ pub async fn file_list(
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
     let limit = limit.unwrap_or(50);
     let offset = offset.unwrap_or(0);
+    // Default mirrors the previous hardcoded `ORDER BY created_at DESC` so
+    // callers that don't pass sort options keep their existing ordering.
+    let order_by = order_by_clause(sort_by.as_deref(), sort_desc.unwrap_or(true), "");
+    let (filter_sql, filter_binds) = build_filter_sql(
+        conditions.as_deref().unwrap_or(&[]),
+        "",
+    );
 
     // Build the WHERE clause once so both the row query and the count query
     // see the same filter — otherwise `total` misreports what's loadable,
@@ -212,18 +417,27 @@ pub async fn file_list(
     if let Some(s) = &status {
         where_clause.push_str(&format!(" AND file_status = '{}'", s));
     }
+    where_clause.push_str(&filter_sql);
 
     let row_query = format!(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, created_at, updated_at FROM files{} ORDER BY created_at DESC LIMIT {} OFFSET {}",
-        where_clause, limit, offset
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, created_at, updated_at FROM files{} {} LIMIT {} OFFSET {}",
+        where_clause, order_by, limit, offset
     );
-    let files: Vec<FileEntry> = sqlx::query_as(&row_query)
+    let mut row_stmt = sqlx::query_as::<_, FileEntry>(&row_query);
+    for b in &filter_binds {
+        row_stmt = row_stmt.bind(b);
+    }
+    let files: Vec<FileEntry> = row_stmt
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
     let count_query = format!("SELECT COUNT(*) FROM files{}", where_clause);
-    let total: (i64,) = sqlx::query_as(&count_query)
+    let mut count_stmt = sqlx::query_as::<_, (i64,)>(&count_query);
+    for b in &filter_binds {
+        count_stmt = count_stmt.bind(b);
+    }
+    let total: (i64,) = count_stmt
         .fetch_one(&pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -267,6 +481,7 @@ pub async fn file_list(
             progress: file.progress,
             storage_kind: file.storage_kind,
             remote_provider: file.remote_provider,
+            local_cache_path: file.local_cache_path,
             description,
             created_at: file.created_at,
             updated_at: file.updated_at,
@@ -332,6 +547,7 @@ async fn hydrate_file_items(
             progress: file.progress,
             storage_kind: file.storage_kind,
             remote_provider: file.remote_provider,
+            local_cache_path: file.local_cache_path,
             description,
             created_at: file.created_at,
             updated_at: file.updated_at,
@@ -349,7 +565,7 @@ pub(crate) async fn list_files_by_tag_impl(
 ) -> Result<Vec<FileListItem>, String> {
     let files: Vec<FileEntry> = sqlx::query_as(
         "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status,
-                f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.created_at, f.updated_at
+                f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at
          FROM files f
          INNER JOIN file_tags ft ON ft.file_id = f.id
          WHERE ft.tag_id = ?
@@ -380,7 +596,7 @@ pub(crate) async fn list_files_by_author_impl(
 ) -> Result<Vec<FileListItem>, String> {
     let files: Vec<FileEntry> = sqlx::query_as(
         "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status,
-                f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.created_at, f.updated_at
+                f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at
          FROM files f
          INNER JOIN file_authors fa ON fa.file_id = f.id
          WHERE fa.author_id = ?
@@ -413,7 +629,7 @@ pub async fn file_get(
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
     let file: FileEntry = sqlx::query_as(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, created_at, updated_at FROM files WHERE id = ?"
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, created_at, updated_at FROM files WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(&pool)
@@ -422,7 +638,7 @@ pub async fn file_get(
     .ok_or("File not found")?;
 
     let category: Option<Category> = if let Some(cat_id) = file.category_id {
-        sqlx::query_as("SELECT id, name, icon, is_default, folder_name, created_at FROM categories WHERE id = ?")
+        sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, schema_slug, created_at FROM categories WHERE id = ?")
             .bind(cat_id)
             .fetch_optional(&pool)
             .await
@@ -468,6 +684,7 @@ pub async fn file_get(
         progress: file.progress,
         storage_kind: file.storage_kind,
         remote_provider: file.remote_provider,
+        local_cache_path: file.local_cache_path,
         created_at: file.created_at,
         updated_at: file.updated_at,
         category,
@@ -1220,6 +1437,79 @@ pub struct FileUpdateResponse {
 /// default `std::fs::read_dir` + `is_dir`/`is_file` calls — acceptable for
 /// the common case of a user picking a media folder.
 ///
+/// True iff every non-hidden direct child of `dir` is an image file
+/// AND `dir` contains no subdirectories. Hidden entries are ignored.
+/// Empty directories return false (no content to import).
+fn folder_is_image_leaf(dir: &std::path::Path) -> std::io::Result<bool> {
+    use crate::pipeline::archive::is_image_filename;
+    let mut saw_image = false;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue;
+        }
+        let p = entry.path();
+        if p.is_dir() {
+            return Ok(false);
+        }
+        if p.is_file() {
+            if !is_image_filename(&name_str) {
+                return Ok(false);
+            }
+            saw_image = true;
+        }
+    }
+    Ok(saw_image)
+}
+
+/// Recursively enumerate non-hidden files under `dir`. Image-leaf
+/// subdirectories collapse to a single directory entry (the comic
+/// pipeline zips them on commit). See `list_files_in_folder` for the
+/// rationale behind the leaf-only collapse rule.
+fn folder_walk(dir: &std::path::Path, out: &mut Vec<String>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            if folder_is_image_leaf(&path)? {
+                if let Some(s) = path.to_str() {
+                    out.push(s.to_string());
+                }
+            } else {
+                folder_walk(&path, out)?;
+            }
+        } else if path.is_file() {
+            if let Some(s) = path.to_str() {
+                out.push(s.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Scan a single folder root using the import-aware walker. Result is
+/// sorted so repeated scans produce stable ordering. If the root itself
+/// is an image leaf, the root path is the only entry returned.
+fn scan_folder_root(root: &std::path::Path) -> std::io::Result<Vec<String>> {
+    let mut files = Vec::new();
+    if folder_is_image_leaf(root)? {
+        if let Some(s) = root.to_str() {
+            files.push(s.to_string());
+        }
+    } else {
+        folder_walk(root, &mut files)?;
+    }
+    files.sort();
+    Ok(files)
+}
+
 /// Image-folder leaf collapse: a directory whose non-hidden direct
 /// children are all image files (and which has no subdirectories) is
 /// emitted as a single path. `file_prepare_import` routes such dir
@@ -1234,8 +1524,6 @@ pub struct FileUpdateResponse {
 /// Result is sorted so repeated folder picks produce stable ordering.
 #[tauri::command]
 pub async fn list_files_in_folder(path: String) -> Result<Vec<String>, String> {
-    use crate::pipeline::archive::is_image_filename;
-
     let root = std::path::Path::new(&path);
     if !root.exists() {
         return Err("PATH_NOT_FOUND".to_string());
@@ -1243,71 +1531,62 @@ pub async fn list_files_in_folder(path: String) -> Result<Vec<String>, String> {
     if !root.is_dir() {
         return Err("NOT_A_DIRECTORY".to_string());
     }
+    scan_folder_root(root).map_err(|e| format!("Failed to scan folder: {e}"))
+}
 
-    /// True iff every non-hidden direct child of `dir` is an image file
-    /// AND `dir` contains no subdirectories. Hidden entries are ignored.
-    /// Empty directories return false (no content to import).
-    fn is_image_leaf(dir: &std::path::Path) -> std::io::Result<bool> {
-        let mut saw_image = false;
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with('.') {
-                continue;
-            }
-            let p = entry.path();
-            if p.is_dir() {
-                return Ok(false);
-            }
-            if p.is_file() {
-                if !is_image_filename(&name_str) {
-                    return Ok(false);
-                }
-                saw_image = true;
-            }
-        }
-        Ok(saw_image)
-    }
+#[derive(Serialize)]
+pub struct DropExpansion {
+    /// Resolved file paths: standalone files passed through, plus the
+    /// recursive contents of every dropped folder (with image-leaf
+    /// collapse, matching `list_files_in_folder`).
+    pub files: Vec<String>,
+    /// Maps each enumerated path to the folder root the user dropped.
+    /// Standalone-file drops are absent from this map — they take the
+    /// same code path as `FilePicker.handlePickFiles`.
+    pub path_folder_roots: std::collections::HashMap<String, String>,
+    /// Folder roots that contained no importable entries. Reported so
+    /// the UI can surface them, mirroring `FilePicker.handlePickFolder`.
+    pub empty_folders: Vec<String>,
+}
 
-    fn walk(dir: &std::path::Path, out: &mut Vec<String>) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with('.') {
-                continue;
-            }
-            let path = entry.path();
-            if path.is_dir() {
-                if is_image_leaf(&path)? {
-                    if let Some(s) = path.to_str() {
-                        out.push(s.to_string());
-                    }
-                } else {
-                    walk(&path, out)?;
-                }
-            } else if path.is_file() {
-                if let Some(s) = path.to_str() {
-                    out.push(s.to_string());
-                }
-            }
-        }
-        Ok(())
-    }
-
+/// Resolve OS-level drop paths into the same shape `FilePicker` produces.
+/// Handles a mixed batch where some paths are files and others are
+/// folders — files pass through untouched; folders are walked with the
+/// same image-leaf rules as the explicit folder picker. Missing paths
+/// are skipped silently (a stale Finder drag can race a filesystem move
+/// and a hard error would block the rest of the batch).
+#[tauri::command]
+pub async fn expand_drop_paths(paths: Vec<String>) -> Result<DropExpansion, String> {
     let mut files = Vec::new();
-    // Top-level: if the picked folder ITSELF is an image leaf, emit it
-    // as a single comic instead of returning its images individually.
-    if is_image_leaf(root).map_err(|e| format!("Failed to scan folder: {e}"))? {
-        if let Some(s) = root.to_str() {
-            files.push(s.to_string());
+    let mut path_folder_roots = std::collections::HashMap::new();
+    let mut empty_folders = Vec::new();
+
+    for raw in paths {
+        let p = std::path::Path::new(&raw);
+        if !p.exists() {
+            continue;
         }
-    } else {
-        walk(root, &mut files).map_err(|e| format!("Failed to walk folder: {e}"))?;
+        if p.is_file() {
+            files.push(raw);
+        } else if p.is_dir() {
+            let scanned = scan_folder_root(p)
+                .map_err(|e| format!("Failed to scan folder {raw}: {e}"))?;
+            if scanned.is_empty() {
+                empty_folders.push(raw);
+                continue;
+            }
+            for f in scanned {
+                path_folder_roots.insert(f.clone(), raw.clone());
+                files.push(f);
+            }
+        }
     }
-    files.sort();
-    Ok(files)
+
+    Ok(DropExpansion {
+        files,
+        path_folder_roots,
+        empty_folders,
+    })
 }
 
 /// Post-commit cleanup for folder imports. Called by the frontend after
@@ -1695,6 +1974,9 @@ pub async fn file_search(
     category_id: Option<i64>,
     _tag_ids: Option<Vec<i64>>,
     _metadata_filters: Option<Vec<MetadataFilter>>,
+    sort_by: Option<String>,
+    sort_desc: Option<bool>,
+    conditions: Option<Vec<FilterCondition>>,
     limit: Option<i32>,
     offset: Option<i32>,
 ) -> Result<FileListResponse, String> {
@@ -1703,6 +1985,13 @@ pub async fn file_search(
 
     let limit = limit.unwrap_or(50);
     let offset = offset.unwrap_or(0);
+    // The aliased form is needed because the search query joins `files_fts`
+    // and references columns through `f.`.
+    let order_by = order_by_clause(sort_by.as_deref(), sort_desc.unwrap_or(true), "f");
+    let (filter_sql, filter_binds) = build_filter_sql(
+        conditions.as_deref().unwrap_or(&[]),
+        "f",
+    );
 
     // If the user's query sanitizes to nothing, return an empty result set
     // with total = 0. The frontend routes empty queries to `file_list`, so
@@ -1718,16 +2007,17 @@ pub async fn file_search(
     if let Some(cat_id) = category_id {
         where_tail.push_str(&format!(" AND f.category_id = {}", cat_id));
     }
+    where_tail.push_str(&filter_sql);
 
     let (row_query, count_query, bind_value) = match &filter {
         SearchFilter::Fts(expr) => (
             format!(
-                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.created_at, f.updated_at \
+                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at \
                  FROM files f \
                  JOIN files_fts ON files_fts.rowid = f.id \
                  WHERE files_fts MATCH ?{} \
-                 ORDER BY f.created_at DESC LIMIT {} OFFSET {}",
-                where_tail, limit, offset
+                 {} LIMIT {} OFFSET {}",
+                where_tail, order_by, limit, offset
             ),
             format!(
                 "SELECT COUNT(*) FROM files f \
@@ -1739,11 +2029,11 @@ pub async fn file_search(
         ),
         SearchFilter::Like(pattern) => (
             format!(
-                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.created_at, f.updated_at \
+                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at \
                  FROM files f \
                  WHERE (f.display_name LIKE ? ESCAPE '\\' OR f.path LIKE ? ESCAPE '\\'){} \
-                 ORDER BY f.created_at DESC LIMIT {} OFFSET {}",
-                where_tail, limit, offset
+                 {} LIMIT {} OFFSET {}",
+                where_tail, order_by, limit, offset
             ),
             format!(
                 "SELECT COUNT(*) FROM files f \
@@ -1758,11 +2048,17 @@ pub async fn file_search(
     if matches!(filter, SearchFilter::Like(_)) {
         row_stmt = row_stmt.bind(&bind_value);
     }
+    for b in &filter_binds {
+        row_stmt = row_stmt.bind(b);
+    }
     let files: Vec<FileEntry> = row_stmt.fetch_all(&pool).await.map_err(|e| e.to_string())?;
 
     let mut count_stmt = sqlx::query_as::<_, (i64,)>(&count_query).bind(&bind_value);
     if matches!(filter, SearchFilter::Like(_)) {
         count_stmt = count_stmt.bind(&bind_value);
+    }
+    for b in &filter_binds {
+        count_stmt = count_stmt.bind(b);
     }
     let total: (i64,) = count_stmt.fetch_one(&pool).await.map_err(|e| e.to_string())?;
 
@@ -1786,7 +2082,7 @@ pub async fn file_check_status(
         Some(ids) => {
             let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let query = format!(
-                "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, created_at, updated_at FROM files WHERE id IN ({})",
+                "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, created_at, updated_at FROM files WHERE id IN ({})",
                 placeholders
             );
             sqlx::query_as(&query)
@@ -1795,7 +2091,7 @@ pub async fn file_check_status(
                 .map_err(|e| e.to_string())?
         }
         None => {
-            sqlx::query_as("SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, created_at, updated_at FROM files")
+            sqlx::query_as("SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, created_at, updated_at FROM files")
                 .fetch_all(&pool)
                 .await
                 .map_err(|e| e.to_string())?

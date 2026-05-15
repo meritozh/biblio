@@ -54,6 +54,10 @@ export function CategorySelect({
         icon: null,
         is_default: false,
         folder_name: null,
+        // Inline-create from the picker uses the default schema; users
+        // who want a comic-shaped layout pick the slug from the
+        // dedicated Categories page instead.
+        schema_slug: 'novel',
         created_at: new Date().toISOString(),
       };
       onCategoryCreated?.(newCategory);

@@ -6,17 +6,19 @@
 //! - `build_authorize_url` — construct OAuth authorize URL with implicit grant
 //! - `upload_file`         — precreate → slice upload → create
 //! - `delete_file`         — filemanager:delete by path
+//! - `get_download_dlink`  — filemetas to fetch a short-lived download URL
+//! - `download_to`         — stream a dlink to disk with atomic rename
 //!
-//! Not implemented: listing, download, move/rename, rapid-upload by MD5
-//! match. Biblio doesn't read files back from Baidu (cover + metadata
-//! live locally), so download isn't on the roadmap.
+//! Not implemented: listing, move/rename, rapid-upload by MD5 match.
 
 mod auth;
 mod delete;
+mod download;
 mod types;
 mod upload;
 
 pub use auth::build_authorize_url;
 pub use delete::delete_file;
+pub use download::{download_to, get_download_dlink};
 pub use types::{BaiduError, UploadResult};
 pub use upload::upload_file;

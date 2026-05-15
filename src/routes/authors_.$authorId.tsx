@@ -25,7 +25,7 @@ function AuthorDetailPage() {
 
   if (Number.isNaN(id)) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background">
+      <div className="flex h-full items-center justify-center">
         <p className="text-sm text-muted-foreground font-serif-italic">
           Unknown author reference.
         </p>

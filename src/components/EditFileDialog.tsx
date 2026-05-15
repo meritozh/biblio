@@ -8,7 +8,10 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { DynamicMetadataForm, type DynamicMetadataFormValues } from '@/components/DynamicMetadataForm';
-import { schemaForPath } from '@/lib/fileKind';
+// No schema prop: the form resolves the schema from
+// `formValues.category_id` so the section list reactively follows the
+// user's category choice. When the file's existing category isn't in
+// the list (rare race), the form falls back to the default schema.
 import { fileGet } from '@/lib/tauri';
 import type { FileEntry, Category, Tag, Author } from '@/types';
 
@@ -127,7 +130,6 @@ export function EditFileDialog({
         <DynamicMetadataForm
           values={formValues}
           onChange={setFormValues}
-          fields={schemaForPath(file?.path)?.formFields ?? []}
           categories={categories}
           tags={tags}
           authors={authors}

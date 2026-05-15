@@ -4,11 +4,12 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { FilePicker } from '@/components/FilePicker';
 import { SearchBar } from '@/components/SearchBar';
 import { FileList } from '@/components/FileList';
-import { CategorySidebar } from '@/components/CategorySidebar';
 import { ProcessingPipeline } from '@/components/ProcessingPipeline';
 import { RemoteUploadProgressPanel } from '@/components/RemoteUploadProgress';
-import { fetchFiles } from '@/stores';
+import { fetchFiles, type SortKey } from '@/stores';
+import type { Condition } from '@/lib/filters';
 import { fileStore } from '@/stores/fileStore';
+import { setSettingsOpen, useAppState } from '@/stores/appStore';
 import { useView, type ViewFetcherResult } from '@/hooks/useView';
 import {
   useRemoteUploadStore,
@@ -19,16 +20,34 @@ import {
   expandPanel,
 } from '@/stores/remoteUploadStore';
 import {
+  useRemoteDownloadStore,
+  enqueueDownload,
+  dismissDownloadPanel,
+  clearCompletedDownloads,
+  minimizeDownloadPanel,
+  expandDownloadPanel,
+} from '@/stores/remoteDownloadStore';
+import {
+  useRemoteDeleteStore,
+  enqueueDelete,
+  dismissDeletePanel,
+  clearCompletedDeletes,
+  minimizeDeletePanel,
+  expandDeletePanel,
+} from '@/stores/remoteDeleteStore';
+import { RemoteDownloadProgressPanel } from '@/components/RemoteDownloadProgress';
+import { RemoteDeleteProgressPanel } from '@/components/RemoteDeleteProgress';
+import {
   fileCreate,
   coverSet,
   storageGetPath,
   storageCheckAccess,
   remoteConfigGet,
   enqueueImport,
+  expandDropPaths,
 } from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
-import { SettingsDialog } from '@/components/SettingsDialog';
 import { EditFileDialog } from '@/components/EditFileDialog';
 import { ConfirmDeleteDialog } from '@/components/ConfirmDeleteDialog';
 import {
@@ -42,7 +61,7 @@ import {
   DynamicMetadataForm,
   type DynamicMetadataFormValues,
 } from '@/components/DynamicMetadataForm';
-import { schemaForPath, isImportable } from '@/lib/fileKind';
+import { schemaForPath, isImportable } from '@/lib/categorySchema';
 import { useFileActions } from '@/hooks/useFileActions';
 import type { FileEntry } from '@/types';
 
@@ -54,11 +73,11 @@ const EMPTY_FORM_VALUES: DynamicMetadataFormValues = {
   metadata: [],
 };
 
-// Load the whole visible category in a single fetch so client-side filters
-// (FileList header) operate over the complete row set instead of whatever's
-// happened to scroll into view. Sized for realistic single-user libraries;
-// the load-more virtualizer trigger remains as a safety net beyond this.
-const FILES_PAGE_SIZE = 5000;
+// First fetch fills the viewport (a few rows worth), then the virtualizer's
+// load-more trigger streams the rest as the user scrolls. Larger pages
+// would let client-side filter pills operate over more rows up-front, but
+// at the cost of a multi-MB initial IPC payload that delays first paint.
+const FILES_PAGE_SIZE = 200;
 
 export const Route = createFileRoute('/')({
   component: HomePage,
@@ -66,12 +85,27 @@ export const Route = createFileRoute('/')({
 
 function HomePage() {
   const [loadingMore, setLoadingMore] = useState(false);
-  const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
+  const selectedCategoryId = useAppState((s) => s.selectedCategoryId);
+  const settingsOpen = useAppState((s) => s.settingsOpen);
   // `searchQuery` is the live input value; `debouncedQuery` is the effective
   // value used for fetches, updated 300ms after the user stops typing so we
   // don't fire one backend request per keystroke.
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
+  // Sort lives here (not in FileList) because it goes into the SQL ORDER BY
+  // and the view cache key — the server returns rows already in this order
+  // and the load-more pagination has to keep that ordering stable across
+  // pages. Defaults match the prior client-side defaults: name ascending.
+  const [sortBy, setSortBy] = useState<SortKey>('name');
+  const [sortDesc, setSortDesc] = useState(false);
+  const handleSortChange = useCallback((next: SortKey, desc: boolean) => {
+    setSortBy(next);
+    setSortDesc(desc);
+  }, []);
+  // Same reasoning as sort: filter pills become part of the SQL WHERE so
+  // results match across paginated load-more requests. Ownership belongs to
+  // Library; FileList receives them as controlled props.
+  const [conditions, setConditions] = useState<Condition[]>([]);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   // Map of every imported path → the folder the user picked it from. Empty
@@ -82,12 +116,13 @@ function HomePage() {
   const [formValues, setFormValues] = useState<DynamicMetadataFormValues>(EMPTY_FORM_VALUES);
   const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
   const [storagePathAccessible, setStoragePathAccessible] = useState(true);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [pipelineOpen, setPipelineOpen] = useState(false);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
 
   const [remoteEnabled, setRemoteEnabled] = useState(false);
   const uploadState = useRemoteUploadStore();
+  const downloadState = useRemoteDownloadStore();
+  const deleteState = useRemoteDeleteStore();
 
   // Debounce the search input. `searchQuery` reflects every keystroke;
   // `debouncedQuery` is what actually drives fetches, so typing quickly
@@ -97,9 +132,15 @@ function HomePage() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
+  // Stable string key for the view cache. Conditions hash by JSON because
+  // the array identity churns on every keystroke in the editor; the JSON
+  // string only changes when the predicate itself does.
+  const conditionsKey = useMemo(() => JSON.stringify(conditions), [conditions]);
+
   const viewKey = useMemo(
-    () => `home::category=${selectedCategoryId ?? 'none'}::query=${debouncedQuery}`,
-    [selectedCategoryId, debouncedQuery]
+    () =>
+      `home::category=${selectedCategoryId ?? 'none'}::query=${debouncedQuery}::sort=${sortBy}:${sortDesc ? 'desc' : 'asc'}::filters=${conditionsKey}`,
+    [selectedCategoryId, debouncedQuery, sortBy, sortDesc, conditionsKey]
   );
 
   const fetchView = useCallback(async (): Promise<ViewFetcherResult> => {
@@ -107,10 +148,13 @@ function HomePage() {
     return await fetchFiles({
       category_id: selectedCategoryId,
       query: debouncedQuery || undefined,
+      sort_by: sortBy,
+      sort_desc: sortDesc,
+      conditions,
       limit: FILES_PAGE_SIZE,
       offset: 0,
     });
-  }, [selectedCategoryId, debouncedQuery]);
+  }, [selectedCategoryId, debouncedQuery, sortBy, sortDesc, conditions]);
 
   const { ids, total, loading, reload, appendMore } = useView(viewKey, fetchView);
 
@@ -121,6 +165,9 @@ function HomePage() {
       const result = await fetchFiles({
         category_id: selectedCategoryId,
         query: debouncedQuery || undefined,
+        sort_by: sortBy,
+        sort_desc: sortDesc,
+        conditions,
         limit: FILES_PAGE_SIZE,
         offset: ids.length,
       });
@@ -128,7 +175,7 @@ function HomePage() {
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, selectedCategoryId, debouncedQuery, ids.length, appendMore]);
+  }, [loadingMore, selectedCategoryId, debouncedQuery, sortBy, sortDesc, conditions, ids.length, appendMore]);
 
   // Shared dialog state + edit/delete handlers + supporting relation state.
   // The hook drives store mutations directly — it no longer needs a reload
@@ -152,24 +199,6 @@ function HomePage() {
     handleFileDeleteConfirm,
   } = useFileActions();
 
-  // Snap to a real category whenever the list changes:
-  // - On first load, pick the first category (replaces the old "All Files"
-  //   default of null).
-  // - If the currently-selected category disappears (deletion, rename), fall
-  //   back to the first remaining one. Empty list → null, the empty state
-  //   handles it.
-  useEffect(() => {
-    if (categories.length === 0) {
-      if (selectedCategoryId !== null) setSelectedCategoryId(null);
-      return;
-    }
-    const stillExists = categories.some((c) => c.id === selectedCategoryId);
-    if (!stillExists) {
-      const first = categories[0];
-      if (first) setSelectedCategoryId(first.id);
-    }
-  }, [categories, selectedCategoryId]);
-
   const checkStoragePath = useCallback(async () => {
     const path = await storageGetPath();
     if (path && path !== '') {
@@ -187,34 +216,38 @@ function HomePage() {
     remoteConfigGet().then(cfg => setRemoteEnabled(cfg.enabled)).catch(() => {});
   }, [checkStoragePath]);
 
-  const handleSettingsOpenChange = useCallback(
-    (open: boolean) => {
-      setSettingsOpen(open);
-      if (!open) {
-        void checkStoragePath();
-      }
-    },
-    [checkStoragePath]
-  );
+  // The Settings dialog now lives in the app shell, so we react to its
+  // close via the shared store: re-validate storage path whenever it
+  // transitions from open to closed.
+  const prevSettingsOpenRef = useRef(false);
+  useEffect(() => {
+    if (prevSettingsOpenRef.current && !settingsOpen) {
+      void checkStoragePath();
+    }
+    prevSettingsOpenRef.current = settingsOpen;
+  }, [settingsOpen, checkStoragePath]);
 
   const handleFilesSelected = (
     paths: string[],
     pathFolderRoots?: Record<string, string>
   ) => {
-    // Folder picks trust the backend's own filtering: `list_files_in_folder`
-    // already drops dotfiles and collapses image-only sub-trees into
-    // directory paths (which `isImportable` would otherwise reject for
-    // having no extension). For file picks and drag-drop, run the
-    // extension filter so we can surface unsupported types up-front.
+    // Folder-scanned paths trust the backend's own filtering:
+    // `list_files_in_folder` / `expand_drop_paths` already drop dotfiles
+    // and collapse image-only sub-trees into directory paths (which
+    // `isImportable` would otherwise reject for having no extension).
+    // Standalone paths — plain file picks and file-only drops — still
+    // go through the extension filter so we surface unsupported types
+    // up-front. The check is per-path because a single drag-drop can
+    // mix folder-scanned entries with standalone files.
     const kept: string[] = [];
     const keptFolderRoots: Record<string, string> = {};
     const skipped: string[] = [];
-    const fromFolderPick = pathFolderRoots && Object.keys(pathFolderRoots).length > 0;
     for (const p of paths) {
-      if (fromFolderPick || isImportable(p)) {
+      const folderRoot = pathFolderRoots?.[p];
+      if (folderRoot || isImportable(p)) {
         kept.push(p);
-        if (pathFolderRoots && pathFolderRoots[p]) {
-          keptFolderRoots[p] = pathFolderRoots[p];
+        if (folderRoot) {
+          keptFolderRoots[p] = folderRoot;
         }
       } else {
         skipped.push(p);
@@ -317,7 +350,26 @@ function HomePage() {
         } else if (p.type === 'drop') {
           setIsDraggingFiles(false);
           if (storageReadyRef.current && p.paths.length > 0) {
-            void handleFilesSelectedRef.current(p.paths);
+            // Resolve dropped paths first: any folder gets walked the
+            // same way `FilePicker` walks an explicit folder pick, so a
+            // mixed drop of files + folders feeds the import worker the
+            // same shape both paths produce.
+            void expandDropPaths(p.paths)
+              .then(({ files, path_folder_roots, empty_folders }) => {
+                if (empty_folders.length > 0) {
+                  alert(
+                    empty_folders.length === 1
+                      ? 'The dropped folder is empty.'
+                      : `${empty_folders.length} dropped folders are empty.`
+                  );
+                }
+                if (files.length === 0) return;
+                handleFilesSelectedRef.current(files, path_folder_roots);
+              })
+              .catch((err) => {
+                console.error('expand_drop_paths failed:', err);
+                alert(`Failed to read dropped items: ${String(err)}`);
+              });
           }
         }
       })
@@ -331,133 +383,157 @@ function HomePage() {
     };
   }, []);
 
-  const handleBulkUpload = useCallback((fileIds: number[]) => {
+  const namesFor = useCallback((fileIds: number[]) => {
     const fileNames = new Map<number, string>();
     const byId = fileStore.state.byId;
     for (const id of fileIds) {
       const f = byId.get(id);
       if (f) fileNames.set(id, f.display_name);
     }
-    void enqueueUpload(fileIds, fileNames);
+    return fileNames;
   }, []);
 
+  const handleBulkUpload = useCallback(
+    (fileIds: number[]) => {
+      void enqueueUpload(fileIds, namesFor(fileIds));
+    },
+    [namesFor]
+  );
+
+  const handleBulkDownload = useCallback(
+    (fileIds: number[]) => {
+      void enqueueDownload(fileIds, namesFor(fileIds));
+    },
+    [namesFor]
+  );
+
+  const handleBulkDelete = useCallback(
+    (fileIds: number[]) => {
+      void enqueueDelete(fileIds, namesFor(fileIds));
+    },
+    [namesFor]
+  );
+
   return (
-    <div className="flex h-screen bg-background">
-      <CategorySidebar
-        categories={categories}
-        selectedCategoryId={selectedCategoryId}
-        onCategorySelect={setSelectedCategoryId}
-        onOpenSettings={() => setSettingsOpen(true)}
-      />
-      <main className="flex-1 flex flex-col overflow-hidden relative">
-        {isDraggingFiles && (
-          <div
-            className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-primary/5 border-2 border-dashed border-primary rounded-lg m-4"
-            aria-hidden="true"
+    <>
+      {isDraggingFiles && (
+        <div
+          className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-primary/5 border-2 border-dashed border-primary rounded-lg m-4"
+          aria-hidden="true"
+        >
+          <p className="text-sm font-medium text-primary">
+            Drop files to import
+          </p>
+        </div>
+      )}
+      <div
+        className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
+        data-tauri-drag-region
+      >
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-3xl text-foreground">Library</h1>
+          <span
+            className="font-serif-italic text-sm text-muted-foreground"
+            aria-label={`${total} files`}
           >
-            <p className="text-sm font-medium text-primary">
-              Drop files to import
-            </p>
+            — {total} {total === 1 ? 'volume' : 'volumes'}
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="w-64">
+            <SearchBar
+              value={searchQuery}
+              onChange={setSearchQuery}
+              onSearch={setDebouncedQuery}
+              placeholder="Search title, path…"
+            />
+          </div>
+          <FilePicker
+            onFilesSelected={handleFilesSelected}
+            disabled={storagePathConfigured === false}
+          />
+        </div>
+      </div>
+
+      <div className="flex-1 flex flex-col overflow-hidden px-8 py-6">
+        {storagePathConfigured === false && (
+          <div className="mb-6 p-4 bg-secondary/50 rounded flex items-center gap-3">
+            <AlertCircle className="h-4 w-4 text-muted-foreground shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-foreground">Storage path not configured</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Select a storage folder to start adding files.
+              </p>
+            </div>
+            <Button variant="secondary" size="sm" onClick={() => setSettingsOpen(true)}>
+              Configure
+            </Button>
           </div>
         )}
-        <div
-          className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
-          data-tauri-drag-region
-        >
-          <div className="flex items-baseline gap-3">
-            <h1 className="text-3xl text-foreground">Library</h1>
-            <span
-              className="font-serif-italic text-sm text-muted-foreground"
-              aria-label={`${total} files`}
-            >
-              — {total} {total === 1 ? 'volume' : 'volumes'}
-            </span>
+
+        {storagePathConfigured === true && !storagePathAccessible && (
+          <div className="mb-6 p-4 bg-destructive/5 rounded flex items-center gap-3">
+            <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-foreground">Storage path inaccessible</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                The storage folder cannot be accessed.
+              </p>
+            </div>
+            <Button variant="secondary" size="sm" onClick={() => setSettingsOpen(true)}>
+              Reconfigure
+            </Button>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="w-64">
-              <SearchBar
-                value={searchQuery}
-                onChange={setSearchQuery}
-                onSearch={setDebouncedQuery}
-                placeholder="Search title, path…"
-              />
+        )}
+
+        {categories.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="max-w-sm text-center space-y-3">
+              <p className="text-sm font-medium text-foreground">
+                No categories yet
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Create a category to start organizing your library — comics,
+                novels, or anything else.
+              </p>
+              <Link to="/categories">
+                <Button size="sm" variant="secondary">
+                  Manage Categories
+                </Button>
+              </Link>
             </div>
-            <FilePicker
-              onFilesSelected={handleFilesSelected}
-              disabled={storagePathConfigured === false}
-            />
           </div>
-        </div>
+        ) : loading ? (
+          <div className="flex items-center justify-center h-32">
+            <p className="text-sm text-muted-foreground">Loading...</p>
+          </div>
+        ) : (
+          <FileList
+            ids={ids}
+            total={total}
+            loadingMore={loadingMore}
+            onLoadMore={handleLoadMore}
+            filterKey={`${selectedCategoryId ?? 'none'}::${debouncedQuery}`}
+            onFileClick={handleFileClick}
+            onFileEdit={handleFileEdit}
+            onFileDelete={handleFileDeleteClick}
+            onBulkUpload={handleBulkUpload}
+            onBulkDownload={handleBulkDownload}
+            onBulkDelete={handleBulkDelete}
+            remoteEnabled={remoteEnabled}
+            availableTags={tags}
+            sortBy={sortBy}
+            sortDesc={sortDesc}
+            onSortChange={handleSortChange}
+            applySort={false}
+            conditions={conditions}
+            onConditionsChange={setConditions}
+            applyConditionsClientSide={false}
+          />
+        )}
+      </div>
 
-        <div className="flex-1 flex flex-col overflow-hidden px-8 py-6">
-          {storagePathConfigured === false && (
-            <div className="mb-6 p-4 bg-secondary/50 rounded flex items-center gap-3">
-              <AlertCircle className="h-4 w-4 text-muted-foreground shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-foreground">Storage path not configured</p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Select a storage folder to start adding files.
-                </p>
-              </div>
-              <Button variant="secondary" size="sm" onClick={() => setSettingsOpen(true)}>
-                Configure
-              </Button>
-            </div>
-          )}
-
-          {storagePathConfigured === true && !storagePathAccessible && (
-            <div className="mb-6 p-4 bg-destructive/5 rounded flex items-center gap-3">
-              <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-foreground">Storage path inaccessible</p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  The storage folder cannot be accessed.
-                </p>
-              </div>
-              <Button variant="secondary" size="sm" onClick={() => setSettingsOpen(true)}>
-                Reconfigure
-              </Button>
-            </div>
-          )}
-
-          {categories.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="max-w-sm text-center space-y-3">
-                <p className="text-sm font-medium text-foreground">
-                  No categories yet
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Create a category to start organizing your library — comics,
-                  novels, or anything else.
-                </p>
-                <Link to="/categories">
-                  <Button size="sm" variant="secondary">
-                    Manage Categories
-                  </Button>
-                </Link>
-              </div>
-            </div>
-          ) : loading ? (
-            <div className="flex items-center justify-center h-32">
-              <p className="text-sm text-muted-foreground">Loading...</p>
-            </div>
-          ) : (
-            <FileList
-              ids={ids}
-              total={total}
-              loadingMore={loadingMore}
-              onLoadMore={handleLoadMore}
-              filterKey={`${selectedCategoryId ?? 'none'}::${debouncedQuery}`}
-              onFileClick={handleFileClick}
-              onFileEdit={handleFileEdit}
-              onFileDelete={handleFileDeleteClick}
-              onBulkUpload={handleBulkUpload}
-              remoteEnabled={remoteEnabled}
-              availableTags={tags}
-            />
-          )}
-        </div>
-
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col-reverse gap-2 items-end">
         {uploadState.showPanel && (
           <RemoteUploadProgressPanel
             uploads={uploadState.uploads}
@@ -468,9 +544,27 @@ function HomePage() {
             onClearCompleted={clearCompleted}
           />
         )}
-      </main>
-
-      <SettingsDialog open={settingsOpen} onOpenChange={handleSettingsOpenChange} />
+        {downloadState.showPanel && (
+          <RemoteDownloadProgressPanel
+            downloads={downloadState.downloads}
+            minimized={downloadState.minimized}
+            onMinimize={minimizeDownloadPanel}
+            onExpand={expandDownloadPanel}
+            onDismiss={dismissDownloadPanel}
+            onClearCompleted={clearCompletedDownloads}
+          />
+        )}
+        {deleteState.showPanel && (
+          <RemoteDeleteProgressPanel
+            deletes={deleteState.deletes}
+            minimized={deleteState.minimized}
+            onMinimize={minimizeDeletePanel}
+            onExpand={expandDeletePanel}
+            onDismiss={dismissDeletePanel}
+            onClearCompleted={clearCompletedDeletes}
+          />
+        )}
+      </div>
 
       <EditFileDialog
         open={editDialogOpen}
@@ -528,7 +622,7 @@ function HomePage() {
             <DynamicMetadataForm
               values={formValues}
               onChange={setFormValues}
-              fields={schemaForPath(selectedFiles[0])?.formFields ?? []}
+              schema={schemaForPath(selectedFiles[0]) ?? undefined}
               categories={categories}
               tags={tags}
               authors={authors}
@@ -543,7 +637,7 @@ function HomePage() {
                 <DynamicMetadataForm
                   values={formValues}
                   onChange={setFormValues}
-                  fields={schemaForPath(selectedFiles[0])?.formFields ?? []}
+                  schema={schemaForPath(selectedFiles[0]) ?? undefined}
                   categories={categories}
                   tags={tags}
                   authors={authors}
@@ -564,6 +658,6 @@ function HomePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }

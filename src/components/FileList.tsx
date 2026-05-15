@@ -30,14 +30,23 @@ import {
   Filter as FilterIcon,
   HardDrive,
   Loader2,
+  Trash2,
   X,
 } from 'lucide-react';
 import { FileContextMenu } from '@/components/FileContextMenu';
 import { FilterEditor } from '@/components/FilterEditor';
 import { NovelCover } from '@/components/NovelCover';
 import { coverGet } from '@/lib/tauri';
-import { isImportable, kindForPath } from '@/lib/fileKind';
+import {
+  isImportable,
+  schemaForCategoryId,
+  type CardFieldKey,
+  type CategorySchema,
+} from '@/lib/categorySchema';
+import { useAppState } from '@/stores/appStore';
 import { useRemoteUploadStore } from '@/stores/remoteUploadStore';
+import { useRemoteDownloadStore } from '@/stores/remoteDownloadStore';
+import { useRemoteDeleteStore } from '@/stores/remoteDeleteStore';
 import { fileStore, useFile } from '@/stores/fileStore';
 import { applyConditions, describeCondition, type Condition } from '@/lib/filters';
 import type { FileEntry, Tag } from '@/types';
@@ -60,19 +69,62 @@ function ComicCover({ fileId }: { fileId: number }) {
 }
 
 /** Routes a card cover to NovelCover (procedural) for novels and ComicCover
- *  (real artwork) for comics, so the grid stays visually rich for both. */
-function CardCover({ file }: { file: FileEntry }) {
-  if (kindForPath(file.path) === 'novel') {
+ *  (real artwork) for comics, so the grid stays visually rich for both.
+ *  Picks by the file's category schema; for files in unknown categories
+ *  the default schema (novel) wins, matching old extension-based routing
+ *  for the .txt case. */
+function CardCover({ file, schema }: { file: FileEntry; schema: CategorySchema }) {
+  if (schema.slug === 'novel') {
     return <NovelCover tags={file.tags} fileId={file.id} displayName={file.display_name} />;
   }
   return <ComicCover fileId={file.id} />;
 }
 
+/** Render one card body field. Returns null when the row has no value
+ *  for the field, so the card doesn't sprout empty rows. */
+function CardField({ field, file }: { field: CardFieldKey; file: FileEntry }) {
+  switch (field) {
+    case 'authors':
+      if (!file.authors || file.authors.length === 0) return null;
+      return (
+        <p className="text-xs text-muted-foreground line-clamp-1">
+          {file.authors.map((a) => a.name).join(', ')}
+        </p>
+      );
+    case 'progress':
+      if (!file.progress) return null;
+      return (
+        <p className="text-[11px] text-muted-foreground/80 line-clamp-1 font-serif-italic">
+          {file.progress}
+        </p>
+      );
+    case 'tags':
+      if (!file.tags || file.tags.length === 0) return null;
+      // Compact inline tag chips — full chip styling lives in the
+      // edit dialog. Cap at 3 to keep the card height stable.
+      return (
+        <p className="text-[11px] text-muted-foreground line-clamp-1">
+          {file.tags.slice(0, 3).map((t) => `#${t.name}`).join(' ')}
+        </p>
+      );
+  }
+}
+
 /** Storage status pill — identical geometry across states; only icon and color
  *  change so the badge reads as one consistent visual element. */
-function CardStatus({ storageKind, isUploading }: { storageKind?: string; isUploading: boolean }) {
+function CardStatus({
+  storageKind,
+  isUploading,
+  hasLocalCache,
+}: {
+  storageKind?: string;
+  isUploading: boolean;
+  hasLocalCache: boolean;
+}) {
+  // `rounded-md` matches the card cover's corner radius so the badge reads
+  // as part of the same visual system instead of a circular sticker.
   const wrapper =
-    'flex items-center justify-center h-6 w-6 rounded-full bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm';
+    'flex items-center justify-center h-6 w-6 rounded-md bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm';
   if (isUploading) {
     return (
       <div className={wrapper} title="Uploading…" aria-label="Uploading">
@@ -81,9 +133,20 @@ function CardStatus({ storageKind, isUploading }: { storageKind?: string; isUplo
     );
   }
   if (storageKind === 'remote') {
+    // The dot in the corner indicates a local cache is also present —
+    // user can read the file without re-downloading. Color-matched to
+    // the success token so the badge reads the same way the upload
+    // panel does.
+    const title = hasLocalCache ? 'Synced to cloud · cached locally' : 'Synced to cloud';
     return (
-      <div className={wrapper} title="Synced to cloud" aria-label="Synced to cloud">
+      <div className={`${wrapper} relative`} title={title} aria-label={title}>
         <Cloud className="h-3.5 w-3.5 text-primary" />
+        {hasLocalCache && (
+          <span
+            className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-success border border-background"
+            aria-hidden="true"
+          />
+        )}
       </div>
     );
   }
@@ -150,7 +213,12 @@ const FileCard = memo(function FileCard({
   // Brief absence is possible right after `removeFile(id)`: byId loses the
   // row in the same setState that drops it from the view's ids, but a stale
   // render frame can still ask for it. Render nothing instead of crashing.
+  const categories = useAppState((s) => s.categories);
   if (!file) return null;
+
+  // Resolve the schema for this row's category. Drives both the cover
+  // style (NovelCover vs ComicCover) and the card body field list.
+  const schema = schemaForCategoryId(file.category_id, categories);
 
   return (
     <div
@@ -159,14 +227,19 @@ const FileCard = memo(function FileCard({
     >
       {selectionMode && (
         <div className="absolute top-2 left-2 z-10">
-          <label className="flex items-center justify-center h-6 w-6 rounded-full bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm cursor-pointer hover:bg-background transition-colors">
+          <label className="flex items-center justify-center h-6 w-6 rounded-md bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm cursor-pointer hover:bg-background transition-colors">
             <input
               type="checkbox"
               checked={blocked ? false : isSelected}
               onChange={() => !blocked && onToggleSelect(id)}
               onClick={(e) => e.stopPropagation()}
               disabled={blocked}
-              className="h-3.5 w-3.5 rounded border-border accent-primary disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+              // Slightly smaller than the storage icon's `h-3.5` so the
+              // filled-checked state doesn't crowd the wrapper edges — the
+              // storage icon's SVG has built-in whitespace, the native
+              // checkbox doesn't, so we shrink the box to match the
+              // apparent inset.
+              className="h-3 w-3 rounded border-border accent-primary disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
               aria-label={`Select ${file.display_name}`}
             />
           </label>
@@ -188,9 +261,13 @@ const FileCard = memo(function FileCard({
         aria-pressed={selectionMode ? isSelected : undefined}
       >
         <div className="relative aspect-[2/3] w-full rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
-          <CardCover file={file} />
+          <CardCover file={file} schema={schema} />
           <div className="absolute bottom-1.5 left-1.5">
-            <CardStatus storageKind={file.storage_kind} isUploading={isUploading} />
+            <CardStatus
+              storageKind={file.storage_kind}
+              isUploading={isUploading}
+              hasLocalCache={!!file.local_cache_path}
+            />
           </div>
         </div>
         <div className="space-y-0.5 min-w-0 px-0.5">
@@ -200,11 +277,9 @@ const FileCard = memo(function FileCard({
           >
             {file.display_name}
           </p>
-          {file.authors && file.authors.length > 0 && (
-            <p className="text-xs text-muted-foreground line-clamp-1">
-              {file.authors.map((a) => a.name).join(', ')}
-            </p>
-          )}
+          {schema.cardFields.map((field) => (
+            <CardField key={field} field={field} file={file} />
+          ))}
         </div>
       </button>
       {!selectionMode && onEdit && onDelete && (
@@ -228,9 +303,32 @@ interface FileListProps {
   onFileEdit?: (file: FileEntry) => void;
   onFileDelete?: (file: FileEntry) => void;
   onBulkUpload?: (fileIds: number[]) => void;
+  /** Pull selected remote files to local cache (cloud copy stays). */
+  onBulkDownload?: (fileIds: number[]) => void;
+  /** Delete selected files (any mix of local + remote) via the worker. */
+  onBulkDelete?: (fileIds: number[]) => void;
   remoteEnabled?: boolean;
   /** All defined tags, used by the filter editor's tag picker. */
   availableTags?: ReadonlyArray<Tag>;
+  /** Optional controlled sort. When supplied alongside `onSortChange`,
+   *  parent owns the sort state — typically because it's pushed into a
+   *  server-side query. In that case set `applySort={false}` so the local
+   *  comparator doesn't reshuffle pre-sorted rows from the server. */
+  sortBy?: SortKey;
+  sortDesc?: boolean;
+  onSortChange?: (sortBy: SortKey, sortDesc: boolean) => void;
+  /** Default true. Set false when the parent feeds already-sorted ids
+   *  (server-side sort). */
+  applySort?: boolean;
+  /** Optional controlled filter conditions. Same shape as sort: parent owns
+   *  the editor state when it's pushed into the server query. Set
+   *  `applyConditions={false}` so the local filter doesn't double-filter
+   *  rows the server has already filtered. */
+  conditions?: Condition[];
+  onConditionsChange?: (conditions: Condition[]) => void;
+  /** Default true. Set false when the parent feeds already-filtered ids
+   *  (server-side filter). */
+  applyConditionsClientSide?: boolean;
 }
 
 // ── FileList ──────────────────────────────────────────────────────────────────
@@ -245,13 +343,48 @@ export function FileList({
   onFileEdit,
   onFileDelete,
   onBulkUpload,
+  onBulkDownload,
+  onBulkDelete,
   remoteEnabled = false,
   availableTags = [],
+  sortBy: sortByProp,
+  sortDesc: sortDescProp,
+  onSortChange,
+  applySort = true,
+  conditions: conditionsProp,
+  onConditionsChange,
+  applyConditionsClientSide = true,
 }: FileListProps) {
   const [containerWidth, setContainerWidth] = useState(0);
-  const [sortBy, setSortBy] = useState<SortKey>('name');
-  const [sortDesc, setSortDesc] = useState(false);
-  const [conditions, setConditions] = useState<Condition[]>([]);
+  const [internalSortBy, setInternalSortBy] = useState<SortKey>('name');
+  const [internalSortDesc, setInternalSortDesc] = useState(false);
+  const sortBy = sortByProp ?? internalSortBy;
+  const sortDesc = sortDescProp ?? internalSortDesc;
+  const setSortBy = useCallback(
+    (next: SortKey) => {
+      if (onSortChange) onSortChange(next, sortDesc);
+      else setInternalSortBy(next);
+    },
+    [onSortChange, sortDesc]
+  );
+  const setSortDesc = useCallback(
+    (next: boolean) => {
+      if (onSortChange) onSortChange(sortBy, next);
+      else setInternalSortDesc(next);
+    },
+    [onSortChange, sortBy]
+  );
+  const [internalConditions, setInternalConditions] = useState<Condition[]>([]);
+  const conditions = conditionsProp ?? internalConditions;
+  const setConditions = useCallback<React.Dispatch<React.SetStateAction<Condition[]>>>(
+    (next) => {
+      const resolved =
+        typeof next === 'function' ? next(conditionsProp ?? internalConditions) : next;
+      if (onConditionsChange) onConditionsChange(resolved);
+      else setInternalConditions(resolved);
+    },
+    [onConditionsChange, conditionsProp, internalConditions]
+  );
   const [filterOpen, setFilterOpen] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -271,6 +404,8 @@ export function FileList({
   }, [availableTags]);
 
   const uploadState = useRemoteUploadStore();
+  const downloadState = useRemoteDownloadStore();
+  const deleteState = useRemoteDeleteStore();
   // Files that are queued OR actively uploading. Both states block re-selection
   // and re-enqueue — without `pending`, a queued-but-not-yet-running file
   // would still be selectable because its `storage_kind` is still `local`
@@ -284,6 +419,34 @@ export function FileList({
       ),
     [uploadState.uploads]
   );
+  const inFlightDownloadIds = useMemo(
+    () =>
+      new Set(
+        downloadState.downloads
+          .filter((d) => d.status === 'pending' || d.status === 'downloading')
+          .map((d) => d.file_id)
+      ),
+    [downloadState.downloads]
+  );
+  const inFlightDeleteIds = useMemo(
+    () =>
+      new Set(
+        deleteState.deletes
+          .filter((d) => d.status === 'pending' || d.status === 'deleting')
+          .map((d) => d.file_id)
+      ),
+    [deleteState.deletes]
+  );
+  // A file is unselectable while any worker is touching it, regardless of
+  // storage_kind. Per-action eligibility (upload-only-local etc.) is
+  // re-checked at click time on each bulk button.
+  const inFlightAnyIds = useMemo(() => {
+    const s = new Set<number>();
+    for (const id of inFlightUploadIds) s.add(id);
+    for (const id of inFlightDownloadIds) s.add(id);
+    for (const id of inFlightDeleteIds) s.add(id);
+    return s;
+  }, [inFlightUploadIds, inFlightDownloadIds, inFlightDeleteIds]);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const prevFilterKeyRef = useRef(filterKey);
@@ -302,15 +465,22 @@ export function FileList({
   }, [ids, byId]);
 
   // Filter + sort, derived. Keeps virtualizer / interaction state in lockstep
-  // with whatever the user has chosen above the grid.
+  // with whatever the user has chosen above the grid. Both `applySort` and
+  // `applyConditionsClientSide` flip to false when the parent has pushed the
+  // operation into a server query — re-running the predicate locally would
+  // either duplicate work or, worse, fight the server's ordering (SQLite's
+  // NOCASE byte compare vs. JS's locale-aware `localeCompare`).
   const visibleEntries = useMemo(() => {
-    const filtered = applyConditions(importableEntries, conditions);
+    const filtered = applyConditionsClientSide
+      ? applyConditions(importableEntries, conditions)
+      : importableEntries;
+    if (!applySort) return filtered;
     const sorted = [...filtered].sort((a, b) => {
       const cmp = compareFiles(a, b, sortBy);
       return sortDesc ? -cmp : cmp;
     });
     return sorted;
-  }, [importableEntries, conditions, sortBy, sortDesc]);
+  }, [importableEntries, conditions, sortBy, sortDesc, applySort, applyConditionsClientSide]);
 
   // Scroll to top + reset selection + clear filter conditions when
   // category/search changes. Conditions are scoped to the current view.
@@ -335,21 +505,21 @@ export function FileList({
 
   const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
 
-  /** Quick-select the first N eligible files in the current sort/filter view.
-   *  Eligibility matches the per-card block check: skip files already remote
-   *  and files with an in-flight upload entry. Replaces the existing
-   *  selection (`+10` would be a different action; this is "set to first N"). */
+  /** Quick-select the first N files in the current sort/filter view that
+   *  aren't already being touched by a worker. Selection itself is generic
+   *  now — the bulk Upload / Download / Delete buttons each apply their own
+   *  eligibility filter at click time. */
   const selectFirstN = useCallback(
     (n: number) => {
       const eligible: number[] = [];
       for (const f of visibleEntries) {
-        if (f.storage_kind === 'remote' || inFlightUploadIds.has(f.id)) continue;
+        if (inFlightAnyIds.has(f.id)) continue;
         eligible.push(f.id);
         if (eligible.length >= n) break;
       }
       setSelectedIds(new Set(eligible));
     },
-    [visibleEntries, inFlightUploadIds]
+    [visibleEntries, inFlightAnyIds]
   );
 
   const exitSelectionMode = useCallback(() => {
@@ -364,13 +534,12 @@ export function FileList({
   const handleCardClick = useCallback(
     (file: FileEntry) => {
       if (selectionMode) {
-        const blocked = file.storage_kind === 'remote' || inFlightUploadIds.has(file.id);
-        if (!blocked) toggleSelection(file.id);
+        if (!inFlightAnyIds.has(file.id)) toggleSelection(file.id);
       } else {
         onFileClick?.(file);
       }
     },
-    [selectionMode, inFlightUploadIds, toggleSelection, onFileClick]
+    [selectionMode, inFlightAnyIds, toggleSelection, onFileClick]
   );
 
   // ── Grid sizing ──────────────────────────────────────────────────────────
@@ -443,7 +612,7 @@ export function FileList({
             size="icon"
             className="h-8 w-8 shrink-0"
             aria-label={sortDesc ? 'Sort descending' : 'Sort ascending'}
-            onClick={() => setSortDesc((d) => !d)}
+            onClick={() => setSortDesc(!sortDesc)}
           >
             {sortDesc ? (
               <ArrowDown className="h-3.5 w-3.5" />
@@ -556,17 +725,63 @@ export function FileList({
               </Button>
               <Button
                 size="sm"
+                variant="outline"
                 className="h-8 text-xs"
                 disabled={!remoteEnabled}
                 onClick={() => {
-                  const eligibleIds = Array.from(selectedIds).filter(
-                    (id) => !inFlightUploadIds.has(id)
-                  );
-                  if (eligibleIds.length > 0) onBulkUpload?.(eligibleIds);
+                  // Upload only fires for currently-local files; remote
+                  // selections are silently dropped from this batch.
+                  const ids = Array.from(selectedIds).filter((id) => {
+                    const f = byId.get(id);
+                    return (
+                      !!f &&
+                      f.storage_kind !== 'remote' &&
+                      !inFlightUploadIds.has(id)
+                    );
+                  });
+                  if (ids.length > 0) onBulkUpload?.(ids);
                   exitSelectionMode();
                 }}
               >
-                ☁ Upload to Cloud
+                ☁ Upload
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+                disabled={!remoteEnabled || !onBulkDownload}
+                onClick={() => {
+                  // Download is the inverse: only remote files. Cloud copy
+                  // stays in place (this is "copy back, keep cloud").
+                  const ids = Array.from(selectedIds).filter((id) => {
+                    const f = byId.get(id);
+                    return (
+                      !!f &&
+                      f.storage_kind === 'remote' &&
+                      !inFlightDownloadIds.has(id)
+                    );
+                  });
+                  if (ids.length > 0) onBulkDownload?.(ids);
+                  exitSelectionMode();
+                }}
+              >
+                ⬇ Download
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-8 text-xs"
+                disabled={!onBulkDelete}
+                onClick={() => {
+                  const ids = Array.from(selectedIds).filter(
+                    (id) => !inFlightDeleteIds.has(id)
+                  );
+                  if (ids.length > 0) onBulkDelete?.(ids);
+                  exitSelectionMode();
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1" />
+                Delete
               </Button>
             </>
           )}
@@ -596,7 +811,13 @@ export function FileList({
                 key={virtualRow.index}
                 style={{
                   position: 'absolute',
-                  top: 0,
+                  // Offset by GRID_PAD so the first row's selection ring
+                  // (rendered as box-shadow 1px outside the button) has
+                  // breathing room before the scroll container's clip
+                  // boundary. The parent's `padding: GRID_PAD` doesn't
+                  // affect absolute children, so we have to apply the
+                  // top inset here.
+                  top: GRID_PAD,
                   left: 0,
                   transform: `translateY(${virtualRow.start}px)`,
                   width: '100%',
@@ -609,7 +830,7 @@ export function FileList({
                 }}
               >
                 {slice.map((file) => {
-                  const blocked = file.storage_kind === 'remote' || inFlightUploadIds.has(file.id);
+                  const blocked = inFlightAnyIds.has(file.id);
                   const isSelected = selectedIds.has(file.id);
                   return (
                     <FileCard

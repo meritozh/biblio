@@ -1,5 +1,6 @@
 use crate::commands::*;
 use crate::commands::validation::{sanitize_folder_name, validate_category_name};
+use crate::schema::SchemaSlug;
 use tauri::AppHandle;
 use tauri::Manager;
 use tauri_plugin_sql::{DbPool, DbInstances};
@@ -16,7 +17,7 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
 pub async fn category_list(app: AppHandle) -> Result<Vec<Category>, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-    sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, created_at FROM categories ORDER BY name")
+    sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, schema_slug, created_at FROM categories ORDER BY name")
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())
@@ -26,7 +27,7 @@ pub async fn category_list(app: AppHandle) -> Result<Vec<Category>, String> {
 pub async fn category_get(app: AppHandle, id: i64) -> Result<Category, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-    sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, created_at FROM categories WHERE id = ?")
+    sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, schema_slug, created_at FROM categories WHERE id = ?")
         .bind(id)
         .fetch_optional(&pool)
         .await
@@ -40,11 +41,24 @@ pub async fn category_create(
     name: String,
     icon: Option<String>,
     description: Option<String>,
+    schema_slug: Option<String>,
 ) -> Result<CategoryCreateResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
     let validated_name = validate_category_name(&name)?;
+    // Whitelist user-provided slug — typos shouldn't silently fall back
+    // to 'novel' here (they would at read time, but at write time the
+    // user is choosing explicitly so we surface an error).
+    let slug = match schema_slug.as_deref() {
+        Some(s) if !s.is_empty() => {
+            if !SchemaSlug::is_known(s) {
+                return Err("INVALID_SCHEMA_SLUG".to_string());
+            }
+            SchemaSlug::from_str(s).as_str().to_string()
+        }
+        _ => SchemaSlug::Novel.as_str().to_string(),
+    };
 
     let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM categories WHERE name = ?")
         .bind(&validated_name)
@@ -60,11 +74,12 @@ pub async fn category_create(
     let base_folder = sanitize_folder_name(&validated_name);
     let folder_name = get_unique_folder_name(&pool, &base_folder).await?;
 
-    let result = sqlx::query("INSERT INTO categories (name, description, icon, folder_name) VALUES (?, ?, ?, ?)")
+    let result = sqlx::query("INSERT INTO categories (name, description, icon, folder_name, schema_slug) VALUES (?, ?, ?, ?, ?)")
         .bind(&validated_name)
         .bind(&description)
         .bind(&icon)
         .bind(&folder_name)
+        .bind(&slug)
         .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -109,6 +124,7 @@ pub async fn category_update(
     name: Option<String>,
     icon: Option<String>,
     description: Option<String>,
+    schema_slug: Option<String>,
 ) -> Result<CategoryUpdateResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
@@ -200,6 +216,19 @@ pub async fn category_update(
     if let Some(d) = description {
         sqlx::query("UPDATE categories SET description = ? WHERE id = ?")
             .bind(&d)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    if let Some(s) = schema_slug {
+        if !SchemaSlug::is_known(&s) {
+            return Err("INVALID_SCHEMA_SLUG".to_string());
+        }
+        let canonical = SchemaSlug::from_str(&s).as_str();
+        sqlx::query("UPDATE categories SET schema_slug = ? WHERE id = ?")
+            .bind(canonical)
             .bind(id)
             .execute(&pool)
             .await

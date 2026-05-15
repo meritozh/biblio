@@ -125,5 +125,47 @@ pub fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 6,
+            description: "track local cache for downloaded remote files",
+            // Populated by the Download worker when a remote row is pulled
+            // back to disk. Nullable: NULL means no local cache. Lets the
+            // UI show a "cached locally" badge without an extra fs check
+            // and gives the Delete worker something to clean up.
+            sql: "ALTER TABLE files ADD COLUMN local_cache_path TEXT;",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 7,
+            description: "category-driven schema slugs",
+            // Categories now own a `schema_slug` that the frontend reads to
+            // pick form sections + card layout, and the backend reads to
+            // resolve which prompts to run. Built-in slugs: 'novel',
+            // 'comic'. Backfill: name=comic → comic, otherwise novel
+            // (covers 'novel', 'h-novel', and any user-added category).
+            //
+            // Prompts move from `(mime_group, step)` to
+            // `(schema_slug, step)`. The image_folder filename prompt
+            // becomes `(comic, filename_folder)` — distinct step under the
+            // comic schema, since the comic pipeline picks between archive
+            // and folder sources at runtime.
+            //
+            // `mime_group` stays in place for one release as a backstop
+            // for any reader we missed; the next migration drops it.
+            sql: "
+                ALTER TABLE categories ADD COLUMN schema_slug TEXT NOT NULL DEFAULT 'novel';
+                UPDATE categories SET schema_slug = 'comic' WHERE LOWER(name) = 'comic';
+                UPDATE categories SET schema_slug = 'novel' WHERE LOWER(name) IN ('novel', 'h-novel');
+
+                ALTER TABLE prompts ADD COLUMN schema_slug TEXT;
+                UPDATE prompts SET schema_slug = 'novel' WHERE mime_group = 'text';
+                UPDATE prompts SET schema_slug = 'comic' WHERE mime_group IN ('archive', 'image_folder');
+                UPDATE prompts SET step = 'filename_folder' WHERE mime_group = 'image_folder' AND step = 'filename';
+
+                CREATE INDEX IF NOT EXISTS idx_categories_schema_slug ON categories(schema_slug);
+                CREATE INDEX IF NOT EXISTS idx_prompts_schema_step ON prompts(schema_slug, step);
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }

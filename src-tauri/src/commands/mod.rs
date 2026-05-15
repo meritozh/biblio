@@ -24,6 +24,10 @@ pub struct Category {
     pub icon: Option<String>,
     pub is_default: bool,
     pub folder_name: Option<String>,
+    /// Drives form sections, card layout, and prompt resolution. See
+    /// `crate::schema::SchemaSlug` for the parsed view; the frontend
+    /// mirrors the registry in `src/lib/categorySchema.ts`.
+    pub schema_slug: String,
     pub created_at: String,
 }
 
@@ -39,6 +43,7 @@ pub struct FileEntry {
     pub progress: Option<String>,
     pub storage_kind: Option<String>,
     pub remote_provider: Option<String>,
+    pub local_cache_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -79,6 +84,7 @@ pub struct FileWithDetails {
     pub progress: Option<String>,
     pub storage_kind: Option<String>,
     pub remote_provider: Option<String>,
+    pub local_cache_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub category: Option<Category>,
@@ -99,6 +105,7 @@ pub struct FileListItem {
     pub progress: Option<String>,
     pub storage_kind: Option<String>,
     pub remote_provider: Option<String>,
+    pub local_cache_path: Option<String>,
     pub description: Option<String>,
     pub created_at: String,
     pub updated_at: String,

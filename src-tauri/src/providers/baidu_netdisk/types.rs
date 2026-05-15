@@ -88,3 +88,17 @@ pub(super) struct FileManagerResponse {
     #[allow(dead_code)]
     pub info: Option<serde_json::Value>,
 }
+
+/// Single entry in `/xpan/multimedia?method=filemetas` response. We only
+/// read `dlink`; `fs_id` and `size` are present too but unused here.
+#[derive(Debug, Deserialize)]
+pub(super) struct FilemetasEntry {
+    pub dlink: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct FilemetasResponse {
+    pub errno: i32,
+    #[serde(default)]
+    pub list: Vec<FilemetasEntry>,
+}

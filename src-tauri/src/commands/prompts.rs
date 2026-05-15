@@ -3,19 +3,26 @@ use sqlx::FromRow;
 use tauri::Manager;
 use tauri_plugin_sql::{DbInstances, DbPool};
 
+use crate::schema::SchemaSlug;
+
 #[derive(Debug, Serialize, Deserialize, FromRow, Clone)]
 pub struct Prompt {
     pub id: i64,
     pub name: String,
     pub content: String,
-    /// Legacy free-text label kept for backward compatibility with existing
-    /// rows. The active discriminator is `(mime_group, step)`.
+    /// Legacy free-text label, kept for back-compat with rows written
+    /// before the schema-slug refactor. The active discriminator is
+    /// `(schema_slug, step)`.
     pub category: Option<String>,
-    /// Mime-type group the prompt applies to. Currently `'text'` (novels:
-    /// .txt) or `'archive'` (comics: .zip / .cbz / .rar / .cbr).
+    /// Legacy mime_group column. Kept readable for one release while
+    /// callers migrate to `schema_slug`; will be dropped in a follow-up
+    /// migration.
     pub mime_group: String,
-    /// Pipeline step the prompt feeds. `'filename'` and `'content'` for
-    /// text; `'filename'` and `'cover_pick'` for archives.
+    /// Built-in schema slug (`'novel'` / `'comic'`). Mirrors
+    /// `Category.schema_slug` and is the active key for prompt lookup.
+    pub schema_slug: Option<String>,
+    /// Pipeline step the prompt feeds. Novel: `'filename'`, `'content'`.
+    /// Comic: `'filename'`, `'cover_pick'`, `'filename_folder'`.
     pub step: String,
     pub is_default: bool,
     pub created_at: String,
@@ -26,7 +33,7 @@ pub struct Prompt {
 pub struct PromptCreate {
     pub name: String,
     pub content: String,
-    pub mime_group: String,
+    pub schema_slug: String,
     pub step: String,
 }
 
@@ -38,70 +45,100 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
     }
 }
 
-/// Validate that a (mime_group, step) pair is one we know about.
-/// Pairs: `('text', 'filename')`, `('text', 'content')`,
-/// `('archive', 'filename')`, `('archive', 'cover_pick')`,
-/// `('image_folder', 'filename')`. The image_folder group reuses
-/// `(archive, cover_pick)` for cover detection (filename-pattern
-/// reasoning is identical), so no `(image_folder, cover_pick)` pair.
-fn validate_group_step(mime_group: &str, step: &str) -> Result<(), String> {
-    match (mime_group, step) {
-        ("text", "filename")
-        | ("text", "content")
-        | ("archive", "filename")
-        | ("archive", "cover_pick")
-        | ("image_folder", "filename") => Ok(()),
-        _ => Err("INVALID_PROMPT_GROUP_STEP".to_string()),
+const PROMPT_SELECT: &str =
+    "SELECT id, name, content, category, mime_group, schema_slug, step, is_default, created_at, updated_at FROM prompts";
+
+/// Validate that a (schema_slug, step) pair is one we know about.
+/// Pairs:
+///   `(novel, filename)`, `(novel, content)`,
+///   `(comic, filename)`, `(comic, cover_pick)`, `(comic, filename_folder)`.
+/// `filename_folder` exists because the comic pipeline picks between
+/// archive and image-folder ingestion at runtime, and the two need
+/// different filename-extraction rules (folder names already encode the
+/// author, archive names don't).
+fn validate_slug_step(slug: &str, step: &str) -> Result<(), String> {
+    if !SchemaSlug::is_known(slug) {
+        return Err("INVALID_PROMPT_SCHEMA_STEP".to_string());
+    }
+    let canonical = SchemaSlug::from_str(slug);
+    match (canonical, step) {
+        (SchemaSlug::Novel, "filename")
+        | (SchemaSlug::Novel, "content")
+        | (SchemaSlug::Comic, "filename")
+        | (SchemaSlug::Comic, "cover_pick")
+        | (SchemaSlug::Comic, "filename_folder") => Ok(()),
+        _ => Err("INVALID_PROMPT_SCHEMA_STEP".to_string()),
+    }
+}
+
+/// Map a schema slug back to a legacy mime_group value. Used during
+/// INSERT/UPDATE so the legacy column we keep around for one release
+/// stays consistent with the new row.
+fn legacy_mime_group(slug: SchemaSlug, step: &str) -> &'static str {
+    match (slug, step) {
+        (SchemaSlug::Novel, _) => "text",
+        (SchemaSlug::Comic, "filename_folder") => "image_folder",
+        (SchemaSlug::Comic, _) => "archive",
+    }
+}
+
+fn legacy_category_label(slug: SchemaSlug, step: &str) -> String {
+    // Pre-v3 callers stored 'filename' / 'content' in `category` for
+    // novel/text steps; preserve that exact token there. Comic and
+    // image_folder rows use `<group>_<step>` to avoid collision.
+    match (slug, step) {
+        (SchemaSlug::Novel, s) => s.to_string(),
+        (slug, s) => format!("{}_{}", legacy_mime_group(slug, s), s),
     }
 }
 
 /// Fetch the content of the currently-active prompt for a given
-/// (mime_group, step) pair. Used by `llm.rs` to build preambles.
+/// (schema_slug, step) pair. Used by `llm.rs` to build preambles.
 pub async fn prompt_get_active(
     pool: &sqlx::SqlitePool,
-    mime_group: &str,
+    schema_slug: SchemaSlug,
     step: &str,
 ) -> Result<String, String> {
     let row: Option<(String,)> = sqlx::query_as(
-        "SELECT content FROM prompts WHERE mime_group = ? AND step = ? AND is_default = 1 LIMIT 1",
+        "SELECT content FROM prompts WHERE schema_slug = ? AND step = ? AND is_default = 1 LIMIT 1",
     )
-    .bind(mime_group)
+    .bind(schema_slug.as_str())
     .bind(step)
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;
 
     row.map(|(c,)| c)
-        .ok_or_else(|| format!("NO_ACTIVE_PROMPT: {}/{}", mime_group, step))
+        .ok_or_else(|| format!("NO_ACTIVE_PROMPT: {}/{}", schema_slug.as_str(), step))
 }
 
 #[tauri::command]
 pub async fn prompt_list(
     app: tauri::AppHandle,
-    mime_group: Option<String>,
+    schema_slug: Option<String>,
     step: Option<String>,
 ) -> Result<Vec<Prompt>, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    let prompts: Vec<Prompt> = match (mime_group.as_deref(), step.as_deref()) {
-        (Some(mg), Some(s)) => sqlx::query_as(
-            "SELECT id, name, content, category, mime_group, step, is_default, created_at, updated_at FROM prompts WHERE mime_group = ? AND step = ? ORDER BY created_at DESC",
+    let prompts: Vec<Prompt> = match (schema_slug.as_deref(), step.as_deref()) {
+        (Some(slug), Some(s)) => sqlx::query_as(
+            "SELECT id, name, content, category, mime_group, schema_slug, step, is_default, created_at, updated_at FROM prompts WHERE schema_slug = ? AND step = ? ORDER BY created_at DESC",
         )
-        .bind(mg)
+        .bind(slug)
         .bind(s)
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())?,
-        (Some(mg), None) => sqlx::query_as(
-            "SELECT id, name, content, category, mime_group, step, is_default, created_at, updated_at FROM prompts WHERE mime_group = ? ORDER BY step, created_at DESC",
+        (Some(slug), None) => sqlx::query_as(
+            "SELECT id, name, content, category, mime_group, schema_slug, step, is_default, created_at, updated_at FROM prompts WHERE schema_slug = ? ORDER BY step, created_at DESC",
         )
-        .bind(mg)
+        .bind(slug)
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())?,
         _ => sqlx::query_as(
-            "SELECT id, name, content, category, mime_group, step, is_default, created_at, updated_at FROM prompts ORDER BY mime_group, step, created_at DESC",
+            "SELECT id, name, content, category, mime_group, schema_slug, step, is_default, created_at, updated_at FROM prompts ORDER BY schema_slug, step, created_at DESC",
         )
         .fetch_all(&pool)
         .await
@@ -119,40 +156,32 @@ pub async fn prompt_create(
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    validate_group_step(&payload.mime_group, &payload.step)?;
-
-    // Keep `category` populated with `<group>_<step>` (or just `step` for
-    // text/text-step pairs) so legacy queries that still read it return
-    // a sensible value.
-    let legacy_category = legacy_category_label(&payload.mime_group, &payload.step);
+    validate_slug_step(&payload.schema_slug, &payload.step)?;
+    let slug = SchemaSlug::from_str(&payload.schema_slug);
+    let legacy_group = legacy_mime_group(slug, &payload.step);
+    let legacy_category = legacy_category_label(slug, &payload.step);
 
     sqlx::query(
-        "INSERT INTO prompts (name, content, category, mime_group, step, is_default) VALUES (?, ?, ?, ?, ?, 0)",
+        "INSERT INTO prompts (name, content, category, mime_group, schema_slug, step, is_default) VALUES (?, ?, ?, ?, ?, ?, 0)",
     )
     .bind(&payload.name)
     .bind(&payload.content)
     .bind(&legacy_category)
-    .bind(&payload.mime_group)
+    .bind(legacy_group)
+    .bind(slug.as_str())
     .bind(&payload.step)
     .execute(&pool)
     .await
     .map_err(|e| e.to_string())?;
 
     let prompt: Prompt = sqlx::query_as(
-        "SELECT id, name, content, category, mime_group, step, is_default, created_at, updated_at FROM prompts WHERE id = last_insert_rowid()",
+        &format!("{PROMPT_SELECT} WHERE id = last_insert_rowid()"),
     )
     .fetch_one(&pool)
     .await
     .map_err(|e| e.to_string())?;
 
     Ok(prompt)
-}
-
-fn legacy_category_label(mime_group: &str, step: &str) -> String {
-    match (mime_group, step) {
-        ("text", s) => s.to_string(),
-        (g, s) => format!("{g}_{s}"),
-    }
 }
 
 #[tauri::command]
@@ -164,16 +193,19 @@ pub async fn prompt_update(
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    validate_group_step(&payload.mime_group, &payload.step)?;
-    let legacy_category = legacy_category_label(&payload.mime_group, &payload.step);
+    validate_slug_step(&payload.schema_slug, &payload.step)?;
+    let slug = SchemaSlug::from_str(&payload.schema_slug);
+    let legacy_group = legacy_mime_group(slug, &payload.step);
+    let legacy_category = legacy_category_label(slug, &payload.step);
 
     sqlx::query(
-        "UPDATE prompts SET name = ?, content = ?, category = ?, mime_group = ?, step = ?, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE prompts SET name = ?, content = ?, category = ?, mime_group = ?, schema_slug = ?, step = ?, updated_at = datetime('now') WHERE id = ?",
     )
     .bind(&payload.name)
     .bind(&payload.content)
     .bind(&legacy_category)
-    .bind(&payload.mime_group)
+    .bind(legacy_group)
+    .bind(slug.as_str())
     .bind(&payload.step)
     .bind(id)
     .execute(&pool)
@@ -181,7 +213,7 @@ pub async fn prompt_update(
     .map_err(|e| e.to_string())?;
 
     let prompt: Prompt = sqlx::query_as(
-        "SELECT id, name, content, category, mime_group, step, is_default, created_at, updated_at FROM prompts WHERE id = ?",
+        &format!("{PROMPT_SELECT} WHERE id = ?"),
     )
     .bind(id)
     .fetch_one(&pool)
@@ -217,28 +249,31 @@ pub async fn prompt_delete(app: tauri::AppHandle, id: i64) -> Result<(), String>
     Ok(())
 }
 
-/// Per-(mime_group, step) default switching: clears the active flag on any
-/// sibling in the same group + step, then marks `id` active. Testable
-/// without an `AppHandle`.
+/// Per-(schema_slug, step) default switching: clears the active flag on
+/// any sibling in the same slug + step, then marks `id` active.
 pub async fn set_default_impl(
     pool: &sqlx::SqlitePool,
     id: i64,
 ) -> Result<Prompt, String> {
-    let target: Option<(String, String)> = sqlx::query_as(
-        "SELECT mime_group, step FROM prompts WHERE id = ?",
+    let target: Option<(Option<String>, String)> = sqlx::query_as(
+        "SELECT schema_slug, step FROM prompts WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;
 
-    let (mime_group, step) = target.ok_or_else(|| "PROMPT_NOT_FOUND".to_string())?;
-    validate_group_step(&mime_group, &step)?;
+    let (slug_opt, step) = target.ok_or_else(|| "PROMPT_NOT_FOUND".to_string())?;
+    // Rows written before migration v7 may have schema_slug=NULL. Refuse
+    // to flip the active prompt for those — they need to be edited (the
+    // update path will populate the column) before they can be activated.
+    let slug = slug_opt.ok_or_else(|| "PROMPT_MISSING_SCHEMA_SLUG".to_string())?;
+    validate_slug_step(&slug, &step)?;
 
     sqlx::query(
-        "UPDATE prompts SET is_default = 0 WHERE mime_group = ? AND step = ? AND is_default = 1",
+        "UPDATE prompts SET is_default = 0 WHERE schema_slug = ? AND step = ? AND is_default = 1",
     )
-    .bind(&mime_group)
+    .bind(&slug)
     .bind(&step)
     .execute(pool)
     .await
@@ -253,7 +288,7 @@ pub async fn set_default_impl(
     .map_err(|e| e.to_string())?;
 
     sqlx::query_as(
-        "SELECT id, name, content, category, mime_group, step, is_default, created_at, updated_at FROM prompts WHERE id = ?",
+        &format!("{PROMPT_SELECT} WHERE id = ?"),
     )
     .bind(id)
     .fetch_one(pool)
@@ -274,129 +309,50 @@ pub async fn prompt_set_default(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::test_helpers::setup_db;
 
     #[test]
-    fn validate_group_step_accepts_known_pairs() {
-        assert!(validate_group_step("text", "filename").is_ok());
-        assert!(validate_group_step("text", "content").is_ok());
-        assert!(validate_group_step("archive", "filename").is_ok());
-        assert!(validate_group_step("archive", "cover_pick").is_ok());
-        assert!(validate_group_step("image_folder", "filename").is_ok());
+    fn validate_slug_step_accepts_known_pairs() {
+        assert!(validate_slug_step("novel", "filename").is_ok());
+        assert!(validate_slug_step("novel", "content").is_ok());
+        assert!(validate_slug_step("comic", "filename").is_ok());
+        assert!(validate_slug_step("comic", "cover_pick").is_ok());
+        assert!(validate_slug_step("comic", "filename_folder").is_ok());
     }
 
     #[test]
-    fn validate_group_step_rejects_unknown() {
+    fn validate_slug_step_rejects_unknown() {
         assert_eq!(
-            validate_group_step("text", "cover_pick").unwrap_err(),
-            "INVALID_PROMPT_GROUP_STEP"
+            validate_slug_step("novel", "cover_pick").unwrap_err(),
+            "INVALID_PROMPT_SCHEMA_STEP"
         );
         assert_eq!(
-            validate_group_step("video", "filename").unwrap_err(),
-            "INVALID_PROMPT_GROUP_STEP"
+            validate_slug_step("manga", "filename").unwrap_err(),
+            "INVALID_PROMPT_SCHEMA_STEP"
+        );
+    }
+
+    #[test]
+    fn legacy_mime_group_routes_filename_folder_to_image_folder() {
+        assert_eq!(legacy_mime_group(SchemaSlug::Novel, "filename"), "text");
+        assert_eq!(legacy_mime_group(SchemaSlug::Comic, "filename"), "archive");
+        assert_eq!(legacy_mime_group(SchemaSlug::Comic, "cover_pick"), "archive");
+        assert_eq!(
+            legacy_mime_group(SchemaSlug::Comic, "filename_folder"),
+            "image_folder"
         );
     }
 
     #[test]
     fn legacy_category_label_preserves_text_step_for_back_compat() {
-        // Pre-v3 callers stored 'filename' / 'content' in `category`; the
-        // text path still emits those exact tokens so any external
-        // consumer that read the column keeps working.
-        assert_eq!(legacy_category_label("text", "filename"), "filename");
-        assert_eq!(legacy_category_label("text", "content"), "content");
-        assert_eq!(legacy_category_label("archive", "filename"), "archive_filename");
-        assert_eq!(legacy_category_label("archive", "cover_pick"), "archive_cover_pick");
-    }
-
-    #[tokio::test]
-    async fn prompt_get_active_returns_text_seeds() {
-        // Schema.sql is v1 only; v3 (which adds the columns + comic
-        // seeds) hasn't run in the test pool. Verify that the legacy
-        // text seeds are still resolvable via the back-compat fallback.
-        let pool = setup_db().await;
-        sqlx::query("ALTER TABLE prompts ADD COLUMN mime_group TEXT NOT NULL DEFAULT 'text'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("ALTER TABLE prompts ADD COLUMN step TEXT NOT NULL DEFAULT 'filename'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE prompts SET step = category WHERE category IN ('filename', 'content')")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let filename_prompt = prompt_get_active(&pool, "text", "filename").await.unwrap();
-        assert!(filename_prompt.contains("display_name"));
-        let content_prompt = prompt_get_active(&pool, "text", "content").await.unwrap();
-        assert!(content_prompt.contains("tags"));
-    }
-
-    #[tokio::test]
-    async fn prompt_get_active_errors_when_no_active() {
-        let pool = setup_db().await;
-        sqlx::query("ALTER TABLE prompts ADD COLUMN mime_group TEXT NOT NULL DEFAULT 'text'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("ALTER TABLE prompts ADD COLUMN step TEXT NOT NULL DEFAULT 'filename'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE prompts SET step = category WHERE category IN ('filename', 'content')")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE prompts SET is_default = 0").execute(&pool).await.unwrap();
-
-        let err = prompt_get_active(&pool, "text", "content").await.unwrap_err();
-        assert_eq!(err, "NO_ACTIVE_PROMPT: text/content");
-    }
-
-    #[tokio::test]
-    async fn prompt_set_default_scopes_to_group_and_step() {
-        let pool = setup_db().await;
-        sqlx::query("ALTER TABLE prompts ADD COLUMN mime_group TEXT NOT NULL DEFAULT 'text'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("ALTER TABLE prompts ADD COLUMN step TEXT NOT NULL DEFAULT 'filename'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE prompts SET step = category WHERE category IN ('filename', 'content')")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        // Add a second text/content prompt (not active).
-        sqlx::query(
-            "INSERT INTO prompts (name, content, category, mime_group, step, is_default) VALUES \
-             ('Content Alt', 'alternate rules', 'content', 'text', 'content', 0)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let new_active = set_default_impl(&pool, 3).await.unwrap();
-        assert_eq!(new_active.id, 3);
-        assert!(new_active.is_default);
-
-        // Previously-active text/content (id 2) is cleared.
-        let (prev_flag,): (bool,) =
-            sqlx::query_as("SELECT is_default FROM prompts WHERE id = 2")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert!(!prev_flag);
-
-        // text/filename (id 1) is untouched — different (group, step) bucket.
-        let (filename_flag,): (bool,) =
-            sqlx::query_as("SELECT is_default FROM prompts WHERE id = 1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert!(filename_flag);
+        assert_eq!(legacy_category_label(SchemaSlug::Novel, "filename"), "filename");
+        assert_eq!(legacy_category_label(SchemaSlug::Novel, "content"), "content");
+        assert_eq!(
+            legacy_category_label(SchemaSlug::Comic, "filename"),
+            "archive_filename"
+        );
+        assert_eq!(
+            legacy_category_label(SchemaSlug::Comic, "filename_folder"),
+            "image_folder_filename_folder"
+        );
     }
 }

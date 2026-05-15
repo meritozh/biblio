@@ -33,7 +33,13 @@ import {
   settingsGet,
   importFinalize,
 } from '@/lib/tauri';
-import { schemaForPath, kindForPath, defaultCategoryIdForKind, KIND_REGISTRY } from '@/lib/fileKind';
+import {
+  REGISTRY,
+  defaultCategoryIdForSchema,
+  defaultSchema,
+  schemaForCategoryId,
+  schemaForPath,
+} from '@/lib/categorySchema';
 import {
   ChevronDown,
   ChevronRight,
@@ -91,7 +97,7 @@ function defaultStorageKind(path: string, remoteEnabled: boolean): StorageKind {
   const isFolderImport = !path.includes('.') || path.endsWith('/');
   const schemaDefault =
     schemaForPath(path)?.defaultStorage ??
-    (isFolderImport ? KIND_REGISTRY.comic.defaultStorage : 'local');
+    (isFolderImport ? REGISTRY.comic.defaultStorage : 'local');
   if (schemaDefault === 'remote' && !remoteEnabled) return 'local';
   return schemaDefault;
 }
@@ -318,13 +324,15 @@ export function ProcessingPipeline({
             prev.map((item) => {
               if (item.path !== result.path) return item;
 
-              const itemKind = result.source_is_directory
+              // Folder imports always become comics on commit; everything
+              // else routes by extension.
+              const itemSchemaSlug = result.source_is_directory
                 ? 'comic'
-                : kindForPath(item.path);
+                : (schemaForPath(item.path)?.slug ?? null);
               const resolvedCategoryId =
                 result.category_id ??
-                (itemKind
-                  ? defaultCategoryIdForKind(itemKind, categoriesRef.current)
+                (itemSchemaSlug
+                  ? defaultCategoryIdForSchema(itemSchemaSlug, categoriesRef.current)
                   : null);
               const formValues: DynamicMetadataFormValues = item.userEdited
                 ? item.formValues
@@ -1189,11 +1197,19 @@ function FileCardRow({
             <DynamicMetadataForm
               values={item.formValues}
               onChange={(values) => onFormChange(item.path, values)}
-              fields={
-                schemaForPath(item.path)?.formFields ??
-                (item.preparedImport?.source_is_directory
-                  ? KIND_REGISTRY.comic.formFields
-                  : [])
+              schema={
+                // Prefer the schema picked by the user's selected
+                // category, since that's what the file will end up
+                // tagged with. Fall back to the path-based schema for
+                // the moment between drop and category resolution; for
+                // folder imports (which auto-zip into comics) use the
+                // comic schema directly.
+                item.formValues.category_id != null
+                  ? schemaForCategoryId(item.formValues.category_id, categories)
+                  : schemaForPath(item.path) ??
+                    (item.preparedImport?.source_is_directory
+                      ? REGISTRY.comic
+                      : defaultSchema())
               }
               categories={categories}
               tags={tags}

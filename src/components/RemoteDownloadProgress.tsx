@@ -9,10 +9,10 @@ import {
   Loader2,
   X,
 } from 'lucide-react';
-import type { RemoteUploadProgress } from '@/types';
+import type { RemoteDownloadProgress } from '@/types';
 
-interface RemoteUploadProgressPanelProps {
-  uploads: RemoteUploadProgress[];
+interface RemoteDownloadProgressPanelProps {
+  downloads: RemoteDownloadProgress[];
   minimized: boolean;
   onMinimize: () => void;
   onExpand: () => void;
@@ -23,33 +23,30 @@ interface RemoteUploadProgressPanelProps {
 const ROW_HEIGHT = 36;
 const MAX_VISIBLE_ROWS = 8;
 
-export function RemoteUploadProgressPanel({
-  uploads,
+export function RemoteDownloadProgressPanel({
+  downloads,
   minimized,
   onMinimize,
   onExpand,
   onDismiss,
   onClearCompleted,
-}: RemoteUploadProgressPanelProps) {
+}: RemoteDownloadProgressPanelProps) {
   const counts = useMemo(() => {
     let pending = 0;
-    let uploading = 0;
+    let downloading = 0;
     let done = 0;
     let failed = 0;
-    for (const u of uploads) {
-      if (u.status === 'pending') pending++;
-      else if (u.status === 'uploading') uploading++;
-      else if (u.status === 'success') done++;
-      else if (u.status === 'error') failed++;
+    for (const d of downloads) {
+      if (d.status === 'pending') pending++;
+      else if (d.status === 'downloading') downloading++;
+      else if (d.status === 'success') done++;
+      else if (d.status === 'error') failed++;
     }
-    return { pending, uploading, done, failed, total: uploads.length };
-  }, [uploads]);
+    return { pending, downloading, done, failed, total: downloads.length };
+  }, [downloads]);
 
-  const inFlight = counts.pending + counts.uploading;
+  const inFlight = counts.pending + counts.downloading;
   const completedAny = counts.done + counts.failed > 0;
-  // Full dismiss only when there's nothing queued or running. Otherwise the
-  // user can only minimize — protects against losing visibility into work
-  // they just started.
   const canDismiss = inFlight === 0;
 
   if (minimized) {
@@ -63,7 +60,7 @@ export function RemoteUploadProgressPanel({
           <CheckCircle2 className="h-3.5 w-3.5 text-success shrink-0" />
         )}
         <span className="text-foreground/80">
-          {counts.done}/{counts.total} done
+          {counts.done}/{counts.total} downloaded
           {counts.failed > 0 && (
             <span className="text-destructive ml-1.5">· {counts.failed}</span>
           )}
@@ -72,7 +69,7 @@ export function RemoteUploadProgressPanel({
           type="button"
           onClick={onExpand}
           className="text-muted-foreground hover:text-foreground p-1 rounded-full"
-          aria-label="Expand upload panel"
+          aria-label="Expand download panel"
         >
           <ChevronUp className="h-3.5 w-3.5" />
         </button>
@@ -83,7 +80,7 @@ export function RemoteUploadProgressPanel({
   return (
     <div className="w-80 bg-background border border-border rounded-xl shadow-lg flex flex-col max-h-[60vh]">
       <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-        <span className="text-sm font-medium">Uploading to Baidu Pan</span>
+        <span className="text-sm font-medium">Downloading from Baidu Pan</span>
         <div className="flex items-center gap-0.5">
           <button
             type="button"
@@ -99,15 +96,15 @@ export function RemoteUploadProgressPanel({
             onClick={onDismiss}
             disabled={!canDismiss}
             className="text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed p-1 rounded"
-            aria-label={canDismiss ? 'Dismiss panel' : 'Cannot dismiss while uploads are in flight'}
-            title={canDismiss ? 'Dismiss' : 'Wait for uploads to finish'}
+            aria-label={canDismiss ? 'Dismiss panel' : 'Cannot dismiss while downloads are in flight'}
+            title={canDismiss ? 'Dismiss' : 'Wait for downloads to finish'}
           >
             <X className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      <UploadList uploads={uploads} />
+      <DownloadList downloads={downloads} />
 
       <div className="flex items-center justify-between px-3 py-2 border-t border-border text-xs text-muted-foreground">
         <span>
@@ -131,10 +128,10 @@ export function RemoteUploadProgressPanel({
   );
 }
 
-function UploadList({ uploads }: { uploads: RemoteUploadProgress[] }) {
+function DownloadList({ downloads }: { downloads: RemoteDownloadProgress[] }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
-    count: uploads.length,
+    count: downloads.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 6,
@@ -142,18 +139,17 @@ function UploadList({ uploads }: { uploads: RemoteUploadProgress[] }) {
   const virtualItems = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
 
-  // Cap the visible scroll area at MAX_VISIBLE_ROWS — above that, scroll.
-  const listMaxHeight = Math.min(uploads.length, MAX_VISIBLE_ROWS) * ROW_HEIGHT;
+  const listMaxHeight = Math.min(downloads.length, MAX_VISIBLE_ROWS) * ROW_HEIGHT;
 
   return (
     <div ref={scrollRef} className="overflow-y-auto" style={{ height: listMaxHeight }}>
       <div style={{ height: totalSize, position: 'relative' }}>
         {virtualItems.map((virtualRow) => {
-          const u = uploads[virtualRow.index];
-          if (!u) return null;
+          const d = downloads[virtualRow.index];
+          if (!d) return null;
           return (
             <div
-              key={u.file_id}
+              key={d.file_id}
               style={{
                 position: 'absolute',
                 top: 0,
@@ -164,19 +160,19 @@ function UploadList({ uploads }: { uploads: RemoteUploadProgress[] }) {
               }}
               className="flex items-center gap-2 px-3 hover:bg-secondary/50 transition-colors duration-200"
             >
-              <StatusIcon status={u.status} />
+              <StatusIcon status={d.status} />
               <div className="flex-1 min-w-0">
-                <p className="text-xs truncate" title={u.file_name}>
-                  {u.file_name}
+                <p className="text-xs truncate" title={d.file_name}>
+                  {d.file_name}
                 </p>
-                {u.status === 'error' && u.error && (
-                  <p className="text-[10px] text-destructive truncate" title={u.error}>
-                    {u.error}
+                {d.status === 'error' && d.error && (
+                  <p className="text-[10px] text-destructive truncate" title={d.error}>
+                    {d.error}
                   </p>
                 )}
               </div>
               <span className="text-[10px] text-muted-foreground shrink-0">
-                {labelFor(u.status)}
+                {labelFor(d.status)}
               </span>
             </div>
           );
@@ -186,32 +182,28 @@ function UploadList({ uploads }: { uploads: RemoteUploadProgress[] }) {
   );
 }
 
-function StatusIcon({ status }: { status: RemoteUploadProgress['status'] }) {
+function StatusIcon({ status }: { status: RemoteDownloadProgress['status'] }) {
   switch (status) {
     case 'pending':
       return <Clock className="h-3.5 w-3.5 text-muted-foreground shrink-0" />;
-    case 'uploading':
+    case 'downloading':
       return <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />;
     case 'success':
       return <CheckCircle2 className="h-3.5 w-3.5 text-success shrink-0" />;
     case 'error':
       return <AlertCircle className="h-3.5 w-3.5 text-destructive shrink-0" />;
-    case 'skipped':
-      return <AlertCircle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />;
   }
 }
 
-function labelFor(status: RemoteUploadProgress['status']): string {
+function labelFor(status: RemoteDownloadProgress['status']): string {
   switch (status) {
     case 'pending':
       return 'Queued';
-    case 'uploading':
-      return 'Uploading…';
+    case 'downloading':
+      return 'Downloading…';
     case 'success':
       return 'Done';
     case 'error':
       return 'Failed';
-    case 'skipped':
-      return 'Skipped';
   }
 }

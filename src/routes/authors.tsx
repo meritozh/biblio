@@ -28,7 +28,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Plus, Pencil, Trash2, ArrowLeft, User } from 'lucide-react';
+import { Plus, Pencil, Trash2, User } from 'lucide-react';
 import { authorList, authorCreate, authorUpdate, authorDelete } from '@/lib/tauri';
 import type { AuthorWithUsage } from '@/types';
 
@@ -118,32 +118,25 @@ function AuthorsPage() {
   };
 
   return (
-    <div className="flex h-screen bg-background">
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <div
-          className="flex items-center justify-between px-8 pt-14 pb-4 border-b border-border"
-          data-tauri-drag-region
-        >
-          <div className="flex items-center gap-4">
-            <Link to="/">
-              <Button variant="ghost" size="sm">
-                <ArrowLeft className="h-4 w-4 mr-1" />
-                Back
-              </Button>
-            </Link>
-            <div>
-              <h1 className="text-xl font-bold text-foreground flex items-center gap-2">
-                <User className="h-5 w-5" />
-                Authors
-              </h1>
-              <p className="text-xs text-muted-foreground mt-0.5">{authors.length} authors</p>
-            </div>
-          </div>
-          <Button onClick={() => setCreateDialogOpen(true)}>
-            <Plus className="h-4 w-4 mr-1" />
-            Add Author
-          </Button>
+    <>
+      <div
+        className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
+        data-tauri-drag-region
+      >
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-3xl text-foreground flex items-center gap-3">
+            <User className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+            Authors
+          </h1>
+          <span className="font-serif-italic text-sm text-muted-foreground">
+            — {authors.length} {authors.length === 1 ? 'author' : 'authors'}
+          </span>
         </div>
+        <Button onClick={() => setCreateDialogOpen(true)}>
+          <Plus className="h-4 w-4 mr-1" />
+          Add Author
+        </Button>
+      </div>
 
         <div className="flex-1 overflow-auto px-8 py-6">
           {loading ? (
@@ -231,7 +224,6 @@ function AuthorsPage() {
             </div>
           )}
         </div>
-      </main>
 
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent>
@@ -283,6 +275,6 @@ function AuthorsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </>
   );
 }

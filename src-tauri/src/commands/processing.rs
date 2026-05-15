@@ -172,7 +172,7 @@ async fn build_pipeline_env(app: &tauri::AppHandle) -> Result<Arc<PipelineEnv>, 
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
     let categories: Vec<Category> = sqlx::query_as(
-        "SELECT id, name, description, icon, is_default, folder_name, created_at FROM categories",
+        "SELECT id, name, description, icon, is_default, folder_name, schema_slug, created_at FROM categories",
     )
     .fetch_all(&pool)
     .await
@@ -189,7 +189,7 @@ async fn build_pipeline_env(app: &tauri::AppHandle) -> Result<Arc<PipelineEnv>, 
         .map_err(|e| format!("Failed to load tags: {e}"))?;
 
     let existing_files: Vec<FileEntry> = sqlx::query_as(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, created_at, updated_at FROM files",
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, created_at, updated_at FROM files",
     )
     .fetch_all(&pool)
     .await

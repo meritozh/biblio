@@ -225,18 +225,20 @@ const VISION_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 const LANGUAGE_INSTRUCTION: &str = "Output all Chinese text in Simplified Chinese (简体中文). Never use Traditional Chinese (繁體中文) characters.";
 
 /// Call 1: Extract display_name, authors, progress from filename only.
-/// Preamble is loaded from the active `(mime_group, 'filename')` prompt
-/// in the DB — `'text'` for novels (.txt), `'archive'` for comics
-/// (.zip/.cbz/.rar/.cbr). Lets the user customize each independently.
+/// Preamble is loaded from the active `(schema_slug, step)` prompt in
+/// the DB. Step is normally `"filename"`; the comic pipeline passes
+/// `"filename_folder"` instead when the source is an image folder so
+/// the LLM uses different rules (folder name doesn't carry the author).
 pub async fn extract_filename_metadata(
     config: &LlmConfig,
     pool: &sqlx::SqlitePool,
     file_name: &str,
-    mime_group: &str,
+    schema_slug: crate::schema::SchemaSlug,
+    step: &str,
 ) -> Result<LlmFilenameMetadata, String> {
     let client = build_client(config)?;
     let user_preamble =
-        crate::commands::prompts::prompt_get_active(pool, mime_group, "filename").await?;
+        crate::commands::prompts::prompt_get_active(pool, schema_slug, step).await?;
     let preamble = format!("{}\n\n{}", LANGUAGE_INSTRUCTION, user_preamble);
 
     let input = format!("File name: {}", file_name);
@@ -269,7 +271,12 @@ pub async fn extract_content_metadata(
     tags: &[String],
 ) -> Result<LlmContentMetadata, String> {
     let client = build_client(config)?;
-    let rules = crate::commands::prompts::prompt_get_active(pool, "text", "content").await?;
+    let rules = crate::commands::prompts::prompt_get_active(
+        pool,
+        crate::schema::SchemaSlug::Novel,
+        "content",
+    )
+    .await?;
 
     let categories_str = if categories.is_empty() {
         "None defined yet".to_string()
@@ -323,8 +330,12 @@ pub async fn extract_cover_candidates(
     entry_names: &[&str],
 ) -> Result<Vec<String>, String> {
     let client = build_client(config)?;
-    let user_preamble =
-        crate::commands::prompts::prompt_get_active(pool, "archive", "cover_pick").await?;
+    let user_preamble = crate::commands::prompts::prompt_get_active(
+        pool,
+        crate::schema::SchemaSlug::Comic,
+        "cover_pick",
+    )
+    .await?;
     let preamble = format!("{}\n\n{}", LANGUAGE_INSTRUCTION, user_preamble);
 
     let input = format!("Filenames (archive order):\n{}", entry_names.join("\n"));

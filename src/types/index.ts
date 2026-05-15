@@ -1,6 +1,11 @@
 export type FileStatus = 'available' | 'missing' | 'moved';
 export type MetadataType = 'text' | 'number' | 'date' | 'boolean';
 
+/** Built-in schema slug. Each value picks a `CategorySchema` from
+ *  `lib/categorySchema.ts` that decides which form sections, card
+ *  fields, and prompts apply to files in this category. */
+export type SchemaSlug = 'novel' | 'comic';
+
 export interface Category {
   id: number;
   name: string;
@@ -8,6 +13,10 @@ export interface Category {
   icon: string | null;
   is_default: boolean;
   folder_name: string | null;
+  /** Drives form layout, card layout, and prompt resolution. Defaults
+   *  to `'novel'` for legacy rows; the migration v7 backfills 'comic'
+   *  for the seeded comic category. */
+  schema_slug: SchemaSlug;
   created_at: string;
 }
 
@@ -29,6 +38,9 @@ export interface FileEntry {
   metadata?: Metadata[];
   storage_kind?: StorageKind;
   remote_provider?: string | null;
+  /** Set when a remote file has been pulled to the local cache directory.
+   *  Drives the "cached locally" badge and the cleanup path on delete. */
+  local_cache_path?: string | null;
 }
 
 export interface Tag {
@@ -71,6 +83,7 @@ export interface FileWithDetails {
   progress?: string | null;
   storage_kind?: StorageKind;
   remote_provider?: string | null;
+  local_cache_path?: string | null;
   created_at: string;
   updated_at: string;
   category: Category | null;
@@ -227,16 +240,39 @@ export interface RemoteUploadProgress {
   error?: string;
 }
 
-/** Mime-type group a prompt applies to. */
+/** Mirrors the upload progress shape; emitted by the download_worker as it
+ *  drains its queue. `pending` is the optimistic local-side state inserted
+ *  by `enqueueDownload`; the backend emits `downloading` → `success` | `error`. */
+export interface RemoteDownloadProgress {
+  file_id: number;
+  file_name: string;
+  status: 'pending' | 'downloading' | 'success' | 'error';
+  error?: string;
+}
+
+/** Bulk-delete progress, emitted by the delete_worker. Single-row deletes
+ *  go through the existing `file_delete` and don't fire these events. */
+export interface RemoteDeleteProgress {
+  file_id: number;
+  file_name: string;
+  status: 'pending' | 'deleting' | 'success' | 'error';
+  error?: string;
+}
+
+/** @deprecated kept for migration / one-release back-compat. New code
+ *  must read `schema_slug` from prompts and categories instead. */
 export type PromptMimeGroup = 'text' | 'archive' | 'image_folder';
 
-/** Step within a mime group. text supports filename + content; archive supports
- *  filename + cover_pick; image_folder supports filename only (cover detection
- *  reuses the archive prompt). The (group, step) pair is the unique discriminator. */
-export type PromptStep = 'filename' | 'content' | 'cover_pick';
+/** Pipeline step a prompt feeds.
+ *  - novel: `filename`, `content`
+ *  - comic: `filename` (archive source), `cover_pick`, `filename_folder`
+ *    (image-folder source — different rules: folder name doesn't carry
+ *    the author, the parent folder does). The `(schema_slug, step)`
+ *    pair is the unique discriminator. */
+export type PromptStep = 'filename' | 'content' | 'cover_pick' | 'filename_folder';
 
 /** Legacy free-text label kept on rows for back-compat readers. New code
- *  should switch on `mime_group` + `step` instead. */
+ *  should switch on `schema_slug` + `step` instead. */
 export type PromptCategory = string;
 
 export interface Prompt {
@@ -245,7 +281,9 @@ export interface Prompt {
   content: string;
   /** Legacy label from before v3 — kept for back-compat. */
   category: PromptCategory | null;
+  /** @deprecated read `schema_slug` instead. */
   mime_group: PromptMimeGroup;
+  schema_slug: SchemaSlug | null;
   step: PromptStep;
   is_default: boolean;
   created_at: string;
@@ -255,6 +293,6 @@ export interface Prompt {
 export interface PromptCreatePayload {
   name: string;
   content: string;
-  mime_group: PromptMimeGroup;
+  schema_slug: SchemaSlug;
   step: PromptStep;
 }

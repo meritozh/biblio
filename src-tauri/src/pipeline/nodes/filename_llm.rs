@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use super::content_sample::is_novel_file;
 use crate::pipeline::runner::emit_progress;
 use crate::pipeline::{FileContext, NodeError, Phase2Node, PipelineEnv};
+use crate::schema::SchemaSlug;
 
 /// Which input shape this node is responsible for. Drives the
 /// `applies()` gate so a single comic pipeline can carry both an
@@ -16,41 +17,44 @@ enum FilenameSource {
     /// Comic archives (.zip / .cbz / .rar / .cbr).
     Archive,
     /// Image-folder imports — directories of loose images that the
-    /// commit step zips into a `.zip`. Uses a dedicated prompt that
-    /// returns no `authors` (folder name is the work title; author
-    /// candidates come from the picked-root LLM cleanup).
+    /// commit step zips into a `.zip`. Uses a dedicated prompt step
+    /// (`filename_folder` under the comic schema) that returns no
+    /// `authors` (folder name is the work title; author candidates
+    /// come from the picked-root LLM cleanup).
     Folder,
 }
 
 /// LLM Call 1: extract display_name / authors / progress from the filename.
-/// The prompt group is fixed at construction time — `"text"` for the novel
-/// pipeline, `"archive"` for archive comics, `"image_folder"` for
-/// directory comics — so the dispatcher decides which prompt to use, not
-/// the runtime MIME check.
+/// The (schema_slug, step) pair is fixed at construction time so the
+/// dispatcher decides which prompt to use, not the runtime MIME check.
 ///
 /// The actual network call is gated by a 60 s timeout inside
 /// `extract_filename_metadata`.
 pub struct FilenameLlmNode {
-    mime_group: &'static str,
+    schema_slug: SchemaSlug,
+    step: &'static str,
     source: FilenameSource,
 }
 
 impl FilenameLlmNode {
     pub fn text() -> Self {
         Self {
-            mime_group: "text",
+            schema_slug: SchemaSlug::Novel,
+            step: "filename",
             source: FilenameSource::Text,
         }
     }
     pub fn archive() -> Self {
         Self {
-            mime_group: "archive",
+            schema_slug: SchemaSlug::Comic,
+            step: "filename",
             source: FilenameSource::Archive,
         }
     }
     pub fn folder() -> Self {
         Self {
-            mime_group: "image_folder",
+            schema_slug: SchemaSlug::Comic,
+            step: "filename_folder",
             source: FilenameSource::Folder,
         }
     }
@@ -96,7 +100,8 @@ impl Phase2Node for FilenameLlmNode {
             &env.llm_config,
             &env.pool,
             &ctx.file_name,
-            self.mime_group,
+            self.schema_slug,
+            self.step,
         )
         .await
         .map_err(|e| {

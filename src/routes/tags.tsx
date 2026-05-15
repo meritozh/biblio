@@ -28,7 +28,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Plus, Pencil, Trash2, ArrowLeft, Tag as TagIcon } from 'lucide-react';
+import { Plus, Pencil, Trash2, Tag as TagIcon } from 'lucide-react';
 import { tagList, tagCreate, tagUpdate, tagDelete } from '@/lib/tauri';
 import type { TagWithUsage } from '@/types';
 
@@ -118,32 +118,25 @@ function TagsPage() {
   };
 
   return (
-    <div className="flex h-screen bg-background">
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <div
-          className="flex items-center justify-between px-8 pt-14 pb-4 border-b border-border"
-          data-tauri-drag-region
-        >
-          <div className="flex items-center gap-4">
-            <Link to="/">
-              <Button variant="ghost" size="sm">
-                <ArrowLeft className="h-4 w-4 mr-1" />
-                Back
-              </Button>
-            </Link>
-            <div>
-              <h1 className="text-xl font-bold text-foreground flex items-center gap-2">
-                <TagIcon className="h-5 w-5" />
-                Tags
-              </h1>
-              <p className="text-xs text-muted-foreground mt-0.5">{tags.length} tags</p>
-            </div>
-          </div>
-          <Button onClick={() => setCreateDialogOpen(true)}>
-            <Plus className="h-4 w-4 mr-1" />
-            Add Tag
-          </Button>
+    <>
+      <div
+        className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
+        data-tauri-drag-region
+      >
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-3xl text-foreground flex items-center gap-3">
+            <TagIcon className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+            Tags
+          </h1>
+          <span className="font-serif-italic text-sm text-muted-foreground">
+            — {tags.length} {tags.length === 1 ? 'tag' : 'tags'}
+          </span>
         </div>
+        <Button onClick={() => setCreateDialogOpen(true)}>
+          <Plus className="h-4 w-4 mr-1" />
+          Add Tag
+        </Button>
+      </div>
 
         <div className="flex-1 overflow-auto px-8 py-6">
           {loading ? (
@@ -231,7 +224,6 @@ function TagsPage() {
             </div>
           )}
         </div>
-      </main>
 
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent>
@@ -283,6 +275,6 @@ function TagsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </>
   );
 }

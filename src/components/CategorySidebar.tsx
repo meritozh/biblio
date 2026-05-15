@@ -13,7 +13,16 @@ interface CategorySidebarProps {
   onManageCategories?: () => void;
   onOpenSettings?: () => void;
   fileCounts?: Record<number, number>;
+  /** Current pathname, used to highlight the active bottom-nav link. */
+  currentPath?: string;
 }
+
+const NAV_LINKS = [
+  { to: '/categories', label: 'Categories', icon: LayoutGrid },
+  { to: '/tags', label: 'Tags', icon: Tag },
+  { to: '/authors', label: 'Authors', icon: User },
+  { to: '/prompts', label: 'Prompts', icon: MessageSquare },
+] as const;
 
 const MIN_WIDTH = 180;
 const MAX_WIDTH = 320;
@@ -26,6 +35,7 @@ export function CategorySidebar({
   onManageCategories,
   onOpenSettings,
   fileCounts = {},
+  currentPath,
 }: CategorySidebarProps) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [isResizing, setIsResizing] = useState(false);
@@ -119,34 +129,24 @@ export function CategorySidebar({
           <span className="ornament-mark">❦</span>
         </div>
         <div className="px-1 py-1">
-          <Link
-            to="/categories"
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
-          >
-            <LayoutGrid className="h-4 w-4 shrink-0" />
-            Categories
-          </Link>
-          <Link
-            to="/tags"
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
-          >
-            <Tag className="h-4 w-4 shrink-0" />
-            Tags
-          </Link>
-          <Link
-            to="/authors"
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
-          >
-            <User className="h-4 w-4 shrink-0" />
-            Authors
-          </Link>
-          <Link
-            to="/prompts"
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
-          >
-            <MessageSquare className="h-4 w-4 shrink-0" />
-            Prompts
-          </Link>
+          {NAV_LINKS.map(({ to, label, icon: Icon }) => {
+            const active = currentPath === to;
+            return (
+              <Link
+                key={to}
+                to={to}
+                aria-current={active ? 'page' : undefined}
+                className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors ${
+                  active
+                    ? 'bg-secondary text-foreground'
+                    : 'text-muted-foreground hover:bg-secondary/60 hover:text-foreground'
+                }`}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                {label}
+              </Link>
+            );
+          })}
         </div>
         <div className="border-t border-sidebar-border" />
         {onOpenSettings && (

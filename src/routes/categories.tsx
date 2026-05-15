@@ -1,6 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useState, useEffect, useCallback } from 'react';
-import { Link } from '@tanstack/react-router';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -29,47 +28,49 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Plus, Pencil, Trash2, ArrowLeft, FolderOpen } from 'lucide-react';
-import { categoryList, categoryCreate, categoryUpdate, categoryDelete } from '@/lib/tauri';
-import type { Category } from '@/types';
+import { Plus, Pencil, Trash2, FolderOpen } from 'lucide-react';
+import { categoryCreate, categoryUpdate, categoryDelete } from '@/lib/tauri';
+import { loadCategories, useAppState } from '@/stores/appStore';
+import { SCHEMA_LABELS, coerceSchemaSlug } from '@/lib/categorySchema';
+import type { Category, SchemaSlug } from '@/types';
 
 export const Route = createFileRoute('/categories')({
   component: CategoriesPage,
 });
 
 function CategoriesPage() {
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
+  const categories = useAppState((s) => s.categories);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryDescription, setNewCategoryDescription] = useState('');
+  const [newCategorySchema, setNewCategorySchema] = useState<SchemaSlug>('novel');
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
   const [editDescription, setEditDescription] = useState('');
+  const [editSchema, setEditSchema] = useState<SchemaSlug>('novel');
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingCategory, setDeletingCategory] = useState<Category | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const loadCategories = useCallback(async () => {
-    setLoading(true);
-    const result = await categoryList();
-    setCategories(result);
-    setLoading(false);
-  }, []);
-
   useEffect(() => {
     void loadCategories();
-  }, [loadCategories]);
+  }, []);
 
   const handleCreate = async () => {
     if (!newCategoryName.trim()) return;
     setSaving(true);
     try {
-      await categoryCreate(newCategoryName.trim(), undefined, newCategoryDescription.trim() || undefined);
+      await categoryCreate(
+        newCategoryName.trim(),
+        undefined,
+        newCategoryDescription.trim() || undefined,
+        newCategorySchema
+      );
       setCreateDialogOpen(false);
       setNewCategoryName('');
       setNewCategoryDescription('');
+      setNewCategorySchema('novel');
       void loadCategories();
     } catch (error) {
       console.error('Failed to create category:', error);
@@ -82,12 +83,19 @@ function CategoriesPage() {
     setEditingId(category.id);
     setEditName(category.name);
     setEditDescription(category.description ?? '');
+    setEditSchema(coerceSchemaSlug(category.schema_slug));
   };
 
   const handleSaveEdit = async () => {
     if (!editingId || !editName.trim()) return;
     try {
-      await categoryUpdate(editingId, editName.trim(), undefined, editDescription.trim() || undefined);
+      await categoryUpdate(
+        editingId,
+        editName.trim(),
+        undefined,
+        editDescription.trim() || undefined,
+        editSchema
+      );
       setEditingId(null);
       setEditName('');
       setEditDescription('');
@@ -125,47 +133,34 @@ function CategoriesPage() {
   };
 
   return (
-    <div className="flex h-screen bg-background">
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <div
-          className="flex items-center justify-between px-8 pt-14 pb-4 border-b border-border"
-          data-tauri-drag-region
-        >
-          <div className="flex items-center gap-4">
-            <Link to="/">
-              <Button variant="ghost" size="sm">
-                <ArrowLeft className="h-4 w-4 mr-1" />
-                Back
-              </Button>
-            </Link>
-            <div>
-              <h1 className="text-xl font-bold text-foreground flex items-center gap-2">
-                <FolderOpen className="h-5 w-5" />
-                Categories
-              </h1>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {categories.length} categories
-              </p>
-            </div>
-          </div>
-          <Button onClick={() => setCreateDialogOpen(true)}>
-            <Plus className="h-4 w-4 mr-1" />
-            Add Category
-          </Button>
+    <>
+      <div
+        className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
+        data-tauri-drag-region
+      >
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-3xl text-foreground flex items-center gap-3">
+            <FolderOpen className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+            Categories
+          </h1>
+          <span className="font-serif-italic text-sm text-muted-foreground">
+            — {categories.length} {categories.length === 1 ? 'category' : 'categories'}
+          </span>
         </div>
+        <Button onClick={() => setCreateDialogOpen(true)}>
+          <Plus className="h-4 w-4 mr-1" />
+          Add Category
+        </Button>
+      </div>
 
-        <div className="flex-1 overflow-auto px-8 py-6">
-          {loading ? (
-            <div className="flex items-center justify-center h-32">
-              <p className="text-sm text-muted-foreground">Loading...</p>
-            </div>
-          ) : (
-            <div className="rounded-md border">
-              <Table>
+      <div className="flex-1 overflow-auto px-8 py-6">
+        <div className="rounded-md border">
+          <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Name</TableHead>
                     <TableHead>Description</TableHead>
+                    <TableHead className="w-[120px]">Schema</TableHead>
                     <TableHead className="w-[150px]">Folder</TableHead>
                     <TableHead className="w-[100px]">Actions</TableHead>
                   </TableRow>
@@ -173,7 +168,7 @@ function CategoriesPage() {
                 <TableBody>
                   {categories.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={4} className="h-24 text-center">
+                      <TableCell colSpan={5} className="h-24 text-center">
                         No categories yet. Click "Add Category" to create one.
                       </TableCell>
                     </TableRow>
@@ -213,6 +208,25 @@ function CategoriesPage() {
                             <span className="text-xs text-muted-foreground">
                               {category.description || '-'}
                             </span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {editingId === category.id ? (
+                            <select
+                              value={editSchema}
+                              onChange={(e) => setEditSchema(e.target.value as SchemaSlug)}
+                              className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                            >
+                              {(Object.keys(SCHEMA_LABELS) as SchemaSlug[]).map((slug) => (
+                                <option key={slug} value={slug}>
+                                  {SCHEMA_LABELS[slug]}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <Badge variant="gray" className="text-xs">
+                              {SCHEMA_LABELS[coerceSchemaSlug(category.schema_slug)]}
+                            </Badge>
                           )}
                         </TableCell>
                         <TableCell>
@@ -256,12 +270,10 @@ function CategoriesPage() {
                       </TableRow>
                     ))
                   )}
-                </TableBody>
-              </Table>
-            </div>
-          )}
+            </TableBody>
+          </Table>
         </div>
-      </main>
+      </div>
 
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent>
@@ -286,6 +298,26 @@ function CategoriesPage() {
               />
               <p className="text-xs text-muted-foreground mt-1.5">
                 Helps the LLM pick the right category during import.
+              </p>
+            </div>
+            <div>
+              <label className="text-sm font-medium mb-2 block">Schema</label>
+              <select
+                value={newCategorySchema}
+                onChange={(e) => setNewCategorySchema(e.target.value as SchemaSlug)}
+                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
+              >
+                {(Object.keys(SCHEMA_LABELS) as SchemaSlug[]).map((slug) => (
+                  <option key={slug} value={slug}>
+                    {SCHEMA_LABELS[slug]}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground mt-1.5">
+                Decides which form fields appear in import / edit dialogs,
+                what the file card shows, and which prompts the LLM runs.
+                Pick <em>Novel</em> for text-based libraries, <em>Comic</em>
+                for image-based ones.
               </p>
             </div>
           </div>
@@ -324,6 +356,6 @@ function CategoriesPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </>
   );
 }

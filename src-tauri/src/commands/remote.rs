@@ -220,3 +220,44 @@ pub async fn file_upload_to_remote(
     }
     Ok(())
 }
+
+/// Push a batch of file IDs into the download worker queue. The worker
+/// pulls each remote file's bytes to `<storage_path>/.cache/` and records
+/// the resulting path on the row, leaving the cloud copy in place. Per-file
+/// progress arrives as `remote-download-progress` events.
+#[tauri::command]
+pub async fn file_download_from_remote(
+    app: tauri::AppHandle,
+    file_ids: Vec<i64>,
+) -> Result<(), String> {
+    use crate::services::download_worker::{DownloadJob, DownloadQueueSender};
+
+    let sender = app.state::<DownloadQueueSender>();
+    for file_id in file_ids {
+        sender
+            .0
+            .send(DownloadJob { file_id })
+            .map_err(|e| format!("Download queue is closed: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Push a batch of file IDs into the delete worker queue. Strict mode
+/// for remote files (a failed cloud delete aborts the row's removal so the
+/// user can retry); fires `remote-delete-progress` events per file.
+#[tauri::command]
+pub async fn file_delete_via_worker(
+    app: tauri::AppHandle,
+    file_ids: Vec<i64>,
+) -> Result<(), String> {
+    use crate::services::delete_worker::{DeleteJob, DeleteQueueSender};
+
+    let sender = app.state::<DeleteQueueSender>();
+    for file_id in file_ids {
+        sender
+            .0
+            .send(DeleteJob { file_id })
+            .map_err(|e| format!("Delete queue is closed: {e}"))?;
+    }
+    Ok(())
+}

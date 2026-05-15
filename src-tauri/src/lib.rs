@@ -2,6 +2,7 @@ mod commands;
 mod database;
 mod pipeline;
 mod providers;
+mod schema;
 mod services;
 
 use std::sync::Arc;
@@ -24,8 +25,12 @@ pub fn run() {
             use tauri::Manager;
             let app_handle = app.handle().clone();
             let upload_tx = services::upload_worker::spawn(app_handle.clone());
+            let download_tx = services::download_worker::spawn(app_handle.clone());
+            let delete_tx = services::delete_worker::spawn(app_handle.clone());
             let import_tx = services::import_worker::spawn(app_handle);
             app.manage(services::upload_worker::UploadQueueSender(upload_tx));
+            app.manage(services::download_worker::DownloadQueueSender(download_tx));
+            app.manage(services::delete_worker::DeleteQueueSender(delete_tx));
             app.manage(services::import_worker::ImportQueueSender(import_tx));
             Ok(())
         })
@@ -45,6 +50,7 @@ pub fn run() {
             commands::file::file_delete,
             commands::file::file_delete_source,
             commands::file::list_files_in_folder,
+            commands::file::expand_drop_paths,
             commands::file::import_finalize,
             commands::file::file_move_category,
             commands::file::file_search,
@@ -99,6 +105,8 @@ pub fn run() {
             commands::remote::remote_logout,
             commands::remote::remote_get_authorize_url,
             commands::remote::file_upload_to_remote,
+            commands::remote::file_download_from_remote,
+            commands::remote::file_delete_via_worker,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
