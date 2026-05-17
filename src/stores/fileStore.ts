@@ -145,6 +145,16 @@ export function addFile(file: FileEntry, viewKey?: string): void {
   });
 }
 
+/** Merge an arbitrary set of file rows into `byId` without touching any
+ *  view's id list. Used by the comic collection drill-down: it needs the
+ *  drilled file rows resolvable in `byId`, but those ids belong to no
+ *  registered view (the drill renders a subset of the active flat view's
+ *  scope). */
+export function hydrateFiles(files: ReadonlyArray<FileEntry>): void {
+  if (files.length === 0) return;
+  fileStore.setState((s) => ({ ...s, byId: mergeRows(s.byId, files) }));
+}
+
 /** Force every active `useView` to re-fetch. Used by tag/author rename
  *  events: chip text is denormalized onto each row, so any rename
  *  invalidates the cached row contents. */

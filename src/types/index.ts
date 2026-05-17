@@ -107,6 +107,24 @@ export interface FileListResponse {
 
 export type StorageKind = 'local' | 'remote';
 
+/** Comic-only grouping axis surfaced by the FileList view-mode toggle.
+ *  `'flat'` keeps the existing per-file grid; `'author'` and `'name_prefix'`
+ *  collapse the grid into collection cards (one card per author or per
+ *  derived series name). */
+export type ComicViewMode = 'flat' | 'author' | 'name_prefix';
+
+/** One collection card. `mode` matches the request that produced it;
+ *  `key` is unique within the mode (stringified author id, or the
+ *  series-name root). `cover_file_id` is the member rendered as the
+ *  card's preview cover. */
+export interface ComicCollection {
+  mode: 'author' | 'name_prefix';
+  key: string;
+  title: string;
+  file_ids: number[];
+  cover_file_id: number | null;
+}
+
 export interface FileCreateRequest extends Record<string, unknown> {
   path: string;
   display_name: string;
@@ -118,6 +136,11 @@ export interface FileCreateRequest extends Record<string, unknown> {
   cover_data?: string;
   cover_mime_type?: string;
   storage_kind?: StorageKind;
+  /** Token (the original import path) for a cover staged by the Phase-2
+   *  pipeline. The backend pulls bytes from its in-memory cache and writes
+   *  the cover row server-side, so the base64 never crosses IPC. Inline
+   *  `cover_data` wins when both are present (user uploaded a replacement). */
+  staged_cover_path?: string;
 }
 
 export interface FileSearchRequest extends Record<string, unknown> {
@@ -188,7 +211,9 @@ export interface FilePreparedImport {
   author_ids: number[];
   metadata: ExtractedField[];
   unresolved_author_names: string[];
-  cover_data?: string;
+  /** Present when the Phase-2 pipeline staged a cover for this import. The
+   *  bytes themselves live in the Rust-side `PreparedCoverCache`; fetch
+   *  them on demand with `preparedCoverGet(path)`. */
   cover_mime_type?: string;
   progress: string | null;
   suggested_tags: string[];

@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
 use tauri_plugin_sql::{DbInstances, DbPool};
@@ -20,6 +21,13 @@ pub use crate::pipeline::{DuplicateInfo, ExtractedField};
 
 /// The per-file result streamed to the frontend via the `file-prepared`
 /// event. Serde shape must stay stable.
+///
+/// Cover bytes used to ride along here as a base64 string; for a large
+/// import batch that accumulated tens of MB of base64 in JS state per file
+/// (review dialog never released them until close) and was crashing the
+/// macOS WebContent process. The bytes now stay in `PreparedCoverCache` on
+/// the Rust side; `cover_mime_type` here is the "has a staged cover" signal
+/// and the frontend fetches the preview via `prepared_cover_get` on demand.
 #[derive(Debug, Clone, Serialize)]
 pub struct FilePreparedImport {
     pub path: String,
@@ -30,10 +38,6 @@ pub struct FilePreparedImport {
     pub author_ids: Vec<i64>,
     pub metadata: Vec<ExtractedField>,
     pub unresolved_author_names: Vec<String>,
-    /// Base64-encoded cover bytes. Serialized as a string so the frontend
-    /// can drop it straight into a `data:` URL without converting a
-    /// JS-side number array first.
-    pub cover_data: Option<String>,
     pub cover_mime_type: Option<String>,
     pub progress: Option<String>,
     pub suggested_tags: Vec<String>,
@@ -46,6 +50,83 @@ pub struct FilePreparedImport {
     /// review UI to surface a "Folder → .zip" hint, since the import
     /// flow will package the folder on commit.
     pub source_is_directory: bool,
+}
+
+/// Per-import-batch staging for cover bytes produced by Phase 2 and
+/// consumed at commit time by `file_create` / `file_replace`. Keyed by
+/// the source path the frontend already carries in `item.path`.
+///
+/// Cleared by `cancel_processing` (also fired when the review dialog
+/// closes) and by `prepared_cover_clear`. Individual entries drop as
+/// commits consume them, so the cache stays lean even mid-batch.
+pub struct PreparedCoverCache(Arc<RwLock<HashMap<String, StagedCover>>>);
+
+struct StagedCover {
+    data: Vec<u8>,
+    mime_type: String,
+}
+
+impl PreparedCoverCache {
+    pub fn new() -> Self {
+        Self(Arc::new(RwLock::new(HashMap::new())))
+    }
+
+    fn insert(&self, path: String, data: Vec<u8>, mime_type: String) {
+        if let Ok(mut map) = self.0.write() {
+            map.insert(path, StagedCover { data, mime_type });
+        }
+    }
+
+    fn get(&self, path: &str) -> Option<(Vec<u8>, String)> {
+        let map = self.0.read().ok()?;
+        let cover = map.get(path)?;
+        Some((cover.data.clone(), cover.mime_type.clone()))
+    }
+
+    pub fn take(&self, path: &str) -> Option<(Vec<u8>, String)> {
+        let mut map = self.0.write().ok()?;
+        let cover = map.remove(path)?;
+        Some((cover.data, cover.mime_type))
+    }
+
+    fn clear(&self) {
+        if let Ok(mut map) = self.0.write() {
+            map.clear();
+        }
+    }
+}
+
+/// Cover preview bytes for a path the Phase-2 pipeline staged but the user
+/// has not yet committed. Encoded base64 to keep parity with `cover_get`
+/// — the form drops the result straight into a Blob URL and releases the
+/// base64 string immediately, so the heap never holds more than one cover
+/// at a time even when many rows are visible.
+#[derive(Debug, Serialize)]
+pub struct PreparedCover {
+    pub data: String,
+    pub mime_type: String,
+}
+
+#[tauri::command]
+pub async fn prepared_cover_get(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<PreparedCover, String> {
+    use base64::Engine;
+    let cache = app.state::<PreparedCoverCache>();
+    let (bytes, mime_type) = cache
+        .get(&path)
+        .ok_or_else(|| "STAGED_COVER_NOT_FOUND".to_string())?;
+    Ok(PreparedCover {
+        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        mime_type,
+    })
+}
+
+#[tauri::command]
+pub async fn prepared_cover_clear(app: tauri::AppHandle) {
+    let cache = app.state::<PreparedCoverCache>();
+    cache.clear();
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,6 +149,10 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
 pub async fn cancel_processing(app: tauri::AppHandle) {
     let cancelled = app.state::<ProcessingCancelled>();
     cancelled.0.store(true, Ordering::Relaxed);
+    // Drop any staged cover bytes — the review dialog is closing or the
+    // user explicitly cancelled, so nothing downstream will consume them.
+    let cache = app.state::<PreparedCoverCache>();
+    cache.clear();
 }
 
 /// Push a batch of paths into the import worker queue and return immediately.
@@ -300,16 +385,21 @@ fn derive_parent_authors(
     by_path
 }
 
-/// Streaming-emission variant that clones cover bytes so the FileContext
-/// can be reused downstream. Called from EmitPreparedNode.
-fn prepared_from_ctx_ref(ctx: &FileContext) -> FilePreparedImport {
-    use base64::Engine;
-    let (cover_data, cover_mime_type) = match ctx.cover.as_ref() {
-        Some(c) => (
-            Some(base64::engine::general_purpose::STANDARD.encode(&c.data)),
-            Some(c.mime_type.clone()),
-        ),
-        None => (None, None),
+/// Build the event payload from the per-file context. The cover bytes are
+/// removed from `ctx` and stashed in `PreparedCoverCache`; the event itself
+/// only carries the mime type as the "has a staged cover" signal.
+fn drain_into_prepared(
+    ctx: &mut FileContext,
+    cache: &PreparedCoverCache,
+) -> FilePreparedImport {
+    let path = ctx.file_path.to_string_lossy().to_string();
+    let cover_mime_type = match ctx.cover.take() {
+        Some(c) => {
+            let mime = c.mime_type.clone();
+            cache.insert(path.clone(), c.data, c.mime_type);
+            Some(mime)
+        }
+        None => None,
     };
     let display_name = ctx
         .display_name
@@ -317,7 +407,7 @@ fn prepared_from_ctx_ref(ctx: &FileContext) -> FilePreparedImport {
         .unwrap_or_else(|| ctx.file_name.clone());
     let source_is_directory = ctx.file_path.is_dir();
     FilePreparedImport {
-        path: ctx.file_path.to_string_lossy().to_string(),
+        path,
         file_name: ctx.file_name.clone(),
         display_name,
         category_id: ctx.category_id,
@@ -325,7 +415,6 @@ fn prepared_from_ctx_ref(ctx: &FileContext) -> FilePreparedImport {
         author_ids: ctx.author_ids.clone(),
         metadata: ctx.extracted_metadata.clone(),
         unresolved_author_names: ctx.unresolved_authors.clone(),
-        cover_data,
         cover_mime_type,
         progress: ctx.progress.clone(),
         suggested_tags: ctx.suggested_tags.clone(),
@@ -347,7 +436,8 @@ impl Phase2Node for EmitPreparedNode {
     }
 
     async fn run(&self, ctx: &mut FileContext, env: &PipelineEnv) -> Result<(), NodeError> {
-        let prepared = prepared_from_ctx_ref(ctx);
+        let cache = env.app.state::<PreparedCoverCache>();
+        let prepared = drain_into_prepared(ctx, &cache);
         let _ = env.app.emit("file-prepared", &prepared);
         Ok(())
     }

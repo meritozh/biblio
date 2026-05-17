@@ -51,6 +51,7 @@ export async function fileCreate(params: FileCreateRequest): Promise<{ id: numbe
       : null,
     coverMimeType: params.cover_mime_type || null,
     storageKind: params.storage_kind ?? null,
+    stagedCoverPath: params.staged_cover_path ?? null,
   });
 }
 
@@ -71,7 +72,24 @@ export async function fileReplace(
       ? Array.from(atob(params.cover_data), (c) => c.charCodeAt(0))
       : null,
     coverMimeType: params.cover_mime_type || null,
+    stagedCoverPath: params.staged_cover_path ?? null,
   });
+}
+
+/** Pull bytes for a cover the Phase-2 pipeline staged. Returns base64 + mime
+ *  so the form can drop the bytes straight into a Blob URL and release the
+ *  base64 string immediately — keeping the JS heap flat regardless of how
+ *  many staged rows the user has open at once. */
+export async function preparedCoverGet(
+  path: string
+): Promise<{ data: string; mime_type: string }> {
+  return invoke('prepared_cover_get', { path });
+}
+
+/** Drop every staged cover. Called when the review dialog closes — the
+ *  staged bytes have no consumer once the user walks away. */
+export async function preparedCoverClear(): Promise<void> {
+  return invoke('prepared_cover_clear');
 }
 
 export async function remoteConfigGet(): Promise<RemoteConfig> {
@@ -169,6 +187,30 @@ export async function fileDeleteSource(path: string): Promise<void> {
 
 export async function listFilesInFolder(path: string): Promise<string[]> {
   return invoke('list_files_in_folder', { path });
+}
+
+/** Group comic-schema files by author or by series-name prefix. Singletons
+ *  are filtered out backend-side, so an empty result means there are no
+ *  multi-member collections in scope — not that the call failed. */
+export async function comicCollectionList(params: {
+  mode: 'author' | 'name_prefix';
+  category_id: number | null;
+}): Promise<import('@/types').ComicCollection[]> {
+  return invoke('comic_collection_list', {
+    mode: params.mode,
+    categoryId: params.category_id,
+  });
+}
+
+/** Hydrate a set of files by id, with tags/authors/description joined. The
+ *  drill-down from a comic collection card calls this so the FileList grid
+ *  can resolve every file regardless of which paginated page it sits on in
+ *  the main view. */
+export async function fileListByIds(
+  ids: number[]
+): Promise<import('@/types').FileEntry[]> {
+  if (ids.length === 0) return [];
+  return invoke('file_list_by_ids', { ids });
 }
 
 /** Resolve an OS drag-drop path list: standalone files pass through;

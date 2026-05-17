@@ -347,8 +347,15 @@ export function ProcessingPipeline({
                       data_type: m.data_type as MetadataType,
                     })),
                     progress: result.progress ?? '',
-                    cover_data: result.cover_data,
+                    // Cover bytes stay in the Rust-side PreparedCoverCache.
+                    // `cover_mime_type` is the "there's a staged cover" flag;
+                    // when set, hand the import path through as the token so
+                    // the preview can lazy-fetch and the commit can claim
+                    // the bytes server-side.
                     cover_mime_type: result.cover_mime_type,
+                    staged_cover_path: result.cover_mime_type
+                      ? result.path
+                      : undefined,
                   };
               return {
                 ...item,
@@ -642,6 +649,7 @@ export function ProcessingPipeline({
             cover_data: item.formValues.cover_data,
             cover_mime_type: item.formValues.cover_mime_type,
             storage_kind: item.storageKind,
+            staged_cover_path: item.formValues.staged_cover_path,
           };
 
           if (

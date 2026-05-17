@@ -15,7 +15,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
-import { coverGet } from '@/lib/tauri';
+import { coverGet, preparedCoverGet } from '@/lib/tauri';
 import type { CategorySchema, FormFieldKey } from '@/lib/categorySchema';
 import { schemaForCategoryId } from '@/lib/categorySchema';
 import type { Category, Tag, Author, MetadataType } from '@/types';
@@ -33,6 +33,11 @@ export interface DynamicMetadataFormValues {
   /** When true, the user clicked Remove and the existing DB cover should
    *  be deleted on save. Mutually exclusive with `cover_data`. */
   cover_removed?: boolean;
+  /** Token for a cover the Phase-2 pipeline staged in Rust-side memory.
+   *  Used only for preview rendering and the commit hand-off; the bytes
+   *  never enter `cover_data` so the JS heap stays flat regardless of
+   *  how many rows are open in the review dialog. */
+  staged_cover_path?: string;
   progress?: string;
 }
 
@@ -55,6 +60,46 @@ function ExistingCoverPreview({ fileId }: { fileId: number }) {
   return src ? (
     <img
       src={src}
+      alt="Cover preview"
+      className="h-24 w-16 object-cover rounded-md border"
+    />
+  ) : (
+    <div className="h-24 w-16 rounded-md border border-dashed flex items-center justify-center text-xs text-muted-foreground">
+      …
+    </div>
+  );
+}
+
+/** Self-fetches a staged cover (Phase-2 pipeline output not yet committed)
+ *  from the Rust-side cache and renders it via a Blob URL. The base64 string
+ *  from the IPC is converted to bytes and then dropped — the only retained
+ *  reference is the blob URL, whose underlying bytes live in the browser's
+ *  blob store off the JS heap. Revokes on unmount so memory releases
+ *  promptly when the dialog scrolls the row out of view. */
+function StagedCoverPreview({ stagedPath }: { stagedPath: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let createdUrl: string | null = null;
+    preparedCoverGet(stagedPath)
+      .then(({ data, mime_type }) => {
+        if (cancelled) return;
+        const binary = atob(data);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: mime_type });
+        createdUrl = URL.createObjectURL(blob);
+        setUrl(createdUrl);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [stagedPath]);
+  return url ? (
+    <img
+      src={url}
       alt="Cover preview"
       className="h-24 w-16 object-cover rounded-md border"
     />
@@ -293,17 +338,24 @@ export function DynamicMetadataForm({
         );
 
       case 'cover': {
-        // Three-state cover intent:
-        //   1. user uploaded a replacement → render the new bytes
+        // Four-state cover intent:
+        //   1. user uploaded a replacement → render the new bytes inline
         //   2. user clicked Remove → render "None" placeholder
-        //   3. neither (default) → fetch the existing DB cover via
-        //      ExistingCoverPreview, mirroring the grid card pattern
-        //      that's known to work
+        //   3. import row with a pipeline-staged cover → fetch via
+        //      StagedCoverPreview (bytes stay in Rust + Blob URL only)
+        //   4. edit dialog → fetch the saved DB cover via ExistingCoverPreview
         const userBlobUrl = values.cover_data
           ? `data:${values.cover_mime_type ?? 'image/jpeg'};base64,${values.cover_data}`
           : null;
+        const stagedPath =
+          !values.cover_data && !values.cover_removed
+            ? values.staged_cover_path
+            : undefined;
         const showExisting =
-          !values.cover_data && !values.cover_removed && fileId !== undefined;
+          !values.cover_data &&
+          !values.cover_removed &&
+          !stagedPath &&
+          fileId !== undefined;
 
         const handleCoverPick = (e: React.ChangeEvent<HTMLInputElement>) => {
           const file = e.target.files?.[0];
@@ -329,10 +381,13 @@ export function DynamicMetadataForm({
           const next = { ...values, cover_removed: true };
           delete next.cover_data;
           delete next.cover_mime_type;
+          // Drop the staged token too so the commit doesn't fall back to
+          // the pipeline-staged cover after the user explicitly removed it.
+          delete next.staged_cover_path;
           onChange(next);
         };
 
-        const hasPreview = !!userBlobUrl || showExisting;
+        const hasPreview = !!userBlobUrl || !!stagedPath || showExisting;
 
         return (
           <div className="space-y-2" key={key}>
@@ -344,6 +399,8 @@ export function DynamicMetadataForm({
                   alt="Cover preview"
                   className="h-24 w-16 object-cover rounded-md border"
                 />
+              ) : stagedPath ? (
+                <StagedCoverPreview stagedPath={stagedPath} />
               ) : showExisting ? (
                 <ExistingCoverPreview fileId={fileId!} />
               ) : (

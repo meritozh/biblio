@@ -22,6 +22,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
+  ArrowLeft,
   ArrowUp,
   ArrowDown,
   BookOpen,
@@ -29,6 +30,7 @@ import {
   Cloud,
   Filter as FilterIcon,
   HardDrive,
+  Layers,
   Loader2,
   Trash2,
   X,
@@ -49,7 +51,7 @@ import { useRemoteDownloadStore } from '@/stores/remoteDownloadStore';
 import { useRemoteDeleteStore } from '@/stores/remoteDeleteStore';
 import { fileStore, useFile } from '@/stores/fileStore';
 import { applyConditions, describeCondition, type Condition } from '@/lib/filters';
-import type { FileEntry, Tag } from '@/types';
+import type { ComicCollection, ComicViewMode, FileEntry, Tag } from '@/types';
 
 // ── Subcomponents ─────────────────────────────────────────────────────────────
 
@@ -174,6 +176,83 @@ const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
   { value: 'created', label: 'Date added' },
   { value: 'updated', label: 'Last updated' },
 ];
+
+const VIEW_MODE_OPTIONS: ReadonlyArray<{ value: ComicViewMode; label: string }> = [
+  { value: 'flat', label: 'All comics' },
+  { value: 'author', label: 'By author' },
+  { value: 'name_prefix', label: 'By series' },
+];
+
+// ── CollectionCard ────────────────────────────────────────────────────────────
+
+interface CollectionCardProps {
+  collection: ComicCollection;
+  onOpen: (c: ComicCollection) => void;
+}
+
+/** Stacked-card visual for a comic collection. The preview cover comes from
+ *  `cover_file_id`; the two offset rectangles behind the cover hint at the
+ *  multi-file grouping without committing to a real cover stack (which would
+ *  triple the IPC roundtrips per card). */
+const CollectionCard = memo(function CollectionCard({
+  collection,
+  onOpen,
+}: CollectionCardProps) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (collection.cover_file_id == null) return;
+    let cancelled = false;
+    coverGet(collection.cover_file_id)
+      .then(({ data, mime_type }) => {
+        if (!cancelled) setSrc(`data:${mime_type};base64,${data}`);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [collection.cover_file_id]);
+
+  const count = collection.file_ids.length;
+  return (
+    <div
+      className="relative group"
+      style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}
+    >
+      <button
+        type="button"
+        onClick={() => onOpen(collection)}
+        className="w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 transition-colors hover:bg-muted/50 focus:outline-none focus:ring-2 focus:ring-ring"
+        aria-label={`Open ${collection.title} (${count} items)`}
+      >
+        <div className="relative aspect-[2/3] w-full">
+          {/* Two offset card-shaped layers behind the cover, peeking out
+           *  beyond the right/bottom edges to read as a stack instead of a
+           *  single card. */}
+          <div className="absolute inset-0 translate-x-1.5 translate-y-1.5 rounded-md bg-secondary/40 border border-border/60" />
+          <div className="absolute inset-0 translate-x-0.5 translate-y-0.5 rounded-md bg-secondary/60 border border-border/60" />
+          <div className="absolute inset-0 rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
+            {src ? (
+              <img src={src} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <BookOpen className="h-8 w-8 text-muted-foreground/40" />
+            )}
+          </div>
+        </div>
+        <div className="space-y-0.5 min-w-0 px-0.5">
+          <p
+            className="text-sm font-medium leading-tight truncate"
+            title={collection.title}
+          >
+            {collection.title}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {count} {count === 1 ? 'volume' : 'volumes'}
+          </p>
+        </div>
+      </button>
+    </div>
+  );
+});
 
 function compareFiles(a: FileEntry, b: FileEntry, key: SortKey): number {
   if (key === 'name') return a.display_name.localeCompare(b.display_name);
@@ -329,6 +408,21 @@ interface FileListProps {
   /** Default true. Set false when the parent feeds already-filtered ids
    *  (server-side filter). */
   applyConditionsClientSide?: boolean;
+  /** Controlled view-mode toggle. When `viewModeAvailable` is true the
+   *  header surfaces a "View" select with Flat / By author / By series.
+   *  When `viewMode !== 'flat'` and `collections` is supplied (and
+   *  `breadcrumb` is null), the body renders collection cards instead of
+   *  file cards. */
+  viewMode?: ComicViewMode;
+  onViewModeChange?: (mode: ComicViewMode) => void;
+  viewModeAvailable?: boolean;
+  /** Required when rendering the collection grid. Empty array is a valid
+   *  state (no multi-member collections in scope). */
+  collections?: ComicCollection[];
+  onOpenCollection?: (c: ComicCollection) => void;
+  /** Rendered above the grid as a back chip — used during the drill-down
+   *  from a collection card into its constituent files. */
+  breadcrumb?: { label: string; onBack: () => void } | null;
 }
 
 // ── FileList ──────────────────────────────────────────────────────────────────
@@ -354,7 +448,20 @@ export function FileList({
   conditions: conditionsProp,
   onConditionsChange,
   applyConditionsClientSide = true,
+  viewMode = 'flat',
+  onViewModeChange,
+  viewModeAvailable = false,
+  collections,
+  onOpenCollection,
+  breadcrumb = null,
 }: FileListProps) {
+  // The body renders collection cards instead of files when the view mode
+  // is non-flat AND we're not currently drilled into a specific
+  // collection. Once the user drills in, the parent provides the
+  // collection's file_ids via `ids` and the breadcrumb chip, so the file
+  // grid takes over again.
+  const showCollections =
+    viewMode !== 'flat' && breadcrumb == null && collections != null;
   const [containerWidth, setContainerWidth] = useState(0);
   const [internalSortBy, setInternalSortBy] = useState<SortKey>('name');
   const [internalSortDesc, setInternalSortDesc] = useState(false);
@@ -488,11 +595,38 @@ export function FileList({
     if (prevFilterKeyRef.current === filterKey) return;
     prevFilterKeyRef.current = filterKey;
     scrollContainerRef.current?.scrollTo(0, 0);
+    savedCollectionScrollRef.current = 0;
     setSelectedIds(new Set());
     setSelectionMode(false);
     setConditions([]);
     setFilterOpen(false);
   }, [filterKey]);
+
+  // Collection drill-in / drill-out is sub-navigation inside the same
+  // filterKey scope, so it shouldn't go through the reset effect above —
+  // doing so would wipe the collection-grid scroll position every time
+  // the user clicked Back. Instead, save the grid scroll position on
+  // drill-in and restore it on drill-out; selection state still resets
+  // on either transition since the drilled-in file ids and the
+  // collection-grid items live in different domains.
+  const savedCollectionScrollRef = useRef(0);
+  const isDrilled = breadcrumb != null;
+  const prevDrilledRef = useRef(isDrilled);
+  useEffect(() => {
+    const wasDrilled = prevDrilledRef.current;
+    if (isDrilled === wasDrilled) return;
+    prevDrilledRef.current = isDrilled;
+    setSelectedIds(new Set());
+    setSelectionMode(false);
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    if (isDrilled) {
+      savedCollectionScrollRef.current = el.scrollTop;
+      el.scrollTo(0, 0);
+    } else {
+      el.scrollTo(0, savedCollectionScrollRef.current);
+    }
+  }, [isDrilled]);
 
   const toggleSelection = useCallback((id: number) => {
     setSelectedIds((prev) => {
@@ -547,7 +681,13 @@ export function FileList({
     1,
     Math.floor((containerWidth - GRID_PAD * 2 + GRID_GAP) / (CARD_WIDTH + GRID_GAP))
   );
-  const gridRowCount = Math.ceil(visibleEntries.length / colCount);
+  // The virtualizer renders whichever dataset is currently active. Switching
+  // between file rows and collection rows reuses the same scroll container
+  // and overscan; only the row-count input changes.
+  const activeCount = showCollections
+    ? (collections?.length ?? 0)
+    : visibleEntries.length;
+  const gridRowCount = Math.ceil(activeCount / colCount);
 
   const virtualizer = useVirtualizer({
     count: gridRowCount,
@@ -562,14 +702,17 @@ export function FileList({
   // Compare against the *unfiltered* loaded count so an active filter pill
   // shrinking the view doesn't fake a "we need more rows" signal. With the
   // route's bumped page size this is normally a no-op, but it stays correct
-  // if pagination ever returns.
+  // if pagination ever returns. Suppressed while showing collection cards —
+  // the backend returns the full collection set in one call, so there's no
+  // more-to-load signal to chase.
   useEffect(() => {
+    if (showCollections) return;
     const lastItem = virtualItems[virtualItems.length - 1];
     if (!lastItem || loadingMore || ids.length >= (total ?? 0)) return;
     if (lastItem.index >= gridRowCount - 1 - LOAD_MORE_THRESHOLD) {
       onLoadMore?.();
     }
-  }, [virtualItems, gridRowCount, ids.length, total, loadingMore, onLoadMore]);
+  }, [virtualItems, gridRowCount, ids.length, total, loadingMore, onLoadMore, showCollections]);
 
   // ResizeObserver feeds containerWidth, which drives column-count math.
   useEffect(() => {
@@ -594,6 +737,35 @@ export function FileList({
       {/* ── Header bar ──────────────────────────────────────────────────── */}
       {!selectionMode ? (
         <div className="flex items-center gap-2 pb-3 shrink-0 flex-wrap">
+          {viewModeAvailable && onViewModeChange && (
+            <>
+              <Select
+                value={viewMode}
+                onValueChange={(v) => onViewModeChange(v as ComicViewMode)}
+              >
+                <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
+                  <Layers
+                    className="h-3.5 w-3.5 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <span className="text-muted-foreground">View</span>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {VIEW_MODE_OPTIONS.map((opt) => (
+                    <SelectItem
+                      key={opt.value}
+                      value={opt.value}
+                      className="text-xs"
+                    >
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="h-5 w-px bg-border mx-1" aria-hidden="true" />
+            </>
+          )}
           <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortKey)}>
             <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
               <span className="text-muted-foreground">Sort</span>
@@ -798,14 +970,30 @@ export function FileList({
         </div>
       )}
 
+      {breadcrumb && (
+        <div className="flex items-center pb-3 shrink-0">
+          <button
+            type="button"
+            onClick={breadcrumb.onBack}
+            className="inline-flex items-center gap-1.5 rounded-full border bg-secondary/40 hover:bg-secondary transition-colors h-8 px-3 text-xs"
+            aria-label="Back to collections"
+          >
+            <ArrowLeft className="h-3 w-3" aria-hidden="true" />
+            <span className="text-muted-foreground">Collection</span>
+            <span className="font-medium text-foreground truncate max-w-[200px]">
+              {breadcrumb.label}
+            </span>
+          </button>
+        </div>
+      )}
+
       <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-auto">
         <div
           style={{ height: totalVirtualSize, position: 'relative', padding: GRID_PAD }}
         >
           {virtualItems.map((virtualRow) => {
             const startIdx = virtualRow.index * colCount;
-            const endIdx = Math.min(startIdx + colCount, visibleEntries.length);
-            const slice = visibleEntries.slice(startIdx, endIdx);
+            const endIdx = Math.min(startIdx + colCount, activeCount);
             return (
               <div
                 key={virtualRow.index}
@@ -829,38 +1017,50 @@ export function FileList({
                   justifyContent: 'start',
                 }}
               >
-                {slice.map((file) => {
-                  const blocked = inFlightAnyIds.has(file.id);
-                  const isSelected = selectedIds.has(file.id);
-                  return (
-                    <FileCard
-                      key={file.id}
-                      id={file.id}
-                      isSelected={isSelected}
-                      isUploading={inFlightUploadIds.has(file.id)}
-                      blocked={blocked}
-                      selectionMode={selectionMode}
-                      onCardClick={handleCardClick}
-                      onToggleSelect={toggleSelection}
-                      onEdit={onFileEdit}
-                      onDelete={onFileDelete}
-                    />
-                  );
-                })}
+                {showCollections
+                  ? (collections ?? []).slice(startIdx, endIdx).map((c) => (
+                      <CollectionCard
+                        key={`${c.mode}:${c.key}`}
+                        collection={c}
+                        onOpen={(col) => onOpenCollection?.(col)}
+                      />
+                    ))
+                  : visibleEntries.slice(startIdx, endIdx).map((file) => {
+                      const blocked = inFlightAnyIds.has(file.id);
+                      const isSelected = selectedIds.has(file.id);
+                      return (
+                        <FileCard
+                          key={file.id}
+                          id={file.id}
+                          isSelected={isSelected}
+                          isUploading={inFlightUploadIds.has(file.id)}
+                          blocked={blocked}
+                          selectionMode={selectionMode}
+                          onCardClick={handleCardClick}
+                          onToggleSelect={toggleSelection}
+                          onEdit={onFileEdit}
+                          onDelete={onFileDelete}
+                        />
+                      );
+                    })}
               </div>
             );
           })}
         </div>
 
-        {visibleEntries.length === 0 && (
+        {activeCount === 0 && (
           <div className="flex items-center justify-center h-24 text-sm text-muted-foreground">
-            {importableEntries.length === 0
-              ? 'No files in library.'
-              : 'No files match the active filters.'}
+            {showCollections
+              ? viewMode === 'author'
+                ? 'No multi-volume authors in this category yet.'
+                : 'No series detected — file names look too unique to group.'
+              : importableEntries.length === 0
+                ? 'No files in library.'
+                : 'No files match the active filters.'}
           </div>
         )}
 
-        {loadingMore && (
+        {loadingMore && !showCollections && (
           <div
             className="flex items-center justify-center py-3 gap-2 text-xs text-muted-foreground font-serif-italic"
             aria-live="polite"

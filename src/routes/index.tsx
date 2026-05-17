@@ -45,7 +45,11 @@ import {
   remoteConfigGet,
   enqueueImport,
   expandDropPaths,
+  comicCollectionList,
+  fileListByIds,
 } from '@/lib/tauri';
+import { hydrateFiles } from '@/stores/fileStore';
+import type { ComicCollection, ComicViewMode } from '@/types';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
 import { EditFileDialog } from '@/components/EditFileDialog';
@@ -61,7 +65,7 @@ import {
   DynamicMetadataForm,
   type DynamicMetadataFormValues,
 } from '@/components/DynamicMetadataForm';
-import { schemaForPath, isImportable } from '@/lib/categorySchema';
+import { schemaForCategoryId, schemaForPath, isImportable } from '@/lib/categorySchema';
 import { useFileActions } from '@/hooks/useFileActions';
 import type { FileEntry } from '@/types';
 
@@ -198,6 +202,94 @@ function HomePage() {
     handleFileDeleteClick,
     handleFileDeleteConfirm,
   } = useFileActions();
+
+  // ── Comic collections view ──────────────────────────────────────────────
+  // The view-mode toggle in the FileList header swaps the per-file grid for
+  // grouped collection cards (one per author or per derived series prefix).
+  // Only meaningful when the active category uses the comic schema; for
+  // novels we hide the toggle entirely. The block lives after
+  // `useFileActions()` so `categories` is in scope when we resolve the
+  // active category's schema.
+  const [viewMode, setViewMode] = useState<ComicViewMode>('flat');
+  const [collections, setCollections] = useState<ComicCollection[] | null>(null);
+  const [expandedCollection, setExpandedCollection] = useState<ComicCollection | null>(null);
+  const selectedCategorySchema = useMemo(
+    () => schemaForCategoryId(selectedCategoryId, categories),
+    [selectedCategoryId, categories]
+  );
+  const isComicCategory = selectedCategorySchema.slug === 'comic';
+
+  // Snap the view-mode toggle back to flat whenever the user switches to a
+  // non-comic category. Without this, walking out of a comic category while
+  // in 'author' mode would briefly try to render collection cards for a
+  // category that has no collections endpoint shape.
+  useEffect(() => {
+    if (!isComicCategory && viewMode !== 'flat') {
+      setViewMode('flat');
+    }
+  }, [isComicCategory, viewMode]);
+
+  // Reset drill-down whenever the grouping axis or category changes — the
+  // previous expandedCollection's `file_ids` would otherwise dangle into the
+  // new context.
+  useEffect(() => {
+    setExpandedCollection(null);
+  }, [viewMode, selectedCategoryId]);
+
+  // Fetch collections when the user picks a non-flat view. Empty array is a
+  // valid result ("no multi-member groups in scope"); `null` means we have
+  // not yet fetched, so the body can show a quick loading hint instead of
+  // the "no series detected" empty state.
+  useEffect(() => {
+    if (viewMode === 'flat' || !isComicCategory || selectedCategoryId == null) {
+      setCollections(null);
+      return;
+    }
+    let cancelled = false;
+    setCollections(null);
+    comicCollectionList({
+      mode: viewMode,
+      category_id: selectedCategoryId,
+    })
+      .then((result) => {
+        if (!cancelled) setCollections(result);
+      })
+      .catch((err) => {
+        console.error('comic_collection_list failed:', err);
+        if (!cancelled) setCollections([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, isComicCategory, selectedCategoryId]);
+
+  // FileList ids: pass the drill-down's `file_ids` when one is expanded,
+  // otherwise the normal page of ids from `useView`. `byId` is hydrated by
+  // the effect below when a collection is opened — without that, files
+  // beyond the flat view's first paginated page would resolve to
+  // `undefined` and silently disappear from the grid.
+  const fileListIds = expandedCollection ? expandedCollection.file_ids : ids;
+  const fileListTotal = expandedCollection ? expandedCollection.file_ids.length : total;
+
+  // Hydrate fileStore.byId with the drilled-into collection's rows. The
+  // backend's collection list returns ids only; the flat-view pagination
+  // (200/page) may not have loaded those rows, so without this fetch the
+  // FileList grid would render a wrong (truncated) count or appear empty
+  // even though the collection has members.
+  useEffect(() => {
+    if (!expandedCollection) return;
+    let cancelled = false;
+    fileListByIds(expandedCollection.file_ids)
+      .then((files) => {
+        if (!cancelled) hydrateFiles(files);
+      })
+      .catch((err) => {
+        console.error('file_list_by_ids failed:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expandedCollection]);
 
   const checkStoragePath = useCallback(async () => {
     const path = await storageGetPath();
@@ -509,11 +601,11 @@ function HomePage() {
           </div>
         ) : (
           <FileList
-            ids={ids}
-            total={total}
+            ids={fileListIds}
+            total={fileListTotal}
             loadingMore={loadingMore}
             onLoadMore={handleLoadMore}
-            filterKey={`${selectedCategoryId ?? 'none'}::${debouncedQuery}`}
+            filterKey={`${selectedCategoryId ?? 'none'}::${debouncedQuery}::${viewMode}`}
             onFileClick={handleFileClick}
             onFileEdit={handleFileEdit}
             onFileDelete={handleFileDeleteClick}
@@ -525,10 +617,23 @@ function HomePage() {
             sortBy={sortBy}
             sortDesc={sortDesc}
             onSortChange={handleSortChange}
-            applySort={false}
+            applySort={!!expandedCollection}
             conditions={conditions}
             onConditionsChange={setConditions}
             applyConditionsClientSide={false}
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+            viewModeAvailable={isComicCategory}
+            collections={collections ?? undefined}
+            onOpenCollection={(c) => setExpandedCollection(c)}
+            breadcrumb={
+              expandedCollection
+                ? {
+                    label: expandedCollection.title,
+                    onBack: () => setExpandedCollection(null),
+                  }
+                : null
+            }
           />
         )}
       </div>

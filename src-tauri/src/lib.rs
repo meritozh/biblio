@@ -19,6 +19,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(ProcessingCancelled(Arc::new(AtomicBool::new(false))))
+        .manage(commands::processing::PreparedCoverCache::new())
         .setup(|app| {
             // Long-running worker queues: spawn early so commands can push
             // jobs to the channels via the senders stashed in app state.
@@ -58,6 +59,8 @@ pub fn run() {
             commands::file::file_replace,
             commands::file::file_list_by_tag,
             commands::file::file_list_by_author,
+            commands::file::file_list_by_ids,
+            commands::file::comic_collection_list,
             commands::category::category_list,
             commands::category::category_get,
             commands::category::category_create,
@@ -92,6 +95,8 @@ pub fn run() {
             database::recovery::db_get_stats,
             commands::processing::enqueue_import,
             commands::processing::cancel_processing,
+            commands::processing::prepared_cover_get,
+            commands::processing::prepared_cover_clear,
             commands::llm::llm_config_get,
             commands::llm::llm_config_set,
             commands::llm::llm_test_connection,
