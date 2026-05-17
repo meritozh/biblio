@@ -20,7 +20,7 @@
  * hasn't picked a category yet, so we fall back to extension routing.
  */
 
-import type { Category, SchemaSlug, StorageKind } from '@/types';
+import type { Category, SchemaSlug } from '@/types';
 
 export type { SchemaSlug } from '@/types';
 
@@ -50,8 +50,6 @@ export interface CategorySchema {
   formFields: ReadonlyArray<FormFieldKey>;
   /** Fields shown on the file card under the title, in order. */
   cardFields: ReadonlyArray<CardFieldKey>;
-  /** Default destination for fresh imports of this schema. */
-  defaultStorage: StorageKind;
   /** Lowercased extensions this schema's pipeline accepts. Used at the
    *  import-time fallback when the user hasn't picked a category yet. */
   acceptedExtensions: ReadonlyArray<string>;
@@ -69,14 +67,12 @@ export const REGISTRY: Readonly<Record<SchemaSlug, CategorySchema>> = {
       'description',
     ],
     cardFields: ['authors', 'progress'],
-    defaultStorage: 'local',
     acceptedExtensions: ['txt'],
   },
   comic: {
     slug: 'comic',
     formFields: ['display_name', 'category', 'authors', 'cover'],
     cardFields: ['authors'],
-    defaultStorage: 'remote',
     acceptedExtensions: ['cbz', 'zip', 'cbr', 'rar'],
   },
 };

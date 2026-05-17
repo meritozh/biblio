@@ -30,7 +30,6 @@ import {
   cancelProcessing,
   listenProcessingProgress,
   listenFilePrepared,
-  settingsGet,
   importFinalize,
 } from '@/lib/tauri';
 import {
@@ -58,7 +57,6 @@ import type {
   MetadataType,
   DuplicateAction,
   FileAnalysisStatus,
-  StorageKind,
 } from '@/types';
 
 type FileStatus = FileAnalysisStatus;
@@ -85,79 +83,6 @@ interface FileItemState {
   userEdited: boolean;
   suggestedTags: string[];
   duplicateAction: DuplicateAction | null;
-  /** Where the file ends up on commit. Comic archives default to remote
-   *  (Baidu Pan); everything else defaults to local storage. */
-  storageKind: StorageKind;
-}
-
-function defaultStorageKind(path: string, remoteEnabled: boolean): StorageKind {
-  // Folder imports (no file extension) are auto-zipped into comics on
-  // commit, so they take the comic schema's storage default rather than
-  // falling through to `local`.
-  const isFolderImport = !path.includes('.') || path.endsWith('/');
-  const schemaDefault =
-    schemaForPath(path)?.defaultStorage ??
-    (isFolderImport ? REGISTRY.comic.defaultStorage : 'local');
-  if (schemaDefault === 'remote' && !remoteEnabled) return 'local';
-  return schemaDefault;
-}
-
-function StorageKindToggle({
-  value,
-  disabled,
-  onChange,
-}: {
-  value: StorageKind;
-  disabled: boolean;
-  onChange: (kind: StorageKind) => void;
-}) {
-  return (
-    <div
-      role="radiogroup"
-      aria-label="Destination"
-      className={`shrink-0 inline-flex rounded-full border bg-secondary/40 text-xs ${
-        disabled ? 'opacity-40 pointer-events-none' : ''
-      }`}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <StorageKindOption
-        label="Local"
-        selected={value === 'local'}
-        onClick={() => onChange('local')}
-      />
-      <StorageKindOption
-        label="Remote"
-        selected={value === 'remote'}
-        onClick={() => onChange('remote')}
-      />
-    </div>
-  );
-}
-
-function StorageKindOption({
-  label,
-  selected,
-  onClick,
-}: {
-  label: string;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      onClick={onClick}
-      className={`px-2.5 py-0.5 rounded-full transition-colors ${
-        selected
-          ? 'bg-primary text-primary-foreground font-medium'
-          : 'text-muted-foreground hover:text-foreground'
-      }`}
-    >
-      {label}
-    </button>
-  );
 }
 
 interface ProcessingPipelineProps {
@@ -173,7 +98,6 @@ interface ProcessingPipelineProps {
   categories: Category[];
   tags: Tag[];
   authors: Author[];
-  onCategoryCreated: (category: Category) => void;
   onTagCreate: (name: string) => Promise<Tag>;
   onAuthorCreate: (name: string) => Promise<Author>;
   onImportComplete: () => void;
@@ -214,7 +138,6 @@ export function ProcessingPipeline({
   categories,
   tags,
   authors,
-  onCategoryCreated,
   onTagCreate,
   onAuthorCreate,
   onImportComplete,
@@ -226,7 +149,6 @@ export function ProcessingPipeline({
 
   // Refs so the long-lived listener callbacks always read the latest props
   // / context without re-subscribing on every parent re-render.
-  const remoteEnabledRef = useRef<boolean>(true);
   const categoriesRef = useRef(categories);
   const onAuthorCreateRef = useRef(onAuthorCreate);
   const createdAuthorIdsRef = useRef<Record<string, number>>({});
@@ -263,19 +185,6 @@ export function ProcessingPipeline({
     let cancelled = false;
 
     void (async () => {
-      // Comic schema defaults to remote, but the user may have disabled
-      // remote uploads in Debug Settings. Honor that override at import
-      // time so dropped/picked comics start out as `local`. Fetched once
-      // per dialog open; cached in a ref so the path-diff effect can read
-      // it synchronously.
-      try {
-        const remoteRaw = await settingsGet('debug_remote_upload_enabled');
-        remoteEnabledRef.current = remoteRaw !== 'false';
-      } catch {
-        // Default true on settings read failure.
-        remoteEnabledRef.current = true;
-      }
-
       if (cancelled) return;
 
       try {
@@ -418,7 +327,6 @@ export function ProcessingPipeline({
           userEdited: false,
           suggestedTags: [],
           duplicateAction: null,
-          storageKind: defaultStorageKind(fileName, remoteEnabledRef.current),
         });
       }
       return additions.length === 0 ? prev : [...prev, ...additions];
@@ -543,15 +451,6 @@ export function ProcessingPipeline({
     );
   }, []);
 
-  const handleStorageKindChange = useCallback(
-    (path: string, kind: StorageKind) => {
-      setFileItems((prev) =>
-        prev.map((item) => (item.path === path ? { ...item, storageKind: kind } : item))
-      );
-    },
-    []
-  );
-
   // Bucket all items once per render.
   const buckets = useMemo(() => {
     const b: Record<Bucket, FileItemState[]> = {
@@ -648,7 +547,6 @@ export function ProcessingPipeline({
             progress: item.formValues.progress,
             cover_data: item.formValues.cover_data,
             cover_mime_type: item.formValues.cover_mime_type,
-            storage_kind: item.storageKind,
             staged_cover_path: item.formValues.staged_cover_path,
           };
 
@@ -800,11 +698,9 @@ export function ProcessingPipeline({
             onApproveSuggestedTag={handleApproveSuggestedTag}
             onDismissSuggestedTag={handleDismissSuggestedTag}
             onDuplicateAction={handleDuplicateAction}
-            onStorageKindChange={handleStorageKindChange}
             categories={categories}
             tags={tags}
             authors={authors}
-            onCategoryCreated={onCategoryCreated}
             onTagCreate={onTagCreate}
             onAuthorCreate={onAuthorCreate}
           />
@@ -826,11 +722,9 @@ export function ProcessingPipeline({
             onApproveSuggestedTag={handleApproveSuggestedTag}
             onDismissSuggestedTag={handleDismissSuggestedTag}
             onDuplicateAction={handleDuplicateAction}
-            onStorageKindChange={handleStorageKindChange}
             categories={categories}
             tags={tags}
             authors={authors}
-            onCategoryCreated={onCategoryCreated}
             onTagCreate={onTagCreate}
             onAuthorCreate={onAuthorCreate}
           />
@@ -848,11 +742,9 @@ export function ProcessingPipeline({
             onApproveSuggestedTag={handleApproveSuggestedTag}
             onDismissSuggestedTag={handleDismissSuggestedTag}
             onDuplicateAction={handleDuplicateAction}
-            onStorageKindChange={handleStorageKindChange}
             categories={categories}
             tags={tags}
             authors={authors}
-            onCategoryCreated={onCategoryCreated}
             onTagCreate={onTagCreate}
             onAuthorCreate={onAuthorCreate}
           />
@@ -949,11 +841,9 @@ interface TabPanelProps {
   onApproveSuggestedTag: (path: string, tagName: string) => void;
   onDismissSuggestedTag: (path: string, tagName: string) => void;
   onDuplicateAction: (path: string, action: DuplicateAction) => void;
-  onStorageKindChange: (path: string, kind: StorageKind) => void;
   categories: Category[];
   tags: Tag[];
   authors: Author[];
-  onCategoryCreated: (category: Category) => void;
   onTagCreate: (name: string) => Promise<Tag>;
   onAuthorCreate: (name: string) => Promise<Author>;
 }
@@ -971,11 +861,9 @@ function TabPanel({
   onApproveSuggestedTag,
   onDismissSuggestedTag,
   onDuplicateAction,
-  onStorageKindChange,
   categories,
   tags,
   authors,
-  onCategoryCreated,
   onTagCreate,
   onAuthorCreate,
 }: TabPanelProps) {
@@ -1058,12 +946,10 @@ function TabPanel({
                     onApproveSuggestedTag={onApproveSuggestedTag}
                     onDismissSuggestedTag={onDismissSuggestedTag}
                     onDuplicateAction={onDuplicateAction}
-                    onStorageKindChange={onStorageKindChange}
                     categories={categories}
                     tags={tags}
                     authors={authors}
-                    onCategoryCreated={onCategoryCreated}
-                    onTagCreate={onTagCreate}
+                            onTagCreate={onTagCreate}
                     onAuthorCreate={onAuthorCreate}
                   />
                 </div>
@@ -1086,11 +972,9 @@ interface FileCardRowProps {
   onApproveSuggestedTag: (path: string, tagName: string) => void;
   onDismissSuggestedTag: (path: string, tagName: string) => void;
   onDuplicateAction: (path: string, action: DuplicateAction) => void;
-  onStorageKindChange: (path: string, kind: StorageKind) => void;
   categories: Category[];
   tags: Tag[];
   authors: Author[];
-  onCategoryCreated: (category: Category) => void;
   onTagCreate: (name: string) => Promise<Tag>;
   onAuthorCreate: (name: string) => Promise<Author>;
 }
@@ -1105,18 +989,15 @@ function FileCardRow({
   onApproveSuggestedTag,
   onDismissSuggestedTag,
   onDuplicateAction,
-  onStorageKindChange,
   categories,
   tags,
   authors,
-  onCategoryCreated,
   onTagCreate,
   onAuthorCreate,
 }: FileCardRowProps) {
   const canExpand =
     tabKey !== 'failed' && (item.status === 'ready' || item.status === 'partial');
   const checkboxDisabled = tabKey === 'failed';
-  const toggleDisabled = tabKey === 'failed' || !item.selected;
 
   return (
     <Card
@@ -1153,12 +1034,6 @@ function FileCardRow({
               </div>
               <StatusSubtitle item={item} />
             </div>
-
-            <StorageKindToggle
-              value={item.storageKind}
-              disabled={toggleDisabled}
-              onChange={(kind) => onStorageKindChange(item.path, kind)}
-            />
 
             {canExpand && (
               <div className="shrink-0 text-muted-foreground">
@@ -1222,8 +1097,7 @@ function FileCardRow({
               categories={categories}
               tags={tags}
               authors={authors}
-              onCategoryCreated={onCategoryCreated}
-              onTagCreate={onTagCreate}
+                onTagCreate={onTagCreate}
               onAuthorCreate={onAuthorCreate}
             />
           </div>

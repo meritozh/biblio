@@ -80,10 +80,6 @@ export function useFileActions() {
     };
   }, []);
 
-  const handleCategoryCreated = useCallback((newCategory: Category) => {
-    setCategories((prev) => [...prev, newCategory]);
-  }, []);
-
   const handleTagCreate = useCallback(async (name: string): Promise<Tag> => {
     const result = await tagCreate(name);
     const newTag: Tag = {
@@ -189,7 +185,6 @@ export function useFileActions() {
     categories,
     tags,
     authors,
-    handleCategoryCreated,
     handleTagCreate,
     handleAuthorCreate,
 

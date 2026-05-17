@@ -1,113 +1,32 @@
-import { useState } from 'react';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-  SelectSeparator,
 } from '@/components/ui/select';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { categoryCreate } from '@/lib/tauri';
 import type { Category } from '@/types';
 
 interface CategorySelectProps {
   categories: Category[];
   value?: number | null;
   onValueChange: (categoryId: number | null) => void;
-  onCategoryCreated?: (category: Category) => void;
   placeholder?: string;
 }
 
-const CREATE_NEW_VALUE = '__create_new__';
-
+/** Pure picker over the seeded category list. New categories aren't created
+ *  from the UI any more — the set is fixed by migration, and the Categories
+ *  page is the only place to tune existing entries. */
 export function CategorySelect({
   categories,
   value,
   onValueChange,
-  onCategoryCreated,
   placeholder = 'Select category',
 }: CategorySelectProps) {
-  const [isCreating, setIsCreating] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
-
-  const handleValueChange = (v: string) => {
-    if (v === CREATE_NEW_VALUE) {
-      setIsCreating(true);
-      return;
-    }
-    onValueChange(parseInt(v, 10));
-  };
-
-  const handleCreateCategory = async () => {
-    if (!newCategoryName.trim()) return;
-
-    setIsSaving(true);
-    try {
-      const result = await categoryCreate({ name: newCategoryName.trim() });
-      const newCategory: Category = {
-        id: result.id,
-        name: newCategoryName.trim(),
-        description: null,
-        icon: null,
-        is_default: false,
-        folder_name: null,
-        // Inline-create from the picker uses the default schema; users
-        // who want a comic-shaped layout pick the slug from the
-        // dedicated Categories page instead.
-        schema_slug: 'novel',
-        view_config: null,
-        created_at: new Date().toISOString(),
-      };
-      onCategoryCreated?.(newCategory);
-      onValueChange(result.id);
-      setNewCategoryName('');
-      setIsCreating(false);
-    } catch (error) {
-      console.error('Failed to create category:', error);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleCancelCreate = () => {
-    setNewCategoryName('');
-    setIsCreating(false);
-  };
-
-  if (isCreating) {
-    return (
-      <div className="flex gap-2">
-        <Input
-          placeholder="Category name"
-          value={newCategoryName}
-          onChange={(e) => setNewCategoryName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              handleCreateCategory();
-            } else if (e.key === 'Escape') {
-              handleCancelCreate();
-            }
-          }}
-          disabled={isSaving}
-          className="flex-1"
-        />
-        <Button size="sm" onClick={handleCreateCategory} disabled={isSaving || !newCategoryName.trim()}>
-          Save
-        </Button>
-        <Button size="sm" variant="outline" onClick={handleCancelCreate} disabled={isSaving}>
-          Cancel
-        </Button>
-      </div>
-    );
-  }
-
   return (
     <Select
       value={value != null ? value.toString() : undefined}
-      onValueChange={handleValueChange}
+      onValueChange={(v) => onValueChange(parseInt(v, 10))}
     >
       <SelectTrigger>
         <SelectValue placeholder={placeholder} />
@@ -119,8 +38,6 @@ export function CategorySelect({
             {category.name}
           </SelectItem>
         ))}
-        {categories.length > 0 && <SelectSeparator />}
-        <SelectItem value={CREATE_NEW_VALUE}>+ Create new category</SelectItem>
       </SelectContent>
     </Select>
   );

@@ -189,7 +189,6 @@ function HomePage() {
     categories,
     tags,
     authors,
-    handleCategoryCreated,
     handleTagCreate,
     handleAuthorCreate,
     editingFile,
@@ -712,7 +711,6 @@ function HomePage() {
         categories={categories}
         tags={tags}
         authors={authors}
-        onCategoryCreated={handleCategoryCreated}
         onTagCreate={handleTagCreate}
         onAuthorCreate={handleAuthorCreate}
         onSave={handleFileSave}
@@ -741,7 +739,6 @@ function HomePage() {
         categories={categories}
         tags={tags}
         authors={authors}
-        onCategoryCreated={handleCategoryCreated}
         onTagCreate={handleTagCreate}
         onAuthorCreate={handleAuthorCreate}
         onImportComplete={() => {
@@ -765,8 +762,7 @@ function HomePage() {
               categories={categories}
               tags={tags}
               authors={authors}
-              onCategoryCreated={handleCategoryCreated}
-              onTagCreate={handleTagCreate}
+                    onTagCreate={handleTagCreate}
               onAuthorCreate={handleAuthorCreate}
             />
           ) : (
@@ -780,8 +776,7 @@ function HomePage() {
                   categories={categories}
                   tags={tags}
                   authors={authors}
-                  onCategoryCreated={handleCategoryCreated}
-                  onTagCreate={handleTagCreate}
+                            onTagCreate={handleTagCreate}
                   onAuthorCreate={handleAuthorCreate}
                 />
               </div>

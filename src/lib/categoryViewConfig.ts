@@ -12,10 +12,9 @@
  * change — old rows just keep using their existing defaults.
  */
 
-import type { Category, StorageKind } from '@/types';
+import type { Category } from '@/types';
 import type { SortKey } from '@/stores';
 import type { Condition } from '@/lib/filters';
-import { schemaForCategory } from '@/lib/categorySchema';
 
 /** Future-compat list — comic categories will surface a real view-mode
  *  toggle in a follow-up; the field is declared now so persisted configs
@@ -23,12 +22,11 @@ import { schemaForCategory } from '@/lib/categorySchema';
 export type CategoryViewMode = 'flat' | 'author' | 'name_prefix';
 
 /** The on-disk shape of a `view_config` JSON blob. All fields optional:
- *  a missing key means "fall back to the schema-slug default". */
+ *  a missing key means "fall back to the hard-coded default below". */
 export interface CategoryViewConfig {
   view_mode?: CategoryViewMode;
   sort?: { by: SortKey; desc: boolean };
   conditions?: Condition[];
-  default_storage?: StorageKind;
 }
 
 /** Fully-resolved view config — every field populated, ready for the
@@ -38,7 +36,6 @@ export interface ResolvedViewConfig {
   sortBy: SortKey;
   sortDesc: boolean;
   conditions: Condition[];
-  defaultStorage: StorageKind;
 }
 
 const HARDCODED_DEFAULTS: ResolvedViewConfig = {
@@ -46,7 +43,6 @@ const HARDCODED_DEFAULTS: ResolvedViewConfig = {
   sortBy: 'name',
   sortDesc: false,
   conditions: [],
-  defaultStorage: 'local',
 };
 
 /** Parse the JSON blob, tolerating malformed input. A stored config that
@@ -81,28 +77,22 @@ export function serializeViewConfig(
   if (config.conditions && config.conditions.length > 0) {
     trimmed.conditions = config.conditions;
   }
-  if (config.default_storage) {
-    trimmed.default_storage = config.default_storage;
-  }
   if (Object.keys(trimmed).length === 0) return undefined;
   return JSON.stringify(trimmed);
 }
 
 /** Resolve a category to a full view config: per-row JSON overrides first,
- *  schema-slug REGISTRY defaults second, hard-coded defaults third. Safe
- *  to call with `null` (no category selected) — returns the hard-coded
- *  defaults. */
+ *  hard-coded defaults second. Safe to call with `null` (no category
+ *  selected) — returns the hard-coded defaults. */
 export function resolveViewConfig(
   category: Category | null | undefined
 ): ResolvedViewConfig {
-  const schema = schemaForCategory(category);
   const overrides = parseViewConfig(category?.view_config);
   return {
     viewMode: overrides.view_mode ?? HARDCODED_DEFAULTS.viewMode,
     sortBy: overrides.sort?.by ?? HARDCODED_DEFAULTS.sortBy,
     sortDesc: overrides.sort?.desc ?? HARDCODED_DEFAULTS.sortDesc,
     conditions: overrides.conditions ?? HARDCODED_DEFAULTS.conditions,
-    defaultStorage: overrides.default_storage ?? schema.defaultStorage,
   };
 }
 

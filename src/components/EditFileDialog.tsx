@@ -22,7 +22,6 @@ interface EditFileDialogProps {
   categories: Category[];
   tags: Tag[];
   authors: Author[];
-  onCategoryCreated: (category: Category) => void;
   onTagCreate: (name: string) => Promise<Tag>;
   onAuthorCreate: (name: string) => Promise<Author>;
   onSave: (fileId: number, values: DynamicMetadataFormValues) => Promise<void>;
@@ -36,7 +35,6 @@ export function EditFileDialog({
   categories,
   tags,
   authors,
-  onCategoryCreated,
   onTagCreate,
   onAuthorCreate,
   onSave,
@@ -133,7 +131,6 @@ export function EditFileDialog({
           categories={categories}
           tags={tags}
           authors={authors}
-          onCategoryCreated={onCategoryCreated}
           onTagCreate={onTagCreate}
           onAuthorCreate={onAuthorCreate}
           fileId={file?.id}

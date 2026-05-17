@@ -748,7 +748,6 @@ pub async fn file_create(
     progress: Option<String>,
     cover_data: Option<Vec<u8>>,
     cover_mime_type: Option<String>,
-    storage_kind: Option<String>,
     staged_cover_path: Option<String>,
 ) -> Result<FileCreateResponse, String> {
     let instances = app.state::<DbInstances>();
@@ -768,37 +767,6 @@ pub async fn file_create(
     } else {
         (None, cover_mime_type)
     };
-
-    // Route remote imports through a separate path that uploads to Baidu
-    // before persisting anything; the rest of this function is the
-    // local-storage flow (move-or-copy + insert row with in_storage=1).
-    if storage_kind.as_deref() == Some("remote") {
-        let remote_upload_enabled: bool = sqlx::query_as::<_, (String,)>(
-            "SELECT value FROM app_settings WHERE key = 'debug_remote_upload_enabled'",
-        )
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| e.to_string())?
-        .map(|(v,)| v != "false")
-        .unwrap_or(true);
-
-        if remote_upload_enabled {
-            return file_create_remote(
-                &pool,
-                path,
-                display_name,
-                category_id,
-                tag_ids,
-                author_ids,
-                metadata,
-                progress,
-                cover_data,
-                cover_mime_type,
-            )
-            .await;
-        }
-        // Debug flag disabled: fall through to local storage flow.
-    }
 
     let validated_name = validate_display_name(&display_name)?;
 
@@ -1026,164 +994,6 @@ pub async fn file_create(
         .execute(&pool)
         .await
         .map_err(|e| format!("Failed to save cover: {}", e))?;
-    }
-
-    Ok(FileCreateResponse { id: file_id })
-}
-
-/// Remote (Baidu Netdisk) variant of `file_create`. Uploads the local
-/// source to the user's configured `app_root` under a base64-url-encoded
-/// filename, deletes the local source on success, and inserts the row
-/// with `storage_kind='remote'` + `path=<remote_path>`. The `path` column
-/// does double duty here — local rows hold a filesystem path, remote
-/// rows hold the Baidu path, disambiguated via `storage_kind`.
-async fn file_create_remote(
-    pool: &sqlx::SqlitePool,
-    local_path: String,
-    display_name: String,
-    category_id: Option<i64>,
-    tag_ids: Option<Vec<i64>>,
-    author_ids: Option<Vec<i64>>,
-    metadata: Option<Vec<MetadataInput>>,
-    progress: Option<String>,
-    cover_data: Option<Vec<u8>>,
-    cover_mime_type: Option<String>,
-) -> Result<FileCreateResponse, String> {
-    use base64::Engine;
-
-    let validated_name = validate_display_name(&display_name)?;
-
-    let source_path = PathBuf::from(&local_path);
-    if !source_path.exists() {
-        return Err("SOURCE_FILE_NOT_FOUND".to_string());
-    }
-
-    let source_filename = source_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or("Invalid filename")?;
-    let stem = source_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(source_filename);
-    let ext = source_path.extension().and_then(|e| e.to_str());
-
-    // Base64-url-encoding the stem keeps the extension intact so Baidu's
-    // mime detection still triggers (important for later browse/open via
-    // the web UI) while obfuscating the original title in the remote
-    // listing. No padding (=) since URL-safe base64 without padding is
-    // still a valid filename and keeps the encoded form short.
-    let encoded_stem = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(stem.as_bytes());
-    let encoded_filename = match ext {
-        Some(e) if !e.is_empty() => format!("{encoded_stem}.{e}"),
-        _ => encoded_stem,
-    };
-
-    let remote_cfg = super::remote::load_config(pool).await;
-    if !remote_cfg.enabled {
-        return Err("REMOTE_STORAGE_NOT_CONFIGURED".to_string());
-    }
-    let app_root = remote_cfg.app_root.trim_end_matches('/');
-    let remote_path = format!("{app_root}/{encoded_filename}");
-
-    // Ensure the target path isn't already tracked — the user should see a
-    // duplicate warning upstream, but guard here too in case a parallel
-    // import got there first.
-    let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM files WHERE path = ?")
-        .bind(&remote_path)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    if existing.is_some() {
-        return Err("FILE_ALREADY_EXISTS".to_string());
-    }
-
-    // Upload before any DB writes: if the upload fails, biblio's state is
-    // unchanged and the user can retry without orphaned rows.
-    let upload = super::remote::upload_to_remote(pool, &source_path, &remote_path).await?;
-
-    // DB row first, then the local-source delete so a delete failure
-    // still leaves the user's metadata captured. The source-delete error
-    // gets swallowed (logged to stderr) — the file is already safely on
-    // Baidu and a stray local copy is recoverable.
-    let result = sqlx::query(
-        "INSERT INTO files (\
-            path, display_name, category_id, in_storage, original_path, file_status, progress, \
-            storage_kind, remote_provider, remote_fs_id, remote_md5, remote_size\
-         ) VALUES (?, ?, ?, 0, ?, 'available', ?, 'remote', 'baidu_netdisk', ?, ?, ?)",
-    )
-    .bind(&remote_path)
-    .bind(&validated_name)
-    .bind(category_id)
-    .bind(&local_path)
-    .bind(&progress)
-    .bind(&upload.fs_id)
-    .bind(&upload.md5)
-    .bind(upload.size)
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let file_id = result.last_insert_rowid();
-
-    if let Some(tags) = tag_ids {
-        for tag_id in tags {
-            sqlx::query("INSERT INTO file_tags (file_id, tag_id) VALUES (?, ?)")
-                .bind(file_id)
-                .bind(tag_id)
-                .execute(pool)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
-
-    if let Some(authors) = author_ids {
-        for author_id in authors {
-            sqlx::query("INSERT INTO file_authors (file_id, author_id) VALUES (?, ?)")
-                .bind(file_id)
-                .bind(author_id)
-                .execute(pool)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
-
-    if let Some(meta) = metadata {
-        for m in meta {
-            sqlx::query(
-                "INSERT INTO metadata (file_id, key, value, data_type) VALUES (?, ?, ?, ?)",
-            )
-            .bind(file_id)
-            .bind(&m.key)
-            .bind(&m.value)
-            .bind(m.data_type.unwrap_or_else(|| "text".to_string()))
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-        }
-    }
-
-    if let Some(data) = cover_data {
-        let mime = cover_mime_type.unwrap_or_else(|| "image/png".to_string());
-        sqlx::query(
-            "INSERT OR REPLACE INTO covers (file_id, data, mime_type) VALUES (?, ?, ?)",
-        )
-        .bind(file_id)
-        .bind(&data)
-        .bind(&mime)
-        .execute(pool)
-        .await
-        .map_err(|e| format!("Failed to save cover: {}", e))?;
-    }
-
-    // Best-effort local delete. The remote upload + metadata row are
-    // already persisted, so any failure here is a cleanup issue, not a
-    // correctness one.
-    if let Err(e) = fs::remove_file(&source_path) {
-        eprintln!(
-            "Remote import succeeded but local source delete failed ({}): {e}",
-            source_path.display()
-        );
     }
 
     Ok(FileCreateResponse { id: file_id })
@@ -2242,7 +2052,6 @@ pub async fn file_replace(
         progress,
         cover_data,
         cover_mime_type,
-        None,
         staged_cover_path,
     )
     .await

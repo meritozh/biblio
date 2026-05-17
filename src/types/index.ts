@@ -140,7 +140,6 @@ export interface FileCreateRequest extends Record<string, unknown> {
   progress?: string;
   cover_data?: string;
   cover_mime_type?: string;
-  storage_kind?: StorageKind;
   /** Token (the original import path) for a cover staged by the Phase-2
    *  pipeline. The backend pulls bytes from its in-memory cache and writes
    *  the cover row server-side, so the base64 never crosses IPC. Inline

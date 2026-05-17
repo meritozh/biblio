@@ -11,16 +11,6 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import {
   Table,
   TableBody,
   TableCell,
@@ -35,8 +25,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { ArrowDown, ArrowUp, Plus, Pencil, Trash2, FolderOpen } from 'lucide-react';
-import { categoryCreate, categoryUpdate, categoryDelete, tagList } from '@/lib/tauri';
+import { ArrowDown, ArrowUp, Pencil, FolderOpen } from 'lucide-react';
+import { categoryUpdate, tagList } from '@/lib/tauri';
 import { loadCategories, useAppState } from '@/stores/appStore';
 import { SCHEMA_LABELS, coerceSchemaSlug } from '@/lib/categorySchema';
 import {
@@ -48,7 +38,7 @@ import {
 } from '@/lib/categoryViewConfig';
 import { FilterEditor } from '@/components/FilterEditor';
 import type { SortKey } from '@/stores';
-import type { Category, SchemaSlug, StorageKind, Tag } from '@/types';
+import type { Category, SchemaSlug, Tag } from '@/types';
 
 export const Route = createFileRoute('/categories')({
   component: CategoriesPage,
@@ -76,11 +66,6 @@ const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
   { value: 'updated', label: 'Date updated' },
 ];
 
-const STORAGE_OPTIONS: ReadonlyArray<{ value: StorageKind; label: string }> = [
-  { value: 'local', label: 'Local storage' },
-  { value: 'remote', label: 'Remote storage' },
-];
-
 // Comic-only. Novels keep the flat grid because the collection endpoint
 // (`comic_collection_list`) only knows how to group comic-schema files.
 const VIEW_MODE_OPTIONS: ReadonlyArray<{ value: CategoryViewMode; label: string }> = [
@@ -98,14 +83,14 @@ function CategoryFormFields({
   onChange: (next: CategoryFormState) => void;
   availableTags: ReadonlyArray<Tag>;
 }) {
-  // Resolve the effective sort + storage so the form always shows a
-  // concrete current value, even when `viewConfig.sort` / `default_storage`
-  // are absent (meaning "fall back to schema defaults").
+  // Resolve the effective sort + view mode so the form always shows a
+  // concrete current value, even when fields in `viewConfig` are absent
+  // (meaning "fall back to the hard-coded defaults from the resolver").
   const effective = useMemo(
     () =>
       resolveViewConfig({
         // Synthesize a minimal Category-shaped object for the resolver
-        // — it only reads `schema_slug` and `view_config`.
+        // — it only reads `view_config`.
         id: 0,
         name: '',
         description: null,
@@ -253,31 +238,6 @@ function CategoryFormFields({
           </div>
         </div>
 
-        {/* ── Default storage ─────────────────────────────────────────── */}
-        <div className="mb-4">
-          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2 block">
-            Default storage
-          </label>
-          <Select
-            value={effective.defaultStorage}
-            onValueChange={(v) => patchViewConfig({ default_storage: v as StorageKind })}
-          >
-            <SelectTrigger className="h-9 w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {STORAGE_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground mt-1.5">
-            Where new files of this category get stored on import.
-          </p>
-        </div>
-
         {/* ── Default filters ─────────────────────────────────────────── */}
         <div>
           <FilterEditor
@@ -295,17 +255,8 @@ function CategoryFormFields({
 
 function CategoriesPage() {
   const categories = useAppState((s) => s.categories);
-  const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [createForm, setCreateForm] = useState<CategoryFormState>(EMPTY_FORM);
-  const [saving, setSaving] = useState(false);
-
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<CategoryFormState>(EMPTY_FORM);
-
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [deletingCategory, setDeletingCategory] = useState<Category | null>(null);
-  const [deleting, setDeleting] = useState(false);
-
   const [tags, setTags] = useState<Tag[]>([]);
 
   useEffect(() => {
@@ -317,26 +268,6 @@ function CategoriesPage() {
       .then(({ tags }) => setTags(tags))
       .catch((err) => console.error('Failed to load tags:', err));
   }, []);
-
-  const handleCreate = async () => {
-    if (!createForm.name.trim()) return;
-    setSaving(true);
-    try {
-      await categoryCreate({
-        name: createForm.name.trim(),
-        description: createForm.description.trim() || undefined,
-        schemaSlug: createForm.schemaSlug,
-        viewConfig: serializeViewConfig(createForm.viewConfig),
-      });
-      setCreateDialogOpen(false);
-      setCreateForm(EMPTY_FORM);
-      void loadCategories();
-    } catch (error) {
-      console.error('Failed to create category:', error);
-      alert(`Failed to create category: ${error}`);
-    }
-    setSaving(false);
-  };
 
   const handleStartEdit = (category: Category) => {
     setEditingId(category.id);
@@ -377,26 +308,6 @@ function CategoriesPage() {
     setEditForm(EMPTY_FORM);
   };
 
-  const handleDeleteClick = (category: Category) => {
-    setDeletingCategory(category);
-    setDeleteDialogOpen(true);
-  };
-
-  const handleConfirmDelete = async () => {
-    if (!deletingCategory) return;
-    setDeleting(true);
-    try {
-      await categoryDelete(deletingCategory.id);
-      setDeleteDialogOpen(false);
-      setDeletingCategory(null);
-      void loadCategories();
-    } catch (error) {
-      console.error('Failed to delete category:', error);
-      alert(`Failed to delete category: ${error}`);
-    }
-    setDeleting(false);
-  };
-
   return (
     <>
       <div
@@ -412,10 +323,6 @@ function CategoriesPage() {
             — {categories.length} {categories.length === 1 ? 'category' : 'categories'}
           </span>
         </div>
-        <Button onClick={() => setCreateDialogOpen(true)}>
-          <Plus className="h-4 w-4 mr-1" />
-          Add Category
-        </Button>
       </div>
 
       <div className="flex-1 overflow-auto px-8 py-6">
@@ -435,7 +342,7 @@ function CategoriesPage() {
               {categories.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="h-24 text-center">
-                    No categories yet. Click "Add Category" to create one.
+                    No categories seeded yet.
                   </TableCell>
                 </TableRow>
               ) : (
@@ -472,28 +379,15 @@ function CategoriesPage() {
                       </span>
                     </TableCell>
                     <TableCell>
-                      <div className="flex gap-1">
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-8 w-8"
-                          onClick={() => handleStartEdit(category)}
-                          aria-label={`Edit ${category.name}`}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        {!category.is_default && (
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="h-8 w-8 text-destructive"
-                            onClick={() => handleDeleteClick(category)}
-                            aria-label={`Delete ${category.name}`}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        )}
-                      </div>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-8 w-8"
+                        onClick={() => handleStartEdit(category)}
+                        aria-label={`Edit ${category.name}`}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))
@@ -502,27 +396,6 @@ function CategoriesPage() {
           </Table>
         </div>
       </div>
-
-      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Create Category</DialogTitle>
-          </DialogHeader>
-          <CategoryFormFields
-            values={createForm}
-            onChange={setCreateForm}
-            availableTags={tags}
-          />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleCreate} disabled={saving || !createForm.name.trim()}>
-              {saving ? 'Creating...' : 'Create'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <Dialog
         open={editingId !== null}
@@ -550,30 +423,6 @@ function CategoriesPage() {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Category</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete "{deletingCategory?.name}"? Categories with files
-              cannot be deleted.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(e) => {
-                e.preventDefault();
-                void handleConfirmDelete();
-              }}
-              disabled={deleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {deleting ? 'Deleting...' : 'Delete'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </>
   );
 }
@@ -594,9 +443,6 @@ function summarizeViewConfig(category: Category): string {
   }
   if (cfg.conditions && cfg.conditions.length > 0) {
     parts.push(`${cfg.conditions.length} filter${cfg.conditions.length === 1 ? '' : 's'}`);
-  }
-  if (cfg.default_storage) {
-    parts.push(cfg.default_storage === 'remote' ? 'Remote' : 'Local');
   }
   return parts.length === 0 ? '—' : parts.join(' · ');
 }

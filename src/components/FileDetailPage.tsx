@@ -88,7 +88,6 @@ export function FileDetailPage({
     categories,
     tags,
     authors,
-    handleCategoryCreated,
     handleTagCreate,
     handleAuthorCreate,
     editingFile,
@@ -203,7 +202,6 @@ export function FileDetailPage({
         categories={categories}
         tags={tags}
         authors={authors}
-        onCategoryCreated={handleCategoryCreated}
         onTagCreate={handleTagCreate}
         onAuthorCreate={handleAuthorCreate}
         onSave={handleFileSave}

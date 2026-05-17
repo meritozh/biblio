@@ -50,7 +50,6 @@ export async function fileCreate(params: FileCreateRequest): Promise<{ id: numbe
       ? Array.from(atob(params.cover_data), (c) => c.charCodeAt(0))
       : null,
     coverMimeType: params.cover_mime_type || null,
-    storageKind: params.storage_kind ?? null,
     stagedCoverPath: params.staged_cover_path ?? null,
   });
 }
@@ -265,28 +264,6 @@ export async function categoryGet(id: number): Promise<Category> {
   return invoke('category_get', { id });
 }
 
-export interface CategoryCreateInput {
-  name: string;
-  icon?: string;
-  description?: string;
-  schemaSlug?: import('@/types').SchemaSlug;
-  /** JSON-serialized `CategoryViewConfig`. Omit (or pass `undefined`)
-   *  to let the file list fall back to the schema-slug defaults. */
-  viewConfig?: string;
-}
-
-export async function categoryCreate(
-  input: CategoryCreateInput
-): Promise<{ id: number }> {
-  return invoke('category_create', {
-    name: input.name,
-    icon: input.icon || null,
-    description: input.description || null,
-    schemaSlug: input.schemaSlug ?? null,
-    viewConfig: input.viewConfig ?? null,
-  });
-}
-
 export interface CategoryUpdateInput {
   id: number;
   name?: string;
@@ -312,12 +289,6 @@ export async function categoryUpdate(
     viewConfig: input.viewConfig ?? null,
     clearViewConfig: input.clearViewConfig ?? null,
   });
-}
-
-export async function categoryDelete(
-  id: number
-): Promise<{ success: boolean; affectedFiles: number }> {
-  return invoke('category_delete', { id });
 }
 
 export async function tagList(

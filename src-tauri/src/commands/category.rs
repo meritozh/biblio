@@ -35,63 +35,6 @@ pub async fn category_get(app: AppHandle, id: i64) -> Result<Category, String> {
         .ok_or("CATEGORY_NOT_FOUND".to_string())
 }
 
-#[tauri::command]
-pub async fn category_create(
-    app: AppHandle,
-    name: String,
-    icon: Option<String>,
-    description: Option<String>,
-    schema_slug: Option<String>,
-    view_config: Option<String>,
-) -> Result<CategoryCreateResponse, String> {
-    let instances = app.state::<DbInstances>();
-    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-
-    let validated_name = validate_category_name(&name)?;
-    // Whitelist user-provided slug — typos shouldn't silently fall back
-    // to 'novel' here (they would at read time, but at write time the
-    // user is choosing explicitly so we surface an error).
-    let slug = match schema_slug.as_deref() {
-        Some(s) if !s.is_empty() => {
-            if !SchemaSlug::is_known(s) {
-                return Err("INVALID_SCHEMA_SLUG".to_string());
-            }
-            SchemaSlug::from_str(s).as_str().to_string()
-        }
-        _ => SchemaSlug::Novel.as_str().to_string(),
-    };
-    let view_config = normalize_view_config(view_config)?;
-
-    let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM categories WHERE name = ?")
-        .bind(&validated_name)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if existing.is_some() {
-        return Err("CATEGORY_EXISTS".to_string());
-    }
-
-    // Generate unique folder name
-    let base_folder = sanitize_folder_name(&validated_name);
-    let folder_name = get_unique_folder_name(&pool, &base_folder).await?;
-
-    let result = sqlx::query("INSERT INTO categories (name, description, icon, folder_name, schema_slug, view_config) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(&validated_name)
-        .bind(&description)
-        .bind(&icon)
-        .bind(&folder_name)
-        .bind(&slug)
-        .bind(&view_config)
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(CategoryCreateResponse {
-        id: result.last_insert_rowid(),
-    })
-}
-
 /// Coerce blank-string and whitespace-only payloads to NULL so the DB
 /// column stays clean, and reject malformed JSON early. The frontend
 /// owns the shape; we just confirm it parses.
@@ -127,11 +70,6 @@ async fn get_unique_folder_name(pool: &sqlx::SqlitePool, base: &str) -> Result<S
         }
         counter += 1;
     }
-}
-
-#[derive(serde::Serialize)]
-pub struct CategoryCreateResponse {
-    pub id: i64,
 }
 
 #[tauri::command]
@@ -279,49 +217,5 @@ pub async fn category_update(
 
 #[derive(serde::Serialize)]
 pub struct CategoryUpdateResponse {
-    pub success: bool,
-}
-
-#[tauri::command]
-pub async fn category_delete(
-    app: AppHandle,
-    id: i64,
-) -> Result<CategoryDeleteResponse, String> {
-    let instances = app.state::<DbInstances>();
-    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-
-    let is_default: (bool,) = sqlx::query_as("SELECT is_default FROM categories WHERE id = ?")
-        .bind(id)
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if is_default.0 {
-        return Err("CANNOT_DELETE_DEFAULT".to_string());
-    }
-
-    let affected: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files WHERE category_id = ?")
-        .bind(id)
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if affected.0 > 0 {
-        return Err("CATEGORY_HAS_FILES".to_string());
-    }
-
-    sqlx::query("DELETE FROM categories WHERE id = ?")
-        .bind(id)
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(CategoryDeleteResponse {
-        success: true,
-    })
-}
-
-#[derive(serde::Serialize)]
-pub struct CategoryDeleteResponse {
     pub success: bool,
 }

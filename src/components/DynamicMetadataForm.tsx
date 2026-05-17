@@ -125,7 +125,6 @@ interface DynamicMetadataFormProps {
   categories: Category[];
   tags: Tag[];
   authors: Author[];
-  onCategoryCreated?: (category: Category) => void;
   onTagCreate?: (name: string) => Promise<Tag>;
   onAuthorCreate?: (name: string) => Promise<Author>;
   fileId?: number;
@@ -141,7 +140,6 @@ export function DynamicMetadataForm({
   categories,
   tags,
   authors,
-  onCategoryCreated,
   onTagCreate,
   onAuthorCreate,
   fileId,
@@ -258,7 +256,6 @@ export function DynamicMetadataForm({
               categories={categories}
               value={values.category_id}
               onValueChange={handleCategoryChange}
-              onCategoryCreated={onCategoryCreated}
             />
           </div>
         );
