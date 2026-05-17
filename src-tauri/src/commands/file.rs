@@ -984,13 +984,20 @@ pub async fn file_create(
     }
 
     if let Some(data) = cover_data {
-        let mime = cover_mime_type.unwrap_or_else(|| "image/png".to_string());
+        // Route through the shared compressor: user-uploaded replacements
+        // arrive uncompressed here, and even pipeline-staged bytes (already
+        // JPEG'd by `CoverCompressNode`) round-trip cheaply through it.
+        // Skipping this branch would re-introduce the 1 MB+ cover blobs
+        // the helper exists to prevent.
+        let _ = cover_mime_type;
+        let compressed = crate::commands::cover::compress_cover_bytes(&data)
+            .map_err(|e| format!("Failed to compress cover: {e}"))?;
         sqlx::query(
             "INSERT OR REPLACE INTO covers (file_id, data, mime_type) VALUES (?, ?, ?)"
         )
         .bind(file_id)
-        .bind(&data)
-        .bind(&mime)
+        .bind(&compressed)
+        .bind("image/jpeg")
         .execute(&pool)
         .await
         .map_err(|e| format!("Failed to save cover: {}", e))?;
