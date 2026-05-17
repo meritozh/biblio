@@ -8,7 +8,7 @@ use crate::pipeline::runner::emit_progress;
 /// LLM Call 2: classify the novel via content samples (category / tags /
 /// description). Runs only when the filename LLM applies *and* the user
 /// has opted in via `settings.analyze_content` *and* a content sample is
-/// available. The 180 s timeout lives inside `extract_content_metadata`.
+/// available. The request timeout lives inside `extract_content_metadata`.
 pub struct ContentLlmNode;
 
 #[async_trait]

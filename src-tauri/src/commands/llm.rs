@@ -212,13 +212,12 @@ pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String
     Ok(response)
 }
 
-/// Hard deadlines for a single LLM request. A hung local server (LM Studio
-/// under load, mis-sized context, etc.) would otherwise stall the entire
-/// import loop indefinitely — past the timeout we give up on this file and
-/// let Phase 2 continue with its error handling.
-const FILENAME_EXTRACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-const CONTENT_EXTRACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
-const VISION_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Hard deadline for a single LLM request. A hung local server (LM Studio
+/// under load, a tool-calling model that returns `stop_reason: tool_use`
+/// and waits forever for a tool result we never send, etc.) would otherwise
+/// stall the entire import loop indefinitely — past the timeout we give up
+/// on this file and let Phase 2 continue with its error handling.
+const LLM_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Prepended to every extraction preamble so model output stays in Simplified
 /// Chinese regardless of which active prompt the user has chosen.
@@ -249,11 +248,11 @@ pub async fn extract_filename_metadata(
         .max_tokens(512)
         .build();
 
-    match tokio::time::timeout(FILENAME_EXTRACTION_TIMEOUT, extractor.extract(&input)).await {
+    match tokio::time::timeout(LLM_REQUEST_TIMEOUT, extractor.extract(&input)).await {
         Ok(result) => result.map_err(|e| format!("LLM filename extraction failed: {e}")),
         Err(_) => Err(format!(
             "LLM filename extraction timed out after {}s",
-            FILENAME_EXTRACTION_TIMEOUT.as_secs()
+            LLM_REQUEST_TIMEOUT.as_secs()
         )),
     }
 }
@@ -311,11 +310,11 @@ pub async fn extract_content_metadata(
         .max_tokens(1024)
         .build();
 
-    match tokio::time::timeout(CONTENT_EXTRACTION_TIMEOUT, extractor.extract(&input)).await {
+    match tokio::time::timeout(LLM_REQUEST_TIMEOUT, extractor.extract(&input)).await {
         Ok(result) => result.map_err(|e| format!("LLM content analysis failed: {e}")),
         Err(_) => Err(format!(
             "LLM content analysis timed out after {}s",
-            CONTENT_EXTRACTION_TIMEOUT.as_secs()
+            LLM_REQUEST_TIMEOUT.as_secs()
         )),
     }
 }
@@ -346,13 +345,13 @@ pub async fn extract_cover_candidates(
         .max_tokens(512)
         .build();
 
-    match tokio::time::timeout(FILENAME_EXTRACTION_TIMEOUT, extractor.extract(&input)).await {
+    match tokio::time::timeout(LLM_REQUEST_TIMEOUT, extractor.extract(&input)).await {
         Ok(result) => result
             .map(|r| r.candidates)
             .map_err(|e| format!("LLM cover-candidates failed: {e}")),
         Err(_) => Err(format!(
             "LLM cover-candidates timed out after {}s",
-            FILENAME_EXTRACTION_TIMEOUT.as_secs()
+            LLM_REQUEST_TIMEOUT.as_secs()
         )),
     }
 }
@@ -432,13 +431,13 @@ pub async fn check_is_cover(
         .max_tokens(64)
         .build();
 
-    match tokio::time::timeout(VISION_CALL_TIMEOUT, extractor.extract(message)).await {
+    match tokio::time::timeout(LLM_REQUEST_TIMEOUT, extractor.extract(message)).await {
         Ok(result) => result
             .map(|r| r.is_cover)
             .map_err(|e| format!("LLM vision check failed: {e}")),
         Err(_) => Err(format!(
             "LLM vision check timed out after {}s",
-            VISION_CALL_TIMEOUT.as_secs()
+            LLM_REQUEST_TIMEOUT.as_secs()
         )),
     }
 }

@@ -28,7 +28,7 @@ enum FilenameSource {
 /// The (schema_slug, step) pair is fixed at construction time so the
 /// dispatcher decides which prompt to use, not the runtime MIME check.
 ///
-/// The actual network call is gated by a 60 s timeout inside
+/// The actual network call is gated by `LLM_REQUEST_TIMEOUT` inside
 /// `extract_filename_metadata`.
 pub struct FilenameLlmNode {
     schema_slug: SchemaSlug,
