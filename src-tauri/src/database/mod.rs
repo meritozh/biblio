@@ -167,5 +167,19 @@ pub fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 8,
+            description: "per-category view config",
+            // Stores the user's preferred view defaults for files in this
+            // category — view mode, sort, filter conditions, default
+            // storage destination. Opaque JSON so the schema doesn't need
+            // a new column every time the UI grows a new tunable; the
+            // frontend defines the shape (CategoryViewConfig). NULL means
+            // "fall back to the schema_slug defaults from the frontend
+            // REGISTRY", which matches every category that existed before
+            // this migration ran.
+            sql: "ALTER TABLE categories ADD COLUMN view_config TEXT;",
+            kind: MigrationKind::Up,
+        },
     ]
 }

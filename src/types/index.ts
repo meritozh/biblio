@@ -17,6 +17,11 @@ export interface Category {
    *  to `'novel'` for legacy rows; the migration v7 backfills 'comic'
    *  for the seeded comic category. */
   schema_slug: SchemaSlug;
+  /** JSON-serialized `CategoryViewConfig` (see `lib/categorySchema.ts`).
+   *  `null` means the file list should use the schema-slug defaults from
+   *  the frontend REGISTRY. The shape is owned by the frontend; the
+   *  backend only validates that this is parseable JSON. */
+  view_config: string | null;
   created_at: string;
 }
 

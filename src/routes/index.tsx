@@ -66,6 +66,7 @@ import {
   type DynamicMetadataFormValues,
 } from '@/components/DynamicMetadataForm';
 import { schemaForCategoryId, schemaForPath, isImportable } from '@/lib/categorySchema';
+import { resolveViewConfig } from '@/lib/categoryViewConfig';
 import { useFileActions } from '@/hooks/useFileActions';
 import type { FileEntry } from '@/types';
 
@@ -290,6 +291,39 @@ function HomePage() {
       cancelled = true;
     };
   }, [expandedCollection]);
+
+  // Re-seed sort + filter conditions from the active category's stored
+  // view_config whenever the user switches categories (or the user edits
+  // the category's view_config from the Categories page and comes back).
+  // Within a category, transient sort/filter changes stay in place — only
+  // a category switch or a config edit triggers re-seeding. Reuses the
+  // `categories` array already resolved above for the comic-schema check
+  // so we don't search it twice per render.
+  const currentCategory = useMemo(
+    () => categories.find((c) => c.id === selectedCategoryId) ?? null,
+    [categories, selectedCategoryId]
+  );
+  const seedKey = `${selectedCategoryId ?? 'none'}::${currentCategory?.view_config ?? ''}`;
+  const prevSeedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (categories.length === 0) return;
+    if (prevSeedKeyRef.current === seedKey) return;
+    prevSeedKeyRef.current = seedKey;
+    const resolved = resolveViewConfig(currentCategory);
+    setSortBy(resolved.sortBy);
+    setSortDesc(resolved.sortDesc);
+    setConditions(resolved.conditions);
+    // Only apply a non-flat view mode for comic categories — author /
+    // name_prefix collapse the grid into collection cards and rely on
+    // the comic-only `comicCollectionList` endpoint. For novels the
+    // toggle is hidden, so a stored 'author' default would silently
+    // never activate; force 'flat' to keep the rendered state honest.
+    setViewMode(
+      resolved.viewMode !== 'flat' && currentCategory?.schema_slug === 'comic'
+        ? resolved.viewMode
+        : 'flat'
+    );
+  }, [seedKey, currentCategory, categories.length]);
 
   const checkStoragePath = useCallback(async () => {
     const path = await storageGetPath();

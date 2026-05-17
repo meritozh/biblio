@@ -46,7 +46,7 @@ export function CategorySelect({
 
     setIsSaving(true);
     try {
-      const result = await categoryCreate(newCategoryName.trim());
+      const result = await categoryCreate({ name: newCategoryName.trim() });
       const newCategory: Category = {
         id: result.id,
         name: newCategoryName.trim(),
@@ -58,6 +58,7 @@ export function CategorySelect({
         // who want a comic-shaped layout pick the slug from the
         // dedicated Categories page instead.
         schema_slug: 'novel',
+        view_config: null,
         created_at: new Date().toISOString(),
       };
       onCategoryCreated?.(newCategory);

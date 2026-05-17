@@ -680,7 +680,7 @@ pub async fn file_get(
     .ok_or("File not found")?;
 
     let category: Option<Category> = if let Some(cat_id) = file.category_id {
-        sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, schema_slug, created_at FROM categories WHERE id = ?")
+        sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, schema_slug, view_config, created_at FROM categories WHERE id = ?")
             .bind(cat_id)
             .fetch_optional(&pool)
             .await

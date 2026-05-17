@@ -17,7 +17,7 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
 pub async fn category_list(app: AppHandle) -> Result<Vec<Category>, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-    sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, schema_slug, created_at FROM categories ORDER BY name")
+    sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, schema_slug, view_config, created_at FROM categories ORDER BY name")
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())
@@ -27,7 +27,7 @@ pub async fn category_list(app: AppHandle) -> Result<Vec<Category>, String> {
 pub async fn category_get(app: AppHandle, id: i64) -> Result<Category, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-    sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, schema_slug, created_at FROM categories WHERE id = ?")
+    sqlx::query_as("SELECT id, name, description, icon, is_default, folder_name, schema_slug, view_config, created_at FROM categories WHERE id = ?")
         .bind(id)
         .fetch_optional(&pool)
         .await
@@ -42,6 +42,7 @@ pub async fn category_create(
     icon: Option<String>,
     description: Option<String>,
     schema_slug: Option<String>,
+    view_config: Option<String>,
 ) -> Result<CategoryCreateResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
@@ -59,6 +60,7 @@ pub async fn category_create(
         }
         _ => SchemaSlug::Novel.as_str().to_string(),
     };
+    let view_config = normalize_view_config(view_config)?;
 
     let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM categories WHERE name = ?")
         .bind(&validated_name)
@@ -74,12 +76,13 @@ pub async fn category_create(
     let base_folder = sanitize_folder_name(&validated_name);
     let folder_name = get_unique_folder_name(&pool, &base_folder).await?;
 
-    let result = sqlx::query("INSERT INTO categories (name, description, icon, folder_name, schema_slug) VALUES (?, ?, ?, ?, ?)")
+    let result = sqlx::query("INSERT INTO categories (name, description, icon, folder_name, schema_slug, view_config) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(&validated_name)
         .bind(&description)
         .bind(&icon)
         .bind(&folder_name)
         .bind(&slug)
+        .bind(&view_config)
         .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -87,6 +90,20 @@ pub async fn category_create(
     Ok(CategoryCreateResponse {
         id: result.last_insert_rowid(),
     })
+}
+
+/// Coerce blank-string and whitespace-only payloads to NULL so the DB
+/// column stays clean, and reject malformed JSON early. The frontend
+/// owns the shape; we just confirm it parses.
+fn normalize_view_config(raw: Option<String>) -> Result<Option<String>, String> {
+    match raw {
+        Some(s) if !s.trim().is_empty() => {
+            serde_json::from_str::<serde_json::Value>(&s)
+                .map_err(|e| format!("INVALID_VIEW_CONFIG_JSON: {e}"))?;
+            Ok(Some(s))
+        }
+        _ => Ok(None),
+    }
 }
 
 async fn get_unique_folder_name(pool: &sqlx::SqlitePool, base: &str) -> Result<String, String> {
@@ -125,6 +142,8 @@ pub async fn category_update(
     icon: Option<String>,
     description: Option<String>,
     schema_slug: Option<String>,
+    view_config: Option<String>,
+    clear_view_config: Option<bool>,
 ) -> Result<CategoryUpdateResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
@@ -229,6 +248,26 @@ pub async fn category_update(
         let canonical = SchemaSlug::from_str(&s).as_str();
         sqlx::query("UPDATE categories SET schema_slug = ? WHERE id = ?")
             .bind(canonical)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Two ways to clear: explicit `clear_view_config: true`, or send
+    // `view_config: ""`. Both collapse to NULL in the column. Sending
+    // `view_config: null` is treated as "no change" so callers can omit
+    // the field without erasing existing settings.
+    if clear_view_config.unwrap_or(false) {
+        sqlx::query("UPDATE categories SET view_config = NULL WHERE id = ?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    } else if let Some(raw) = view_config {
+        let normalized = normalize_view_config(Some(raw))?;
+        sqlx::query("UPDATE categories SET view_config = ? WHERE id = ?")
+            .bind(&normalized)
             .bind(id)
             .execute(&pool)
             .await

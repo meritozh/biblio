@@ -28,6 +28,13 @@ pub struct Category {
     /// `crate::schema::SchemaSlug` for the parsed view; the frontend
     /// mirrors the registry in `src/lib/categorySchema.ts`.
     pub schema_slug: String,
+    /// User-tuned view defaults: which view mode the file list opens in,
+    /// the default sort, the default filter conditions, the default
+    /// storage destination. Opaque JSON so the schema doesn't need a new
+    /// column every time the UI grows a new tunable — the frontend owns
+    /// the shape (`CategoryViewConfig`). `None` means "use the schema
+    /// defaults from the frontend REGISTRY".
+    pub view_config: Option<String>,
     pub created_at: String,
 }
 

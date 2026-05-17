@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -28,49 +28,308 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Plus, Pencil, Trash2, FolderOpen } from 'lucide-react';
-import { categoryCreate, categoryUpdate, categoryDelete } from '@/lib/tauri';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { ArrowDown, ArrowUp, Plus, Pencil, Trash2, FolderOpen } from 'lucide-react';
+import { categoryCreate, categoryUpdate, categoryDelete, tagList } from '@/lib/tauri';
 import { loadCategories, useAppState } from '@/stores/appStore';
 import { SCHEMA_LABELS, coerceSchemaSlug } from '@/lib/categorySchema';
-import type { Category, SchemaSlug } from '@/types';
+import {
+  parseViewConfig,
+  resolveViewConfig,
+  serializeViewConfig,
+  type CategoryViewConfig,
+  type CategoryViewMode,
+} from '@/lib/categoryViewConfig';
+import { FilterEditor } from '@/components/FilterEditor';
+import type { SortKey } from '@/stores';
+import type { Category, SchemaSlug, StorageKind, Tag } from '@/types';
 
 export const Route = createFileRoute('/categories')({
   component: CategoriesPage,
 });
 
+// ── Form state shared across Create and Edit dialogs ─────────────────────────
+
+interface CategoryFormState {
+  name: string;
+  description: string;
+  schemaSlug: SchemaSlug;
+  viewConfig: CategoryViewConfig;
+}
+
+const EMPTY_FORM: CategoryFormState = {
+  name: '',
+  description: '',
+  schemaSlug: 'novel',
+  viewConfig: {},
+};
+
+const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
+  { value: 'name', label: 'Name' },
+  { value: 'created', label: 'Date added' },
+  { value: 'updated', label: 'Date updated' },
+];
+
+const STORAGE_OPTIONS: ReadonlyArray<{ value: StorageKind; label: string }> = [
+  { value: 'local', label: 'Local storage' },
+  { value: 'remote', label: 'Remote storage' },
+];
+
+// Comic-only. Novels keep the flat grid because the collection endpoint
+// (`comic_collection_list`) only knows how to group comic-schema files.
+const VIEW_MODE_OPTIONS: ReadonlyArray<{ value: CategoryViewMode; label: string }> = [
+  { value: 'flat', label: 'All files' },
+  { value: 'author', label: 'By author' },
+  { value: 'name_prefix', label: 'By series' },
+];
+
+function CategoryFormFields({
+  values,
+  onChange,
+  availableTags,
+}: {
+  values: CategoryFormState;
+  onChange: (next: CategoryFormState) => void;
+  availableTags: ReadonlyArray<Tag>;
+}) {
+  // Resolve the effective sort + storage so the form always shows a
+  // concrete current value, even when `viewConfig.sort` / `default_storage`
+  // are absent (meaning "fall back to schema defaults").
+  const effective = useMemo(
+    () =>
+      resolveViewConfig({
+        // Synthesize a minimal Category-shaped object for the resolver
+        // — it only reads `schema_slug` and `view_config`.
+        id: 0,
+        name: '',
+        description: null,
+        icon: null,
+        is_default: false,
+        folder_name: null,
+        schema_slug: values.schemaSlug,
+        view_config: JSON.stringify(values.viewConfig),
+        created_at: '',
+      }),
+    [values.schemaSlug, values.viewConfig]
+  );
+
+  const patchViewConfig = (patch: Partial<CategoryViewConfig>) => {
+    onChange({ ...values, viewConfig: { ...values.viewConfig, ...patch } });
+  };
+
+  return (
+    <div className="space-y-5 py-4">
+      <div>
+        <label className="text-sm font-medium mb-2 block">Name</label>
+        <Input
+          value={values.name}
+          onChange={(e) => onChange({ ...values, name: e.target.value })}
+          placeholder="Category name"
+        />
+      </div>
+
+      <div>
+        <label className="text-sm font-medium mb-2 block">Description</label>
+        <Input
+          value={values.description}
+          onChange={(e) => onChange({ ...values, description: e.target.value })}
+          placeholder="e.g., Chinese web novels, light novels, manga..."
+        />
+        <p className="text-xs text-muted-foreground mt-1.5">
+          Helps the LLM pick the right category during import.
+        </p>
+      </div>
+
+      <div>
+        <label className="text-sm font-medium mb-2 block">Schema</label>
+        <Select
+          value={values.schemaSlug}
+          onValueChange={(v) => onChange({ ...values, schemaSlug: v as SchemaSlug })}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {(Object.keys(SCHEMA_LABELS) as SchemaSlug[]).map((slug) => (
+              <SelectItem key={slug} value={slug}>
+                {SCHEMA_LABELS[slug]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground mt-1.5">
+          Decides which form fields appear in import / edit dialogs, what
+          the file card shows, and which prompts the LLM runs.
+        </p>
+      </div>
+
+      <div className="pt-2 border-t">
+        <div className="flex items-baseline justify-between mb-3">
+          <h3 className="text-sm font-medium">View defaults</h3>
+          <span className="text-xs text-muted-foreground font-serif-italic">
+            Applied when you open this category in Library
+          </span>
+        </div>
+
+        {/* ── View mode (comic-only) ─────────────────────────────────── */}
+        {values.schemaSlug === 'comic' && (
+          <div className="mb-4">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2 block">
+              Default view mode
+            </label>
+            <Select
+              value={effective.viewMode}
+              onValueChange={(v) =>
+                patchViewConfig({ view_mode: v as CategoryViewMode })
+              }
+            >
+              <SelectTrigger className="h-9 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {VIEW_MODE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground mt-1.5">
+              How the file list opens for this category. "By author" / "By
+              series" collapse the grid into collection cards.
+            </p>
+          </div>
+        )}
+
+        {/* ── Sort ────────────────────────────────────────────────────── */}
+        <div className="mb-4">
+          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2 block">
+            Default sort
+          </label>
+          <div className="flex items-center gap-2">
+            <Select
+              value={effective.sortBy}
+              onValueChange={(v) =>
+                patchViewConfig({
+                  sort: { by: v as SortKey, desc: effective.sortDesc },
+                })
+              }
+            >
+              <SelectTrigger className="h-9 flex-1">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SORT_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9"
+              onClick={() =>
+                patchViewConfig({
+                  sort: { by: effective.sortBy, desc: !effective.sortDesc },
+                })
+              }
+              title={effective.sortDesc ? 'Descending' : 'Ascending'}
+            >
+              {effective.sortDesc ? (
+                <ArrowDown className="h-4 w-4" />
+              ) : (
+                <ArrowUp className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
+        </div>
+
+        {/* ── Default storage ─────────────────────────────────────────── */}
+        <div className="mb-4">
+          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2 block">
+            Default storage
+          </label>
+          <Select
+            value={effective.defaultStorage}
+            onValueChange={(v) => patchViewConfig({ default_storage: v as StorageKind })}
+          >
+            <SelectTrigger className="h-9 w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {STORAGE_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground mt-1.5">
+            Where new files of this category get stored on import.
+          </p>
+        </div>
+
+        {/* ── Default filters ─────────────────────────────────────────── */}
+        <div>
+          <FilterEditor
+            conditions={effective.conditions}
+            onConditionsChange={(next) =>
+              patchViewConfig({ conditions: next.length === 0 ? undefined : next })
+            }
+            tags={availableTags}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CategoriesPage() {
   const categories = useAppState((s) => s.categories);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState('');
-  const [newCategoryDescription, setNewCategoryDescription] = useState('');
-  const [newCategorySchema, setNewCategorySchema] = useState<SchemaSlug>('novel');
+  const [createForm, setCreateForm] = useState<CategoryFormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editDescription, setEditDescription] = useState('');
-  const [editSchema, setEditSchema] = useState<SchemaSlug>('novel');
+  const [editForm, setEditForm] = useState<CategoryFormState>(EMPTY_FORM);
+
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingCategory, setDeletingCategory] = useState<Category | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  const [tags, setTags] = useState<Tag[]>([]);
+
   useEffect(() => {
     void loadCategories();
+    // Tags drive the FilterEditor's includes/excludes dropdowns — load
+    // once when the page mounts. Empty list is fine; the editor just
+    // hides the tag-specific operators.
+    tagList()
+      .then(({ tags }) => setTags(tags))
+      .catch((err) => console.error('Failed to load tags:', err));
   }, []);
 
   const handleCreate = async () => {
-    if (!newCategoryName.trim()) return;
+    if (!createForm.name.trim()) return;
     setSaving(true);
     try {
-      await categoryCreate(
-        newCategoryName.trim(),
-        undefined,
-        newCategoryDescription.trim() || undefined,
-        newCategorySchema
-      );
+      await categoryCreate({
+        name: createForm.name.trim(),
+        description: createForm.description.trim() || undefined,
+        schemaSlug: createForm.schemaSlug,
+        viewConfig: serializeViewConfig(createForm.viewConfig),
+      });
       setCreateDialogOpen(false);
-      setNewCategoryName('');
-      setNewCategoryDescription('');
-      setNewCategorySchema('novel');
+      setCreateForm(EMPTY_FORM);
       void loadCategories();
     } catch (error) {
       console.error('Failed to create category:', error);
@@ -81,24 +340,31 @@ function CategoriesPage() {
 
   const handleStartEdit = (category: Category) => {
     setEditingId(category.id);
-    setEditName(category.name);
-    setEditDescription(category.description ?? '');
-    setEditSchema(coerceSchemaSlug(category.schema_slug));
+    setEditForm({
+      name: category.name,
+      description: category.description ?? '',
+      schemaSlug: coerceSchemaSlug(category.schema_slug),
+      viewConfig: parseViewConfig(category.view_config),
+    });
   };
 
   const handleSaveEdit = async () => {
-    if (!editingId || !editName.trim()) return;
+    if (!editingId || !editForm.name.trim()) return;
+    const serialized = serializeViewConfig(editForm.viewConfig);
     try {
-      await categoryUpdate(
-        editingId,
-        editName.trim(),
-        undefined,
-        editDescription.trim() || undefined,
-        editSchema
-      );
+      await categoryUpdate({
+        id: editingId,
+        name: editForm.name.trim(),
+        description: editForm.description.trim() || undefined,
+        schemaSlug: editForm.schemaSlug,
+        // `undefined` means "no override → clear back to schema defaults"
+        // when there's also no inline JSON. Use `clearViewConfig` to make
+        // that intent explicit on the backend.
+        viewConfig: serialized,
+        clearViewConfig: serialized === undefined,
+      });
       setEditingId(null);
-      setEditName('');
-      setEditDescription('');
+      setEditForm(EMPTY_FORM);
       void loadCategories();
     } catch (error) {
       console.error('Failed to update category:', error);
@@ -108,8 +374,7 @@ function CategoriesPage() {
 
   const handleCancelEdit = () => {
     setEditingId(null);
-    setEditName('');
-    setEditDescription('');
+    setEditForm(EMPTY_FORM);
   };
 
   const handleDeleteClick = (category: Category) => {
@@ -156,177 +421,130 @@ function CategoriesPage() {
       <div className="flex-1 overflow-auto px-8 py-6">
         <div className="rounded-md border">
           <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Description</TableHead>
-                    <TableHead className="w-[120px]">Schema</TableHead>
-                    <TableHead className="w-[150px]">Folder</TableHead>
-                    <TableHead className="w-[100px]">Actions</TableHead>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Description</TableHead>
+                <TableHead className="w-[120px]">Schema</TableHead>
+                <TableHead className="w-[150px]">Folder</TableHead>
+                <TableHead className="w-[140px]">View defaults</TableHead>
+                <TableHead className="w-[100px]">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {categories.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="h-24 text-center">
+                    No categories yet. Click "Add Category" to create one.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                categories.map((category) => (
+                  <TableRow key={category.id}>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        {category.name}
+                        {category.is_default && (
+                          <Badge variant="secondary" className="text-xs">
+                            Default
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-xs text-muted-foreground">
+                        {category.description || '-'}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="gray" className="text-xs">
+                        {SCHEMA_LABELS[coerceSchemaSlug(category.schema_slug)]}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-xs text-muted-foreground font-mono">
+                        {category.folder_name || '-'}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-xs text-muted-foreground">
+                        {summarizeViewConfig(category)}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex gap-1">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8"
+                          onClick={() => handleStartEdit(category)}
+                          aria-label={`Edit ${category.name}`}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        {!category.is_default && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8 text-destructive"
+                            onClick={() => handleDeleteClick(category)}
+                            aria-label={`Delete ${category.name}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    </TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {categories.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={5} className="h-24 text-center">
-                        No categories yet. Click "Add Category" to create one.
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    categories.map((category) => (
-                      <TableRow key={category.id}>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            {editingId === category.id ? (
-                              <Input
-                                value={editName}
-                                onChange={(e) => setEditName(e.target.value)}
-                                className="h-8 w-full"
-                                autoFocus
-                              />
-                            ) : (
-                              <>
-                                {category.name}
-                                {category.is_default && (
-                                  <Badge variant="secondary" className="text-xs">
-                                    Default
-                                  </Badge>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          {editingId === category.id ? (
-                            <Input
-                              value={editDescription}
-                              onChange={(e) => setEditDescription(e.target.value)}
-                              className="h-8 w-full"
-                              placeholder="Short description for LLM"
-                            />
-                          ) : (
-                            <span className="text-xs text-muted-foreground">
-                              {category.description || '-'}
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {editingId === category.id ? (
-                            <select
-                              value={editSchema}
-                              onChange={(e) => setEditSchema(e.target.value as SchemaSlug)}
-                              className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                            >
-                              {(Object.keys(SCHEMA_LABELS) as SchemaSlug[]).map((slug) => (
-                                <option key={slug} value={slug}>
-                                  {SCHEMA_LABELS[slug]}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            <Badge variant="gray" className="text-xs">
-                              {SCHEMA_LABELS[coerceSchemaSlug(category.schema_slug)]}
-                            </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <span className="text-xs text-muted-foreground font-mono">
-                            {category.folder_name || '-'}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          {editingId === category.id ? (
-                            <div className="flex gap-1">
-                              <Button size="sm" onClick={handleSaveEdit}>
-                                Save
-                              </Button>
-                              <Button size="sm" variant="ghost" onClick={handleCancelEdit}>
-                                Cancel
-                              </Button>
-                            </div>
-                          ) : (
-                            <div className="flex gap-1">
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-8 w-8"
-                                onClick={() => handleStartEdit(category)}
-                              >
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                              {!category.is_default && (
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  className="h-8 w-8 text-destructive"
-                                  onClick={() => handleDeleteClick(category)}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              )}
-                            </div>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
+                ))
+              )}
             </TableBody>
           </Table>
         </div>
       </div>
 
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Create Category</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div>
-              <label className="text-sm font-medium mb-2 block">Name</label>
-              <Input
-                value={newCategoryName}
-                onChange={(e) => setNewCategoryName(e.target.value)}
-                placeholder="Category name"
-              />
-            </div>
-            <div>
-              <label className="text-sm font-medium mb-2 block">Description</label>
-              <Input
-                value={newCategoryDescription}
-                onChange={(e) => setNewCategoryDescription(e.target.value)}
-                placeholder="e.g., Chinese web novels, light novels, manga..."
-              />
-              <p className="text-xs text-muted-foreground mt-1.5">
-                Helps the LLM pick the right category during import.
-              </p>
-            </div>
-            <div>
-              <label className="text-sm font-medium mb-2 block">Schema</label>
-              <select
-                value={newCategorySchema}
-                onChange={(e) => setNewCategorySchema(e.target.value as SchemaSlug)}
-                className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
-              >
-                {(Object.keys(SCHEMA_LABELS) as SchemaSlug[]).map((slug) => (
-                  <option key={slug} value={slug}>
-                    {SCHEMA_LABELS[slug]}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-muted-foreground mt-1.5">
-                Decides which form fields appear in import / edit dialogs,
-                what the file card shows, and which prompts the LLM runs.
-                Pick <em>Novel</em> for text-based libraries, <em>Comic</em>
-                for image-based ones.
-              </p>
-            </div>
-          </div>
+          <CategoryFormFields
+            values={createForm}
+            onChange={setCreateForm}
+            availableTags={tags}
+          />
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleCreate} disabled={saving || !newCategoryName.trim()}>
+            <Button onClick={handleCreate} disabled={saving || !createForm.name.trim()}>
               {saving ? 'Creating...' : 'Create'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={editingId !== null}
+        onOpenChange={(open) => {
+          if (!open) handleCancelEdit();
+        }}
+      >
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Edit Category</DialogTitle>
+          </DialogHeader>
+          <CategoryFormFields
+            values={editForm}
+            onChange={setEditForm}
+            availableTags={tags}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={handleCancelEdit}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveEdit} disabled={!editForm.name.trim()}>
+              Save
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -358,4 +576,27 @@ function CategoriesPage() {
       </AlertDialog>
     </>
   );
+}
+
+/** Short text for the View defaults table column: "—" when the category
+ *  uses pure schema defaults, otherwise a compact "Sort: name↑ · Filters: 2"
+ *  summary the user can scan at a glance. */
+function summarizeViewConfig(category: Category): string {
+  const cfg = parseViewConfig(category.view_config);
+  const parts: string[] = [];
+  if (cfg.view_mode && cfg.view_mode !== 'flat') {
+    const opt = VIEW_MODE_OPTIONS.find((o) => o.value === cfg.view_mode);
+    parts.push(opt?.label ?? cfg.view_mode);
+  }
+  if (cfg.sort) {
+    const opt = SORT_OPTIONS.find((o) => o.value === cfg.sort!.by);
+    parts.push(`${opt?.label ?? cfg.sort.by}${cfg.sort.desc ? ' ↓' : ' ↑'}`);
+  }
+  if (cfg.conditions && cfg.conditions.length > 0) {
+    parts.push(`${cfg.conditions.length} filter${cfg.conditions.length === 1 ? '' : 's'}`);
+  }
+  if (cfg.default_storage) {
+    parts.push(cfg.default_storage === 'remote' ? 'Remote' : 'Local');
+  }
+  return parts.length === 0 ? '—' : parts.join(' · ');
 }

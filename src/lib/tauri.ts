@@ -265,33 +265,52 @@ export async function categoryGet(id: number): Promise<Category> {
   return invoke('category_get', { id });
 }
 
+export interface CategoryCreateInput {
+  name: string;
+  icon?: string;
+  description?: string;
+  schemaSlug?: import('@/types').SchemaSlug;
+  /** JSON-serialized `CategoryViewConfig`. Omit (or pass `undefined`)
+   *  to let the file list fall back to the schema-slug defaults. */
+  viewConfig?: string;
+}
+
 export async function categoryCreate(
-  name: string,
-  icon?: string,
-  description?: string,
-  schemaSlug?: import('@/types').SchemaSlug
+  input: CategoryCreateInput
 ): Promise<{ id: number }> {
   return invoke('category_create', {
-    name,
-    icon: icon || null,
-    description: description || null,
-    schemaSlug: schemaSlug ?? null,
+    name: input.name,
+    icon: input.icon || null,
+    description: input.description || null,
+    schemaSlug: input.schemaSlug ?? null,
+    viewConfig: input.viewConfig ?? null,
   });
 }
 
+export interface CategoryUpdateInput {
+  id: number;
+  name?: string;
+  icon?: string;
+  description?: string;
+  schemaSlug?: import('@/types').SchemaSlug;
+  /** Pass a JSON string to set, or omit to leave the existing value
+   *  untouched. To wipe the column back to NULL (revert to schema
+   *  defaults), set `clearViewConfig: true` instead. */
+  viewConfig?: string;
+  clearViewConfig?: boolean;
+}
+
 export async function categoryUpdate(
-  id: number,
-  name?: string,
-  icon?: string,
-  description?: string,
-  schemaSlug?: import('@/types').SchemaSlug
+  input: CategoryUpdateInput
 ): Promise<{ success: boolean }> {
   return invoke('category_update', {
-    id,
-    name,
-    icon: icon || null,
-    description: description ?? null,
-    schemaSlug: schemaSlug ?? null,
+    id: input.id,
+    name: input.name,
+    icon: input.icon || null,
+    description: input.description ?? null,
+    schemaSlug: input.schemaSlug ?? null,
+    viewConfig: input.viewConfig ?? null,
+    clearViewConfig: input.clearViewConfig ?? null,
   });
 }
 

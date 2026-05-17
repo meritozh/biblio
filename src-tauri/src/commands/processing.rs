@@ -257,7 +257,7 @@ async fn build_pipeline_env(app: &tauri::AppHandle) -> Result<Arc<PipelineEnv>, 
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
     let categories: Vec<Category> = sqlx::query_as(
-        "SELECT id, name, description, icon, is_default, folder_name, schema_slug, created_at FROM categories",
+        "SELECT id, name, description, icon, is_default, folder_name, schema_slug, view_config, created_at FROM categories",
     )
     .fetch_all(&pool)
     .await
