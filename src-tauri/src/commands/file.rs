@@ -1616,27 +1616,33 @@ pub async fn file_delete(
     .await
     .map_err(|e| e.to_string())?;
 
-    if let Some((path, in_storage, storage_kind)) = file_info {
-        if storage_kind == "remote" {
-            // Best-effort: if Baidu delete fails (token expired, network
-            // error, file already missing server-side), log and continue
-            // with the DB delete. The local row is the source of truth
-            // from the user's perspective, and a stray remote file can be
-            // cleaned up manually later.
-            if let Err(e) = super::remote::delete_on_remote(&pool, &path).await {
-                eprintln!("Remote delete failed for {path}: {e}");
-            }
-        } else if in_storage {
-            // Local file in biblio's managed storage — remove from disk.
-            let _ = fs::remove_file(&path);
-        }
+    let Some((path, in_storage, storage_kind)) = file_info else {
+        // Already gone — treat as success so a double-click doesn't error.
+        return Ok(FileDeleteResponse { success: true });
+    };
 
-        sqlx::query("DELETE FROM files WHERE id = ?")
-            .bind(id)
-            .execute(&pool)
-            .await
-            .map_err(|e| e.to_string())?;
+    // Strict ordering: external resource first, DB row second. A failure
+    // here aborts before the row is touched so the user can retry against
+    // the same id. Matches the bulk-delete worker's policy and prevents
+    // orphans on Baidu Pan / in the storage folder.
+    if storage_kind == "remote" {
+        super::remote::delete_on_remote(&pool, &path).await?;
+    } else if in_storage {
+        if let Err(e) = fs::remove_file(&path) {
+            // "Already missing on disk" satisfies the invariant — the
+            // external state is what we wanted. Anything else (permission
+            // denied, file locked, IO error) propagates.
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(format!("Failed to remove local file: {e}"));
+            }
+        }
     }
+
+    sqlx::query("DELETE FROM files WHERE id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
 
     Ok(FileDeleteResponse { success: true })
 }
@@ -2018,19 +2024,27 @@ pub async fn file_replace(
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    let existing: Option<(String, bool)> = sqlx::query_as(
-        "SELECT path, in_storage FROM files WHERE id = ?",
+    let existing: Option<(String, bool, String)> = sqlx::query_as(
+        "SELECT path, in_storage, storage_kind FROM files WHERE id = ?",
     )
     .bind(existing_file_id)
     .fetch_optional(&pool)
     .await
     .map_err(|e| e.to_string())?;
 
-    if let Some((existing_path, in_storage)) = existing {
-        if in_storage {
-            let old_path = PathBuf::from(&existing_path);
-            if old_path.exists() {
-                let _ = fs::remove_file(&old_path);
+    if let Some((existing_path, in_storage, storage_kind)) = existing {
+        // Strict ordering, same as `file_delete`: prove the prior copy is
+        // gone before we drop the DB row. Without this, a remote duplicate
+        // resolved via "Replace" used to leave the Baidu file orphaned
+        // (in_storage=false skipped the local branch, the DB row went
+        // away, the cloud copy stayed).
+        if storage_kind == "remote" {
+            super::remote::delete_on_remote(&pool, &existing_path).await?;
+        } else if in_storage {
+            if let Err(e) = fs::remove_file(&existing_path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    return Err(format!("Failed to remove existing file: {e}"));
+                }
             }
         }
 
