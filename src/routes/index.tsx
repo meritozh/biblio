@@ -122,6 +122,10 @@ function HomePage() {
   const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
   const [storagePathAccessible, setStoragePathAccessible] = useState(true);
   const [pipelineOpen, setPipelineOpen] = useState(false);
+  // Minimize collapses the import dialog into a corner pill while leaving
+  // its state + listeners alive. Reset to false on every fresh open so
+  // re-opening the picker doesn't surprise the user with a hidden modal.
+  const [pipelineMinimized, setPipelineMinimized] = useState(false);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
 
   const [remoteEnabled, setRemoteEnabled] = useState(false);
@@ -399,6 +403,7 @@ function HomePage() {
     setSelectedPathFolderRoots((prev) => ({ ...prev, ...keptFolderRoots }));
     setFormValues(EMPTY_FORM_VALUES);
     setAddDialogOpen(false);
+    setPipelineMinimized(false);
     setPipelineOpen(true);
 
     // Push the new paths to the import worker. Returns immediately; per-file
@@ -732,8 +737,12 @@ function HomePage() {
             // it, the dialog would re-init from the previous session's paths.
             setSelectedFiles([]);
             setSelectedPathFolderRoots({});
+            setPipelineMinimized(false);
           }
         }}
+        minimized={pipelineMinimized}
+        onMinimize={() => setPipelineMinimized(true)}
+        onExpand={() => setPipelineMinimized(false)}
         paths={selectedFiles}
         pathFolderRoots={selectedPathFolderRoots}
         categories={categories}
@@ -743,6 +752,7 @@ function HomePage() {
         onAuthorCreate={handleAuthorCreate}
         onImportComplete={() => {
           setPipelineOpen(false);
+          setPipelineMinimized(false);
           setSelectedFiles([]);
           setSelectedPathFolderRoots({});
           void reload();

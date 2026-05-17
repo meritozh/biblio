@@ -42,12 +42,14 @@ import {
 import {
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Loader2,
   CheckCircle2,
   AlertCircle,
   AlertTriangle,
   FileText,
   FolderArchive,
+  Minus,
 } from 'lucide-react';
 import type {
   Category,
@@ -88,6 +90,14 @@ interface FileItemState {
 interface ProcessingPipelineProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Minimize collapses the modal into a small floating pill while
+   *  leaving every internal listener and the per-file state intact —
+   *  the worker keeps analyzing in the background and the user can
+   *  re-open later to commit. Mirrors the RemoteUploadProgressPanel
+   *  minimize/expand convention so the two panels feel symmetric. */
+  minimized: boolean;
+  onMinimize: () => void;
+  onExpand: () => void;
   paths: string[];
   /** Per-path map of source folder. Keys are entries in `paths`; values
    *  are the folders the user picked. Empty for non-folder picks. The
@@ -133,6 +143,9 @@ type TabKey = 'review' | 'ready' | 'failed';
 export function ProcessingPipeline({
   open,
   onOpenChange,
+  minimized,
+  onMinimize,
+  onExpand,
   paths,
   pathFolderRoots,
   categories,
@@ -633,6 +646,24 @@ export function ProcessingPipeline({
       item.duplicateAction === 'Delete'
   ).length;
 
+  // Minimized pill — analysis keeps running in the background (the
+  // listener-setup effect still depends on `open`, not on `minimized`,
+  // so events continue to flow into state). Clicking the pill re-opens
+  // the modal with everything intact.
+  if (open && minimized) {
+    return (
+      <MinimizedPipelinePill
+        totalFiles={totalFiles}
+        readyCount={buckets.ready.length}
+        reviewCount={buckets.review.length}
+        failedCount={buckets.failed.length}
+        processingCount={processingCount}
+        analyzing={analyzing}
+        onExpand={onExpand}
+      />
+    );
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange} modal={false}>
       <DialogContent
@@ -641,12 +672,23 @@ export function ProcessingPipeline({
         onEscapeKeyDown={(e) => e.preventDefault()}
       >
         <DialogHeader>
-          <DialogTitle className="flex items-baseline gap-3">
-            <span>Import</span>
-            <span className="font-serif-italic text-sm text-muted-foreground">
-              — {totalFiles} {totalFiles === 1 ? 'file' : 'files'}
-            </span>
-          </DialogTitle>
+          <div className="flex items-center justify-between gap-3">
+            <DialogTitle className="flex items-baseline gap-3">
+              <span>Import</span>
+              <span className="font-serif-italic text-sm text-muted-foreground">
+                — {totalFiles} {totalFiles === 1 ? 'file' : 'files'}
+              </span>
+            </DialogTitle>
+            <button
+              type="button"
+              onClick={onMinimize}
+              className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors"
+              aria-label="Minimize import dialog"
+              title="Minimize — analysis keeps running"
+            >
+              <Minus className="h-4 w-4" />
+            </button>
+          </div>
         </DialogHeader>
 
         {/* Streaming progress strip: visible while any file is in flight */}
@@ -1167,4 +1209,55 @@ function StatusSubtitle({ item }: { item: FileItemState }) {
     );
   }
   return null;
+}
+
+/** Minimized state for the import dialog — a single click-target pill
+ *  that re-expands. Mirrors the shape and corner placement of the
+ *  remote-upload pill so the two coexist visually. The pill summarizes
+ *  in-flight + ready + failed counts; the worker keeps emitting events
+ *  while minimized, so these numbers stay live. */
+function MinimizedPipelinePill({
+  totalFiles,
+  readyCount,
+  reviewCount,
+  failedCount,
+  processingCount,
+  analyzing,
+  onExpand,
+}: {
+  totalFiles: number;
+  readyCount: number;
+  reviewCount: number;
+  failedCount: number;
+  processingCount: number;
+  analyzing: boolean;
+  onExpand: () => void;
+}) {
+  const done = readyCount + reviewCount + failedCount;
+  return (
+    <button
+      type="button"
+      onClick={onExpand}
+      className="fixed bottom-4 right-4 z-50 bg-background border border-border rounded-full shadow-lg flex items-center pl-3 pr-2 py-1 gap-2 text-xs hover:bg-secondary/40 transition-colors"
+      aria-label="Expand import dialog"
+    >
+      {analyzing ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
+      ) : failedCount > 0 ? (
+        <AlertCircle className="h-3.5 w-3.5 text-destructive shrink-0" />
+      ) : (
+        <CheckCircle2 className="h-3.5 w-3.5 text-success shrink-0" />
+      )}
+      <span className="text-foreground/80">
+        Import {done}/{totalFiles}
+        {processingCount > 0 && (
+          <span className="text-muted-foreground ml-1.5">· {processingCount} analyzing</span>
+        )}
+        {failedCount > 0 && (
+          <span className="text-destructive ml-1.5">· {failedCount} failed</span>
+        )}
+      </span>
+      <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />
+    </button>
+  );
 }
