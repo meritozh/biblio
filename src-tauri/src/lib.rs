@@ -83,6 +83,8 @@ pub fn run() {
             commands::cover::cover_set,
             commands::cover::cover_get,
             commands::cover::cover_delete,
+            commands::cache::cache_open,
+            commands::cache::cache_clear,
             commands::settings::settings_get,
             commands::settings::settings_set,
             commands::settings::storage_get_path,

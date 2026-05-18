@@ -433,6 +433,22 @@ export async function revealItemInDir(path: string): Promise<void> {
   return revealItemInDir(path);
 }
 
+/** Open a file's on-disk copy with the system default app. Resolves the
+ *  cache path for remote rows and the regular `path` for local rows
+ *  inside one backend call so callers don't need to branch on
+ *  `storage_kind`. Errors `CACHE_NOT_FOUND` for remote rows without a
+ *  cached copy. */
+export async function cacheOpen(file_id: number): Promise<{ success: boolean }> {
+  return invoke('cache_open', { fileId: file_id });
+}
+
+/** Delete the local cache copy for a remote file. Strict: disk delete
+ *  first, DB column cleared second. `NotFound` on disk is treated as
+ *  success. Idempotent on already-cleared rows. */
+export async function cacheClear(file_id: number): Promise<{ success: boolean }> {
+  return invoke('cache_clear', { fileId: file_id });
+}
+
 export async function fileMoveCategory(
   file_id: number,
   new_category_id: number | null

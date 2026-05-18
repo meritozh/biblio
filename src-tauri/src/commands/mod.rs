@@ -4,6 +4,7 @@ pub mod tag;
 pub mod metadata;
 pub mod validation;
 pub mod author;
+pub mod cache;
 pub mod cover;
 pub mod settings;
 pub mod processing;
