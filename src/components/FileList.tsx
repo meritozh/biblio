@@ -848,15 +848,22 @@ export function FileList({
             </>
           )}
           <div className="flex-1" />
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs"
-            onClick={() => setSelectionMode(true)}
-            disabled={visibleEntries.length === 0}
-          >
-            Select
-          </Button>
+          {/* Selection mode operates on file rows (per-card checkbox, bulk
+           *  Upload / Download / Delete). The collections grid renders
+           *  ComicCollection cards with no checkbox interaction, so the
+           *  button would toggle into a dead state. Hide it there, same
+           *  shape as the sort/filter gate above. */}
+          {!showCollections && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => setSelectionMode(true)}
+              disabled={visibleEntries.length === 0}
+            >
+              Select
+            </Button>
+          )}
         </div>
       ) : (
         <div className="flex items-center gap-3 pb-3 shrink-0">
