@@ -1,13 +1,18 @@
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Plus, X } from 'lucide-react';
+import { Check, Plus, X } from 'lucide-react';
 import {
   FIELD_LABELS,
   FILE_STATUS_OPTIONS,
@@ -27,11 +32,17 @@ interface FilterEditorProps {
   conditions: ReadonlyArray<Condition>;
   onConditionsChange: (next: Condition[]) => void;
   tags: ReadonlyArray<Tag>;
+  authors?: ReadonlyArray<{ id: number; name: string }>;
 }
 
 const FIELD_KEYS = Object.keys(FIELD_LABELS) as Field[];
 
-export function FilterEditor({ conditions, onConditionsChange, tags }: FilterEditorProps) {
+export function FilterEditor({
+  conditions,
+  onConditionsChange,
+  tags,
+  authors = [],
+}: FilterEditorProps) {
   const updateAt = (idx: number, next: Condition) => {
     onConditionsChange(conditions.map((c, i) => (i === idx ? next : c)));
   };
@@ -71,6 +82,7 @@ export function FilterEditor({ conditions, onConditionsChange, tags }: FilterEdi
                 onChange={(next) => updateAt(i, next)}
                 onRemove={() => removeAt(i)}
                 tags={tags}
+                authors={authors}
               />
             </li>
           ))}
@@ -97,9 +109,10 @@ interface ConditionRowProps {
   onChange: (next: Condition) => void;
   onRemove: () => void;
   tags: ReadonlyArray<Tag>;
+  authors: ReadonlyArray<{ id: number; name: string }>;
 }
 
-function ConditionRow({ condition, onChange, onRemove, tags }: ConditionRowProps) {
+function ConditionRow({ condition, onChange, onRemove, tags, authors }: ConditionRowProps) {
   return (
     <div className="flex items-center gap-1.5">
       <Select
@@ -134,7 +147,7 @@ function ConditionRow({ condition, onChange, onRemove, tags }: ConditionRowProps
         </SelectContent>
       </Select>
 
-      <ValueEditor condition={condition} onChange={onChange} tags={tags} />
+      <ValueEditor condition={condition} onChange={onChange} tags={tags} authors={authors} />
 
       <Button
         type="button"
@@ -154,12 +167,13 @@ interface ValueEditorProps {
   condition: Condition;
   onChange: (next: Condition) => void;
   tags: ReadonlyArray<Tag>;
+  authors: ReadonlyArray<{ id: number; name: string }>;
 }
 
 /** Dispatches to the right input shape by (field, op). Operators with no
  *  value (`empty` / `not_empty`) render an inert spacer so the row's other
  *  controls keep stable widths. */
-function ValueEditor({ condition: c, onChange, tags }: ValueEditorProps) {
+function ValueEditor({ condition: c, onChange, tags, authors }: ValueEditorProps) {
   if (c.field === 'authors' && (c.op === 'count_gte' || c.op === 'count_lt')) {
     return (
       <Input
@@ -175,6 +189,30 @@ function ValueEditor({ condition: c, onChange, tags }: ValueEditorProps) {
         className="h-8 flex-1 text-xs"
         placeholder="N"
       />
+    );
+  }
+
+  if (c.field === 'authors' && c.op === 'includes') {
+    return (
+      <Select
+        value={c.authorId !== undefined ? String(c.authorId) : undefined}
+        onValueChange={(v) => onChange({ ...c, authorId: Number(v) })}
+      >
+        <SelectTrigger className="h-8 flex-1 text-xs">
+          <SelectValue placeholder="pick an author…" />
+        </SelectTrigger>
+        <SelectContent>
+          {authors.length === 0 ? (
+            <div className="text-xs text-muted-foreground p-2">No authors defined</div>
+          ) : (
+            authors.map((a) => (
+              <SelectItem key={a.id} value={String(a.id)} className="text-xs">
+                {a.name}
+              </SelectItem>
+            ))
+          )}
+        </SelectContent>
+      </Select>
     );
   }
 
@@ -217,6 +255,61 @@ function ValueEditor({ condition: c, onChange, tags }: ValueEditorProps) {
             )}
           </SelectContent>
         </Select>
+      );
+    }
+    if (c.op === 'includes_any' || c.op === 'excludes_any') {
+      // Multi-tag picker: popover with a checkbox list, since the
+      // shadcn Select primitive is single-value only. Trigger button
+      // surfaces the count + first picked tag's name as a preview.
+      const selected = new Set(c.tagIds);
+      const togglePick = (id: number) => {
+        const next = selected.has(id)
+          ? c.tagIds.filter((x) => x !== id)
+          : [...c.tagIds, id];
+        onChange({ ...c, tagIds: next });
+      };
+      const previewName =
+        c.tagIds.length > 0
+          ? tags.find((t) => t.id === c.tagIds[0])?.name ?? `#${c.tagIds[0]}`
+          : null;
+      return (
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 flex-1 text-xs justify-start font-normal"
+            >
+              {c.tagIds.length === 0 ? (
+                <span className="text-muted-foreground">pick tags…</span>
+              ) : c.tagIds.length === 1 ? (
+                previewName
+              ) : (
+                `${previewName} +${c.tagIds.length - 1}`
+              )}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" sideOffset={4} className="w-60 p-1 max-h-72 overflow-auto">
+            {tags.length === 0 ? (
+              <div className="text-xs text-muted-foreground p-2">No tags defined</div>
+            ) : (
+              tags.map((t) => {
+                const picked = selected.has(t.id);
+                return (
+                  <button
+                    type="button"
+                    key={t.id}
+                    onClick={() => togglePick(t.id)}
+                    className="w-full flex items-center justify-between gap-2 px-2 py-1.5 text-xs rounded hover:bg-muted text-left"
+                  >
+                    <span className="truncate">{t.name}</span>
+                    {picked && <Check className="h-3.5 w-3.5 shrink-0" />}
+                  </button>
+                );
+              })
+            )}
+          </PopoverContent>
+        </Popover>
       );
     }
   }

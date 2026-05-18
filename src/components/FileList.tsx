@@ -1,375 +1,30 @@
-import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '@tanstack/react-store';
-import { useVirtualizer } from '@tanstack/react-virtual';
-import { Button } from '@/components/ui/button';
+import { ArrowLeft } from 'lucide-react';
+import { FileListContent } from '@/components/FileListContent';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import {
-  ArrowLeft,
-  ArrowUp,
-  ArrowDown,
-  BookOpen,
-  ChevronDown,
-  Cloud,
-  Filter as FilterIcon,
-  HardDrive,
-  Layers,
-  Loader2,
-  Trash2,
-  X,
-} from 'lucide-react';
-import { FileContextMenu } from '@/components/FileContextMenu';
-import { FilterEditor } from '@/components/FilterEditor';
-import { NovelCover } from '@/components/NovelCover';
-import { coverGet } from '@/lib/tauri';
-import {
-  isImportable,
-  schemaForCategoryId,
-  type CardFieldKey,
-  type CategorySchema,
-} from '@/lib/categorySchema';
-import { useAppState } from '@/stores/appStore';
-import { useRemoteUploadStore } from '@/stores/remoteUploadStore';
-import { useRemoteDownloadStore } from '@/stores/remoteDownloadStore';
+  FileListHeader,
+  type SortKey,
+} from '@/components/FileListHeader';
+import { applyConditions, type Condition } from '@/lib/filters';
+import { isImportable } from '@/lib/categorySchema';
+import { fileStore } from '@/stores/fileStore';
 import { useRemoteDeleteStore } from '@/stores/remoteDeleteStore';
-import { fileStore, useFile } from '@/stores/fileStore';
-import { applyConditions, describeCondition, type Condition } from '@/lib/filters';
-import type { ComicCollection, ComicViewMode, FileEntry, Tag } from '@/types';
-
-// ── Subcomponents ─────────────────────────────────────────────────────────────
-
-/** Comic cover: lazy-fetches stored cover art, falls back to a book icon. */
-function ComicCover({ fileId }: { fileId: number }) {
-  const [src, setSrc] = useState<string | null>(null);
-  useEffect(() => {
-    coverGet(fileId)
-      .then(({ data, mime_type }) => setSrc(`data:${mime_type};base64,${data}`))
-      .catch(() => { });
-  }, [fileId]);
-  return src ? (
-    <img src={src} alt="Cover" className="h-full w-full object-cover" />
-  ) : (
-    <BookOpen className="h-8 w-8 text-muted-foreground/40" />
-  );
-}
-
-/** Routes a card cover to NovelCover (procedural) for novels and ComicCover
- *  (real artwork) for comics, so the grid stays visually rich for both.
- *  Picks by the file's category schema; for files in unknown categories
- *  the default schema (novel) wins, matching old extension-based routing
- *  for the .txt case. */
-function CardCover({ file, schema }: { file: FileEntry; schema: CategorySchema }) {
-  if (schema.slug === 'novel') {
-    return <NovelCover tags={file.tags} fileId={file.id} displayName={file.display_name} />;
-  }
-  return <ComicCover fileId={file.id} />;
-}
-
-/** Render one card body field. Returns null when the row has no value
- *  for the field, so the card doesn't sprout empty rows. */
-function CardField({ field, file }: { field: CardFieldKey; file: FileEntry }) {
-  switch (field) {
-    case 'authors':
-      if (!file.authors || file.authors.length === 0) return null;
-      return (
-        <p className="text-xs text-muted-foreground line-clamp-1">
-          {file.authors.map((a) => a.name).join(', ')}
-        </p>
-      );
-    case 'progress':
-      if (!file.progress) return null;
-      return (
-        <p className="text-[11px] text-muted-foreground/80 line-clamp-1 font-serif-italic">
-          {file.progress}
-        </p>
-      );
-    case 'tags':
-      if (!file.tags || file.tags.length === 0) return null;
-      // Compact inline tag chips — full chip styling lives in the
-      // edit dialog. Cap at 3 to keep the card height stable.
-      return (
-        <p className="text-[11px] text-muted-foreground line-clamp-1">
-          {file.tags.slice(0, 3).map((t) => `#${t.name}`).join(' ')}
-        </p>
-      );
-  }
-}
-
-/** Storage status pill — identical geometry across states; only icon and color
- *  change so the badge reads as one consistent visual element. */
-function CardStatus({
-  storageKind,
-  isUploading,
-  hasLocalCache,
-}: {
-  storageKind?: string;
-  isUploading: boolean;
-  hasLocalCache: boolean;
-}) {
-  // `rounded-md` matches the card cover's corner radius so the badge reads
-  // as part of the same visual system instead of a circular sticker.
-  const wrapper =
-    'flex items-center justify-center h-6 w-6 rounded-md bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm';
-  if (isUploading) {
-    return (
-      <div className={wrapper} title="Uploading…" aria-label="Uploading">
-        <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600 dark:text-amber-400" />
-      </div>
-    );
-  }
-  if (storageKind === 'remote') {
-    // The dot in the corner indicates a local cache is also present —
-    // user can read the file without re-downloading. Color-matched to
-    // the success token so the badge reads the same way the upload
-    // panel does.
-    const title = hasLocalCache ? 'Synced to cloud · cached locally' : 'Synced to cloud';
-    return (
-      <div className={`${wrapper} relative`} title={title} aria-label={title}>
-        <Cloud className="h-3.5 w-3.5 text-primary" />
-        {hasLocalCache && (
-          <span
-            className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-success border border-background"
-            aria-hidden="true"
-          />
-        )}
-      </div>
-    );
-  }
-  return (
-    <div className={wrapper} title="Local only" aria-label="Local only">
-      <HardDrive className="h-3.5 w-3.5 text-muted-foreground" />
-    </div>
-  );
-}
-
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-const CARD_WIDTH = 180;
-const CARD_HEIGHT = 280;
-const GRID_GAP = 16;
-const GRID_PAD = 4;
-const OVERSCAN = 4;
-const LOAD_MORE_THRESHOLD = 5;
-const DEBOUNCE_MS = 150;
-
-type SortKey = 'name' | 'created' | 'updated';
-
-const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
-  { value: 'name', label: 'Name' },
-  { value: 'created', label: 'Date added' },
-  { value: 'updated', label: 'Last updated' },
-];
-
-const VIEW_MODE_OPTIONS: ReadonlyArray<{ value: ComicViewMode; label: string }> = [
-  { value: 'flat', label: 'All comics' },
-  { value: 'author', label: 'By author' },
-  { value: 'name_prefix', label: 'By series' },
-];
-
-// ── CollectionCard ────────────────────────────────────────────────────────────
-
-interface CollectionCardProps {
-  collection: ComicCollection;
-  onOpen: (c: ComicCollection) => void;
-}
-
-/** Stacked-card visual for a comic collection. The preview cover comes from
- *  `cover_file_id`; the two offset rectangles behind the cover hint at the
- *  multi-file grouping without committing to a real cover stack (which would
- *  triple the IPC roundtrips per card). */
-const CollectionCard = memo(function CollectionCard({
-  collection,
-  onOpen,
-}: CollectionCardProps) {
-  const [src, setSrc] = useState<string | null>(null);
-  useEffect(() => {
-    if (collection.cover_file_id == null) return;
-    let cancelled = false;
-    coverGet(collection.cover_file_id)
-      .then(({ data, mime_type }) => {
-        if (!cancelled) setSrc(`data:${mime_type};base64,${data}`);
-      })
-      .catch(() => { });
-    return () => {
-      cancelled = true;
-    };
-  }, [collection.cover_file_id]);
-
-  const count = collection.file_ids.length;
-  return (
-    <div
-      className="relative group"
-      style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}
-    >
-      <button
-        type="button"
-        onClick={() => onOpen(collection)}
-        className="w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 transition-colors hover:bg-muted/50 focus:outline-none focus:ring-2 focus:ring-ring"
-        aria-label={`Open ${collection.title} (${count} items)`}
-      >
-        <div className="relative aspect-2/3 w-full">
-          {/* Two offset card-shaped layers behind the cover, peeking out
-           *  beyond the right/bottom edges to read as a stack instead of a
-           *  single card. */}
-          <div className="absolute inset-0 translate-x-1.5 translate-y-1.5 rounded-md bg-secondary/40 border border-border/60" />
-          <div className="absolute inset-0 translate-x-0.5 translate-y-0.5 rounded-md bg-secondary/60 border border-border/60" />
-          <div className="absolute inset-0 rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
-            {src ? (
-              <img src={src} alt="" className="h-full w-full object-cover" />
-            ) : (
-              <BookOpen className="h-8 w-8 text-muted-foreground/40" />
-            )}
-          </div>
-        </div>
-        <div className="space-y-0.5 min-w-0 px-0.5">
-          <p
-            className="text-sm font-medium leading-tight truncate"
-            title={collection.title}
-          >
-            {collection.title}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            {count} {count === 1 ? 'volume' : 'volumes'}
-          </p>
-        </div>
-      </button>
-    </div>
-  );
-});
+import { useRemoteDownloadStore } from '@/stores/remoteDownloadStore';
+import { useRemoteUploadStore } from '@/stores/remoteUploadStore';
+import type {
+  Author,
+  ComicCollection,
+  ComicViewMode,
+  FileEntry,
+  Tag,
+} from '@/types';
 
 function compareFiles(a: FileEntry, b: FileEntry, key: SortKey): number {
   if (key === 'name') return a.display_name.localeCompare(b.display_name);
   if (key === 'created') return a.created_at.localeCompare(b.created_at);
   return a.updated_at.localeCompare(b.updated_at);
 }
-
-// ── FileCard ──────────────────────────────────────────────────────────────────
-
-interface FileCardProps {
-  id: number;
-  isSelected: boolean;
-  isUploading: boolean;
-  blocked: boolean;
-  selectionMode: boolean;
-  onCardClick: (file: FileEntry) => void;
-  onToggleSelect: (id: number) => void;
-  onEdit?: (file: FileEntry) => void;
-  onDelete?: (file: FileEntry) => void;
-}
-
-/** Per-row component subscribed to its own entry via `useFile(id)`. Wrapped
- *  in `memo` so single-row patches in the store re-render only this card,
- *  not the rest of the grid. */
-const FileCard = memo(function FileCard({
-  id,
-  isSelected,
-  isUploading,
-  blocked,
-  selectionMode,
-  onCardClick,
-  onToggleSelect,
-  onEdit,
-  onDelete,
-}: FileCardProps) {
-  const file = useFile(id);
-  // Brief absence is possible right after `removeFile(id)`: byId loses the
-  // row in the same setState that drops it from the view's ids, but a stale
-  // render frame can still ask for it. Render nothing instead of crashing.
-  const categories = useAppState((s) => s.categories);
-  if (!file) return null;
-
-  // Resolve the schema for this row's category. Drives both the cover
-  // style (NovelCover vs ComicCover) and the card body field list.
-  const schema = schemaForCategoryId(file.category_id, categories);
-
-  return (
-    <div
-      className="relative group"
-      style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}
-    >
-      {selectionMode && (
-        <div className="absolute top-2 left-2 z-10">
-          <label className="flex items-center justify-center h-6 w-6 rounded-md bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm cursor-pointer hover:bg-background transition-colors">
-            <input
-              type="checkbox"
-              checked={blocked ? false : isSelected}
-              onChange={() => !blocked && onToggleSelect(id)}
-              onClick={(e) => e.stopPropagation()}
-              disabled={blocked}
-              // Slightly smaller than the storage icon's `h-3.5` so the
-              // filled-checked state doesn't crowd the wrapper edges — the
-              // storage icon's SVG has built-in whitespace, the native
-              // checkbox doesn't, so we shrink the box to match the
-              // apparent inset.
-              className="h-3 w-3 rounded border-border accent-primary disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
-              aria-label={`Select ${file.display_name}`}
-            />
-          </label>
-        </div>
-      )}
-      <button
-        type="button"
-        onClick={() => onCardClick(file)}
-        className={`w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring ${isSelected
-          ? 'bg-primary/10 ring-1 ring-primary/40'
-          : 'hover:bg-muted/50'
-          }`}
-        aria-label={
-          selectionMode
-            ? `Toggle selection of ${file.display_name}`
-            : `View ${file.display_name}`
-        }
-        aria-pressed={selectionMode ? isSelected : undefined}
-      >
-        <div className="relative aspect-2/3 w-full rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
-          <CardCover file={file} schema={schema} />
-          <div className="absolute bottom-1.5 left-1.5">
-            <CardStatus
-              storageKind={file.storage_kind}
-              isUploading={isUploading}
-              hasLocalCache={!!file.local_cache_path}
-            />
-          </div>
-        </div>
-        <div className="space-y-0.5 min-w-0 px-0.5">
-          <p
-            className="text-sm font-medium leading-tight truncate"
-            title={file.display_name}
-          >
-            {file.display_name}
-          </p>
-          {schema.cardFields.map((field) => (
-            <CardField key={field} field={field} file={file} />
-          ))}
-        </div>
-      </button>
-      {!selectionMode && onEdit && onDelete && (
-        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity z-10">
-          <FileContextMenu file={file} onEdit={onEdit} onDelete={onDelete} />
-        </div>
-      )}
-    </div>
-  );
-});
-
-// ── Props ─────────────────────────────────────────────────────────────────────
 
 interface FileListProps {
   ids: number[];
@@ -386,8 +41,8 @@ interface FileListProps {
   /** Delete selected files (any mix of local + remote) via the worker. */
   onBulkDelete?: (fileIds: number[]) => void;
   remoteEnabled?: boolean;
-  /** All defined tags, used by the filter editor's tag picker. */
   availableTags?: ReadonlyArray<Tag>;
+  availableAuthors?: ReadonlyArray<Author>;
   /** Optional controlled sort. When supplied alongside `onSortChange`,
    *  parent owns the sort state — typically because it's pushed into a
    *  server-side query. In that case set `applySort={false}` so the local
@@ -395,23 +50,16 @@ interface FileListProps {
   sortBy?: SortKey;
   sortDesc?: boolean;
   onSortChange?: (sortBy: SortKey, sortDesc: boolean) => void;
-  /** Default true. Set false when the parent feeds already-sorted ids
-   *  (server-side sort). */
+  /** Default true. Set false when the parent feeds already-sorted ids. */
   applySort?: boolean;
-  /** Optional controlled filter conditions. Same shape as sort: parent owns
-   *  the editor state when it's pushed into the server query. Set
-   *  `applyConditions={false}` so the local filter doesn't double-filter
-   *  rows the server has already filtered. */
+  /** Optional controlled filter conditions. Same shape as sort: parent
+   *  owns the editor state when it's pushed into the server query. */
   conditions?: Condition[];
   onConditionsChange?: (conditions: Condition[]) => void;
-  /** Default true. Set false when the parent feeds already-filtered ids
-   *  (server-side filter). */
+  /** Default true. Set false when the parent feeds already-filtered ids. */
   applyConditionsClientSide?: boolean;
   /** Controlled view-mode toggle. When `viewModeAvailable` is true the
-   *  header surfaces a "View" select with Flat / By author / By series.
-   *  When `viewMode !== 'flat'` and `collections` is supplied (and
-   *  `breadcrumb` is null), the body renders collection cards instead of
-   *  file cards. */
+   *  header surfaces a "View" select with Flat / By author / By series. */
   viewMode?: ComicViewMode;
   onViewModeChange?: (mode: ComicViewMode) => void;
   viewModeAvailable?: boolean;
@@ -424,8 +72,11 @@ interface FileListProps {
   breadcrumb?: { label: string; onBack: () => void } | null;
 }
 
-// ── FileList ──────────────────────────────────────────────────────────────────
-
+/** Orchestrator for the library file list. Owns selection state, the
+ *  controlled/uncontrolled bridge for sort + filter, and the worker-store
+ *  subscriptions used by bulk actions. Header and content panes are
+ *  presentational — `<FileListHeader>` for the toolbar,
+ *  `<FileListContent>` for the virtualized grid. */
 export function FileList({
   ids,
   total,
@@ -440,6 +91,7 @@ export function FileList({
   onBulkDelete,
   remoteEnabled = false,
   availableTags = [],
+  availableAuthors = [],
   sortBy: sortByProp,
   sortDesc: sortDescProp,
   onSortChange,
@@ -457,11 +109,10 @@ export function FileList({
   // The body renders collection cards instead of files when the view mode
   // is non-flat AND we're not currently drilled into a specific
   // collection. Once the user drills in, the parent provides the
-  // collection's file_ids via `ids` and the breadcrumb chip, so the file
-  // grid takes over again.
+  // collection's file_ids via `ids` and the breadcrumb chip.
   const showCollections =
     viewMode !== 'flat' && breadcrumb == null && collections != null;
-  const [containerWidth, setContainerWidth] = useState(0);
+
   const [internalSortBy, setInternalSortBy] = useState<SortKey>('name');
   const [internalSortDesc, setInternalSortDesc] = useState(false);
   const sortBy = sortByProp ?? internalSortBy;
@@ -480,6 +131,7 @@ export function FileList({
     },
     [onSortChange, sortBy]
   );
+
   const [internalConditions, setInternalConditions] = useState<Condition[]>([]);
   const conditions = conditionsProp ?? internalConditions;
   const setConditions = useCallback<React.Dispatch<React.SetStateAction<Condition[]>>>(
@@ -496,26 +148,29 @@ export function FileList({
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   // Subscribe to the entire byId map so filter/sort recomputes when any
-  // row's contents change. Per-card subscription lives inside <FileCard>;
-  // this top-level subscription only feeds the filter pipeline, which
-  // produces a new id ordering. Cards themselves still skip render via
-  // `memo` because their `id` prop is stable.
+  // row's contents change. Per-card subscription lives inside the card
+  // components; this top-level subscription only feeds the filter
+  // pipeline, which produces a new id ordering.
   const byId = useStore(fileStore, (s) => s.byId);
 
-  // Map for chip rendering — looks up tag names by id.
   const tagsById = useMemo(() => {
     const m = new Map<number, Tag>();
     for (const t of availableTags) m.set(t.id, t);
     return m;
   }, [availableTags]);
+  const authorsById = useMemo(() => {
+    const m = new Map<number, Author>();
+    for (const a of availableAuthors) m.set(a.id, a);
+    return m;
+  }, [availableAuthors]);
 
   const uploadState = useRemoteUploadStore();
   const downloadState = useRemoteDownloadStore();
   const deleteState = useRemoteDeleteStore();
-  // Files that are queued OR actively uploading. Both states block re-selection
-  // and re-enqueue — without `pending`, a queued-but-not-yet-running file
-  // would still be selectable because its `storage_kind` is still `local`
-  // until the worker flips it on success.
+  // Files that are queued OR actively in-flight. Both states block
+  // re-selection and re-enqueue — without `pending`, a queued-but-not-yet
+  // -running file would still be selectable because its `storage_kind`
+  // is still `local` until the worker flips it on success.
   const inFlightUploadIds = useMemo(
     () =>
       new Set(
@@ -554,12 +209,8 @@ export function FileList({
     return s;
   }, [inFlightUploadIds, inFlightDownloadIds, inFlightDeleteIds]);
 
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const prevFilterKeyRef = useRef(filterKey);
-
-  // Resolve incoming ids to their current entries. Drop any rows whose
-  // extension is no longer in the supported set (.epub / .pdf / standalone
-  // images from the pre-removal era). Missing ids (briefly possible during
+  // Resolve incoming ids to entries, dropping rows whose extension is no
+  // longer in the supported set. Missing ids (briefly possible during
   // the ms between `removeFile` and the parent re-render) are skipped.
   const importableEntries = useMemo(() => {
     const out: FileEntry[] = [];
@@ -570,12 +221,10 @@ export function FileList({
     return out;
   }, [ids, byId]);
 
-  // Filter + sort, derived. Keeps virtualizer / interaction state in lockstep
-  // with whatever the user has chosen above the grid. Both `applySort` and
-  // `applyConditionsClientSide` flip to false when the parent has pushed the
-  // operation into a server query — re-running the predicate locally would
-  // either duplicate work or, worse, fight the server's ordering (SQLite's
-  // NOCASE byte compare vs. JS's locale-aware `localeCompare`).
+  // Filter + sort, derived. Both flags flip to false when the parent has
+  // pushed the operation into a server query — re-running locally would
+  // either duplicate work or, worse, fight the server's ordering
+  // (SQLite's NOCASE byte compare vs. JS's locale-aware `localeCompare`).
   const visibleEntries = useMemo(() => {
     const filtered = applyConditionsClientSide
       ? applyConditions(importableEntries, conditions)
@@ -588,6 +237,10 @@ export function FileList({
     return sorted;
   }, [importableEntries, conditions, sortBy, sortDesc, applySort, applyConditionsClientSide]);
 
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const prevFilterKeyRef = useRef(filterKey);
+  const savedCollectionScrollRef = useRef(0);
+
   // Scroll to top + reset selection + clear filter conditions when
   // category/search changes. Conditions are scoped to the current view.
   useEffect(() => {
@@ -599,16 +252,15 @@ export function FileList({
     setSelectionMode(false);
     setConditions([]);
     setFilterOpen(false);
-  }, [filterKey]);
+  }, [filterKey, setConditions]);
 
   // Collection drill-in / drill-out is sub-navigation inside the same
   // filterKey scope, so it shouldn't go through the reset effect above —
   // doing so would wipe the collection-grid scroll position every time
-  // the user clicked Back. Instead, save the grid scroll position on
-  // drill-in and restore it on drill-out; selection state still resets
-  // on either transition since the drilled-in file ids and the
-  // collection-grid items live in different domains.
-  const savedCollectionScrollRef = useRef(0);
+  // the user clicked Back. Save the grid scroll position on drill-in
+  // and restore it on drill-out; selection still resets on either
+  // transition since the drilled-in file ids and the collection-grid
+  // items live in different domains.
   const isDrilled = breadcrumb != null;
   const prevDrilledRef = useRef(isDrilled);
   useEffect(() => {
@@ -635,13 +287,16 @@ export function FileList({
       return next;
     });
   }, []);
-
   const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+  const enterSelectionMode = useCallback(() => setSelectionMode(true), []);
+  const exitSelectionMode = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  }, []);
 
   /** Quick-select the first N files in the current sort/filter view that
-   *  aren't already being touched by a worker. Selection itself is generic
-   *  now — the bulk Upload / Download / Delete buttons each apply their own
-   *  eligibility filter at click time. */
+   *  aren't being touched by a worker. Per-action eligibility (upload-
+   *  only-local etc.) is re-checked at click time on each bulk button. */
   const selectFirstN = useCallback(
     (n: number) => {
       const eligible: number[] = [];
@@ -655,14 +310,12 @@ export function FileList({
     [visibleEntries, inFlightAnyIds]
   );
 
-  const exitSelectionMode = useCallback(() => {
-    setSelectionMode(false);
-    setSelectedIds(new Set());
-  }, []);
-
-  const removeCondition = useCallback((id: string) => {
-    setConditions((prev) => prev.filter((c) => c.id !== id));
-  }, []);
+  const removeCondition = useCallback(
+    (id: string) => {
+      setConditions((prev) => prev.filter((c) => c.id !== id));
+    },
+    [setConditions]
+  );
 
   const handleCardClick = useCallback(
     (file: FileEntry) => {
@@ -675,314 +328,71 @@ export function FileList({
     [selectionMode, inFlightAnyIds, toggleSelection, onFileClick]
   );
 
-  // ── Grid sizing ──────────────────────────────────────────────────────────
-  const colCount = Math.max(
-    1,
-    Math.floor((containerWidth - GRID_PAD * 2 + GRID_GAP) / (CARD_WIDTH + GRID_GAP))
-  );
-  // The virtualizer renders whichever dataset is currently active. Switching
-  // between file rows and collection rows reuses the same scroll container
-  // and overscan; only the row-count input changes.
-  const activeCount = showCollections
-    ? (collections?.length ?? 0)
-    : visibleEntries.length;
-  const gridRowCount = Math.ceil(activeCount / colCount);
-
-  const virtualizer = useVirtualizer({
-    count: gridRowCount,
-    getScrollElement: () => scrollContainerRef.current,
-    estimateSize: () => CARD_HEIGHT + GRID_GAP,
-    overscan: OVERSCAN,
-  });
-  const virtualItems = virtualizer.getVirtualItems();
-  const totalVirtualSize = virtualizer.getTotalSize();
-
-  // Trigger backend load-more when the last virtual row is near the end.
-  // Compare against the *unfiltered* loaded count so an active filter pill
-  // shrinking the view doesn't fake a "we need more rows" signal. With the
-  // route's bumped page size this is normally a no-op, but it stays correct
-  // if pagination ever returns. Suppressed while showing collection cards —
-  // the backend returns the full collection set in one call, so there's no
-  // more-to-load signal to chase.
-  useEffect(() => {
-    if (showCollections) return;
-    const lastItem = virtualItems[virtualItems.length - 1];
-    if (!lastItem || loadingMore || ids.length >= (total ?? 0)) return;
-    if (lastItem.index >= gridRowCount - 1 - LOAD_MORE_THRESHOLD) {
-      onLoadMore?.();
-    }
-  }, [virtualItems, gridRowCount, ids.length, total, loadingMore, onLoadMore, showCollections]);
-
-  // ResizeObserver feeds containerWidth, which drives column-count math.
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    let timeoutId: number | null = null;
-    const recompute = () => setContainerWidth(el.clientWidth);
-    recompute();
-    const observer = new ResizeObserver(() => {
-      if (timeoutId !== null) window.clearTimeout(timeoutId);
-      timeoutId = window.setTimeout(recompute, DEBOUNCE_MS);
+  // Bulk actions: compute eligibility-filtered ids at click time so the
+  // header doesn't need to know about storage_kind / inFlight state.
+  const handleBulkUploadClick = useCallback(() => {
+    const ids = Array.from(selectedIds).filter((id) => {
+      const f = byId.get(id);
+      return !!f && f.storage_kind !== 'remote' && !inFlightUploadIds.has(id);
     });
-    observer.observe(el);
-    return () => {
-      if (timeoutId !== null) window.clearTimeout(timeoutId);
-      observer.disconnect();
-    };
-  }, []);
+    if (ids.length > 0) onBulkUpload?.(ids);
+    exitSelectionMode();
+  }, [selectedIds, byId, inFlightUploadIds, onBulkUpload, exitSelectionMode]);
+
+  const handleBulkDownloadClick = useCallback(() => {
+    const ids = Array.from(selectedIds).filter((id) => {
+      const f = byId.get(id);
+      return !!f && f.storage_kind === 'remote' && !inFlightDownloadIds.has(id);
+    });
+    if (ids.length > 0) onBulkDownload?.(ids);
+    exitSelectionMode();
+  }, [selectedIds, byId, inFlightDownloadIds, onBulkDownload, exitSelectionMode]);
+
+  const handleBulkDeleteClick = useCallback(() => {
+    const ids = Array.from(selectedIds).filter((id) => !inFlightDeleteIds.has(id));
+    if (ids.length > 0) onBulkDelete?.(ids);
+    exitSelectionMode();
+  }, [selectedIds, inFlightDeleteIds, onBulkDelete, exitSelectionMode]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* ── Header bar ──────────────────────────────────────────────────── */}
-      {!selectionMode ? (
-        <div className="flex items-center gap-2 pb-3 shrink-0 flex-wrap">
-          {viewModeAvailable && onViewModeChange && (
-            <>
-              <Select
-                value={viewMode}
-                onValueChange={(v) => onViewModeChange(v as ComicViewMode)}
-              >
-                <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
-                  <Layers
-                    className="h-3.5 w-3.5 text-muted-foreground"
-                    aria-hidden="true"
-                  />
-                  <span className="text-muted-foreground">View</span>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {VIEW_MODE_OPTIONS.map((opt) => (
-                    <SelectItem
-                      key={opt.value}
-                      value={opt.value}
-                      className="text-xs"
-                    >
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <span className="h-5 w-px bg-border mx-1" aria-hidden="true" />
-            </>
-          )}
-          {/* Sort + Filter operate on file rows (compareFiles, applyConditions);
-           *  the collections grid renders ComicCollection cards directly, so
-           *  these controls have no effect there. Hide them when grouped to
-           *  keep the toolbar honest — they reappear after drill-down. */}
-          {!showCollections && (
-            <>
-              <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortKey)}>
-                <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
-                  <span className="text-muted-foreground">Sort</span>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SORT_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value} className="text-xs">
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                aria-label={sortDesc ? 'Sort descending' : 'Sort ascending'}
-                onClick={() => setSortDesc(!sortDesc)}
-              >
-                {sortDesc ? (
-                  <ArrowDown className="h-3.5 w-3.5" />
-                ) : (
-                  <ArrowUp className="h-3.5 w-3.5" />
-                )}
-              </Button>
-              <span className="h-5 w-px bg-border mx-1" aria-hidden="true" />
-              <Popover open={filterOpen} onOpenChange={setFilterOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant={conditions.length > 0 ? 'default' : 'outline'}
-                    size="sm"
-                    className="h-8 text-xs gap-1.5"
-                  >
-                    <FilterIcon className="h-3.5 w-3.5" />
-                    Filter
-                    {conditions.length > 0 && (
-                      <span className="ml-0.5 rounded-full bg-background/30 px-1.5 text-[10px] leading-tight">
-                        {conditions.length}
-                      </span>
-                    )}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="start" sideOffset={6} className="w-auto p-3">
-                  <FilterEditor
-                    conditions={conditions}
-                    onConditionsChange={setConditions}
-                    tags={availableTags}
-                  />
-                </PopoverContent>
-              </Popover>
-              {conditions.map((c) => (
-                <div
-                  key={c.id}
-                  className="inline-flex items-center rounded-full border bg-secondary/50 hover:bg-secondary transition-colors h-8"
-                >
-                  <button
-                    type="button"
-                    onClick={() => setFilterOpen(true)}
-                    className="text-xs pl-3 pr-1.5 h-full text-foreground/80 focus:outline-none"
-                    aria-label={`Edit condition: ${describeCondition(c, tagsById)}`}
-                  >
-                    {describeCondition(c, tagsById)}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => removeCondition(c.id)}
-                    className="px-1.5 h-full text-muted-foreground hover:text-foreground rounded-r-full focus:outline-none"
-                    aria-label="Remove condition"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-            </>
-          )}
-          <div className="flex-1" />
-          {/* Selection mode operates on file rows (per-card checkbox, bulk
-           *  Upload / Download / Delete). The collections grid renders
-           *  ComicCollection cards with no checkbox interaction, so the
-           *  button would toggle into a dead state. Hide it there, same
-           *  shape as the sort/filter gate above. */}
-          {!showCollections && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 text-xs"
-              onClick={() => setSelectionMode(true)}
-              disabled={visibleEntries.length === 0}
-            >
-              Select
-            </Button>
-          )}
-        </div>
-      ) : (
-        <div className="flex items-center gap-3 pb-3 shrink-0">
-          <span className="text-sm font-medium text-foreground">
-            {selectedIds.size === 0
-              ? 'Select files'
-              : `${selectedIds.size} file${selectedIds.size === 1 ? '' : 's'} selected`}
-          </span>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5">
-                Select first
-                <ChevronDown className="h-3 w-3" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              {[10, 25, 50, 100].map((n) => (
-                <DropdownMenuItem
-                  key={n}
-                  className="text-xs"
-                  onClick={() => selectFirstN(n)}
-                >
-                  First {n}
-                </DropdownMenuItem>
-              ))}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="text-xs"
-                onClick={() => selectFirstN(visibleEntries.length)}
-              >
-                All eligible
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <div className="flex-1" />
-          {selectedIds.size > 0 && (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs"
-                onClick={clearSelection}
-              >
-                Clear
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8 text-xs"
-                disabled={!remoteEnabled}
-                onClick={() => {
-                  // Upload only fires for currently-local files; remote
-                  // selections are silently dropped from this batch.
-                  const ids = Array.from(selectedIds).filter((id) => {
-                    const f = byId.get(id);
-                    return (
-                      !!f &&
-                      f.storage_kind !== 'remote' &&
-                      !inFlightUploadIds.has(id)
-                    );
-                  });
-                  if (ids.length > 0) onBulkUpload?.(ids);
-                  exitSelectionMode();
-                }}
-              >
-                ☁ Upload
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8 text-xs"
-                disabled={!remoteEnabled || !onBulkDownload}
-                onClick={() => {
-                  // Download is the inverse: only remote files. Cloud copy
-                  // stays in place (this is "copy back, keep cloud").
-                  const ids = Array.from(selectedIds).filter((id) => {
-                    const f = byId.get(id);
-                    return (
-                      !!f &&
-                      f.storage_kind === 'remote' &&
-                      !inFlightDownloadIds.has(id)
-                    );
-                  });
-                  if (ids.length > 0) onBulkDownload?.(ids);
-                  exitSelectionMode();
-                }}
-              >
-                ⬇ Download
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                className="h-8 text-xs"
-                disabled={!onBulkDelete}
-                onClick={() => {
-                  const ids = Array.from(selectedIds).filter(
-                    (id) => !inFlightDeleteIds.has(id)
-                  );
-                  if (ids.length > 0) onBulkDelete?.(ids);
-                  exitSelectionMode();
-                }}
-              >
-                <Trash2 className="h-3.5 w-3.5 mr-1" />
-                Delete
-              </Button>
-            </>
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 text-xs"
-            onClick={exitSelectionMode}
-            aria-label="Cancel selection"
-          >
-            <X className="h-3.5 w-3.5 mr-1" />
-            Cancel
-          </Button>
-        </div>
-      )}
+      <FileListHeader
+        showCollections={showCollections}
+        view={{
+          viewMode,
+          onViewModeChange,
+          available: viewModeAvailable,
+        }}
+        sort={{ sortBy, sortDesc, setSortBy, setSortDesc }}
+        filter={{
+          conditions,
+          setConditions,
+          filterOpen,
+          setFilterOpen,
+          removeCondition,
+          availableTags,
+          availableAuthors,
+          tagsById,
+          authorsById,
+        }}
+        selection={{
+          selectionMode,
+          selectedCount: selectedIds.size,
+          visibleCount: visibleEntries.length,
+          enterSelectionMode,
+          exitSelectionMode,
+          clearSelection,
+          selectFirstN,
+        }}
+        bulk={{
+          remoteEnabled,
+          canDownload: !!onBulkDownload,
+          canDelete: !!onBulkDelete,
+          onUpload: handleBulkUploadClick,
+          onDownload: handleBulkDownloadClick,
+          onDelete: handleBulkDeleteClick,
+        }}
+      />
 
       {breadcrumb && (
         <div className="flex items-center pb-3 shrink-0">
@@ -1001,89 +411,27 @@ export function FileList({
         </div>
       )}
 
-      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-auto">
-        <div
-          style={{ height: totalVirtualSize, position: 'relative', padding: GRID_PAD }}
-        >
-          {virtualItems.map((virtualRow) => {
-            const startIdx = virtualRow.index * colCount;
-            const endIdx = Math.min(startIdx + colCount, activeCount);
-            return (
-              <div
-                key={virtualRow.index}
-                style={{
-                  position: 'absolute',
-                  // Offset by GRID_PAD so the first row's selection ring
-                  // (rendered as box-shadow 1px outside the button) has
-                  // breathing room before the scroll container's clip
-                  // boundary. The parent's `padding: GRID_PAD` doesn't
-                  // affect absolute children, so we have to apply the
-                  // top inset here.
-                  top: GRID_PAD,
-                  left: 0,
-                  transform: `translateY(${virtualRow.start}px)`,
-                  width: '100%',
-                  paddingLeft: GRID_PAD,
-                  paddingRight: GRID_PAD,
-                  display: 'grid',
-                  gridTemplateColumns: `repeat(${colCount}, ${CARD_WIDTH}px)`,
-                  gap: GRID_GAP,
-                  justifyContent: 'start',
-                }}
-              >
-                {showCollections
-                  ? (collections ?? []).slice(startIdx, endIdx).map((c) => (
-                    <CollectionCard
-                      key={`${c.mode}:${c.key}`}
-                      collection={c}
-                      onOpen={(col) => onOpenCollection?.(col)}
-                    />
-                  ))
-                  : visibleEntries.slice(startIdx, endIdx).map((file) => {
-                    const blocked = inFlightAnyIds.has(file.id);
-                    const isSelected = selectedIds.has(file.id);
-                    return (
-                      <FileCard
-                        key={file.id}
-                        id={file.id}
-                        isSelected={isSelected}
-                        isUploading={inFlightUploadIds.has(file.id)}
-                        blocked={blocked}
-                        selectionMode={selectionMode}
-                        onCardClick={handleCardClick}
-                        onToggleSelect={toggleSelection}
-                        onEdit={onFileEdit}
-                        onDelete={onFileDelete}
-                      />
-                    );
-                  })}
-              </div>
-            );
-          })}
-        </div>
-
-        {activeCount === 0 && (
-          <div className="flex items-center justify-center h-24 text-sm text-muted-foreground">
-            {showCollections
-              ? viewMode === 'author'
-                ? 'No multi-volume authors in this category yet.'
-                : 'No series detected — file names look too unique to group.'
-              : importableEntries.length === 0
-                ? 'No files in library.'
-                : 'No files match the active filters.'}
-          </div>
-        )}
-
-        {loadingMore && !showCollections && (
-          <div
-            className="flex items-center justify-center py-3 gap-2 text-xs text-muted-foreground font-serif-italic"
-            aria-live="polite"
-          >
-            <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-            {total != null ? `loading ${total - visibleEntries.length} more…` : 'loading more…'}
-          </div>
-        )}
-      </div>
+      <FileListContent
+        scrollContainerRef={scrollContainerRef}
+        visibleEntries={visibleEntries}
+        hasImportableEntries={importableEntries.length > 0}
+        showCollections={showCollections}
+        collections={collections}
+        viewMode={viewMode}
+        total={total}
+        loadingMore={loadingMore}
+        onLoadMore={onLoadMore}
+        loadedCount={ids.length}
+        selectionMode={selectionMode}
+        selectedIds={selectedIds}
+        inFlightAnyIds={inFlightAnyIds}
+        inFlightUploadIds={inFlightUploadIds}
+        onCardClick={handleCardClick}
+        onToggleSelect={toggleSelection}
+        onFileEdit={onFileEdit}
+        onFileDelete={onFileDelete}
+        onOpenCollection={onOpenCollection}
+      />
     </div>
   );
 }

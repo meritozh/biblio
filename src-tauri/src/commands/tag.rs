@@ -30,9 +30,17 @@ pub struct TagWithUsage {
 pub async fn tag_list(
     app: AppHandle,
     include_usage: Option<bool>,
+    limit: Option<i64>,
+    offset: Option<i64>,
 ) -> Result<TagListResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    // SQLite's `LIMIT -1 OFFSET 0` returns every row, which lets a single
+    // SQL string handle both the paginated and "give me all of them"
+    // call sites without branching on the option twice.
+    let limit_val: i64 = limit.unwrap_or(-1);
+    let offset_val: i64 = offset.unwrap_or(0);
 
     let tags: Vec<TagWithUsage> = if include_usage.unwrap_or(false) {
         sqlx::query_as(
@@ -40,15 +48,23 @@ pub async fn tag_list(
              FROM tags t
              LEFT JOIN file_tags ft ON t.id = ft.tag_id
              GROUP BY t.id
-             ORDER BY t.name"
+             ORDER BY t.name
+             LIMIT ? OFFSET ?"
         )
+        .bind(limit_val)
+        .bind(offset_val)
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())?
     } else {
         sqlx::query_as(
-            "SELECT t.id, t.name, t.color, t.created_at, 0 as usage_count FROM tags t ORDER BY t.name"
+            "SELECT t.id, t.name, t.color, t.created_at, 0 as usage_count
+             FROM tags t
+             ORDER BY t.name
+             LIMIT ? OFFSET ?"
         )
+        .bind(limit_val)
+        .bind(offset_val)
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())?
@@ -60,6 +76,17 @@ pub async fn tag_list(
 #[derive(Serialize)]
 pub struct TagListResponse {
     pub tags: Vec<TagWithUsage>,
+}
+
+#[tauri::command]
+pub async fn tag_count(app: AppHandle) -> Result<i64, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tags")
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(total)
 }
 
 #[tauri::command]

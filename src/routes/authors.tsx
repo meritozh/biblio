@@ -1,6 +1,6 @@
-import { createFileRoute } from '@tanstack/react-router';
-import { useState, useEffect, useCallback } from 'react';
-import { Link } from '@tanstack/react-router';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -20,25 +20,74 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Plus, Pencil, Trash2, User as UserIcon } from 'lucide-react';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { Plus, Pencil, Trash2, User } from 'lucide-react';
-import { authorList, authorCreate, authorUpdate, authorDelete } from '@/lib/tauri';
+  authorList,
+  authorCount,
+  authorCreate,
+  authorUpdate,
+  authorDelete,
+} from '@/lib/tauri';
+import { FilteredFileList } from '@/components/FilteredFileList';
+import { makeId as makeConditionId, type Condition } from '@/lib/filters';
 import type { AuthorWithUsage } from '@/types';
 
+/** `/authors` mirrors `/tags`: management table when no params, filter
+ *  mode when `?author=N`. Filter mode renders the same FileList scoped to
+ *  `authors includes N`. */
+interface AuthorsSearch {
+  author?: number;
+}
+
 export const Route = createFileRoute('/authors')({
+  validateSearch: (search: Record<string, unknown>): AuthorsSearch => {
+    const out: AuthorsSearch = {};
+    if (typeof search.author === 'number' && Number.isInteger(search.author)) {
+      out.author = search.author;
+    }
+    return out;
+  },
   component: AuthorsPage,
 });
 
+const PAGE_SIZE = 200;
+const ROW_HEIGHT = 44;
+const LOAD_MORE_THRESHOLD = 12;
+
 function AuthorsPage() {
+  const search = Route.useSearch();
+  const filterConditions = useMemo<Condition[]>(() => {
+    if (search.author == null) return [];
+    return [
+      {
+        id: makeConditionId(),
+        field: 'authors',
+        op: 'includes',
+        authorId: search.author,
+      },
+    ];
+  }, [search.author]);
+
+  if (filterConditions.length > 0) {
+    return (
+      <FilteredFileList
+        backHref="/authors"
+        backLabel="Authors"
+        seededConditions={filterConditions}
+        viewKey={`authors-filter::${search.author}`}
+      />
+    );
+  }
+
+  return <AuthorsManagementPage />;
+}
+
+function AuthorsManagementPage() {
+  const navigate = useNavigate();
   const [authors, setAuthors] = useState<AuthorWithUsage[]>([]);
+  const [total, setTotal] = useState<number>(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newAuthorName, setNewAuthorName] = useState('');
   const [saving, setSaving] = useState(false);
@@ -48,16 +97,35 @@ function AuthorsPage() {
   const [deletingAuthor, setDeletingAuthor] = useState<AuthorWithUsage | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const loadAuthors = useCallback(async () => {
+  const reload = useCallback(async () => {
     setLoading(true);
-    const result = await authorList(true);
-    setAuthors(result.authors);
+    const [page, count] = await Promise.all([
+      authorList({ includeUsage: true, limit: PAGE_SIZE, offset: 0 }),
+      authorCount(),
+    ]);
+    setAuthors(page.authors);
+    setTotal(count);
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    void loadAuthors();
-  }, [loadAuthors]);
+    void reload();
+  }, [reload]);
+
+  const handleLoadMore = useCallback(async () => {
+    if (loadingMore || authors.length >= total) return;
+    setLoadingMore(true);
+    try {
+      const page = await authorList({
+        includeUsage: true,
+        limit: PAGE_SIZE,
+        offset: authors.length,
+      });
+      setAuthors((prev) => [...prev, ...page.authors]);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, authors.length, total]);
 
   const handleCreate = async () => {
     if (!newAuthorName.trim()) return;
@@ -66,7 +134,7 @@ function AuthorsPage() {
       await authorCreate(newAuthorName.trim());
       setCreateDialogOpen(false);
       setNewAuthorName('');
-      void loadAuthors();
+      void reload();
     } catch (error) {
       console.error('Failed to create author:', error);
       alert(`Failed to create author: ${error}`);
@@ -85,7 +153,7 @@ function AuthorsPage() {
       await authorUpdate(editingId, editName.trim());
       setEditingId(null);
       setEditName('');
-      void loadAuthors();
+      void reload();
     } catch (error) {
       console.error('Failed to update author:', error);
       alert(`Failed to update author: ${error}`);
@@ -109,13 +177,43 @@ function AuthorsPage() {
       await authorDelete(deletingAuthor.id);
       setDeleteDialogOpen(false);
       setDeletingAuthor(null);
-      void loadAuthors();
+      void reload();
     } catch (error) {
       console.error('Failed to delete author:', error);
       alert(`Failed to delete author: ${error}`);
     }
     setDeleting(false);
   };
+
+  // Single click stays on /authors with `?author=N`. The page re-renders
+  // into filter mode and FilteredFileList takes over.
+  const handleRowClick = (author: AuthorWithUsage) => {
+    void navigate({ to: '/authors', search: { author: author.id } });
+  };
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: authors.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 8,
+  });
+  const virtualItems = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+
+  useEffect(() => {
+    const last = virtualItems[virtualItems.length - 1];
+    if (!last || loadingMore || authors.length >= total) return;
+    if (last.index >= authors.length - 1 - LOAD_MORE_THRESHOLD) {
+      void handleLoadMore();
+    }
+  }, [virtualItems, authors.length, total, loadingMore, handleLoadMore]);
+
+  const tally = useMemo(() => {
+    if (loading) return '…';
+    if (authors.length < total) return `${authors.length} of ${total}`;
+    return String(total);
+  }, [authors.length, total, loading]);
 
   return (
     <>
@@ -125,11 +223,11 @@ function AuthorsPage() {
       >
         <div className="flex items-baseline gap-3">
           <h1 className="text-3xl text-foreground flex items-center gap-3">
-            <User className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+            <UserIcon className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
             Authors
           </h1>
           <span className="font-serif-italic text-sm text-muted-foreground">
-            — {authors.length} {authors.length === 1 ? 'author' : 'authors'}
+            — {tally} {total === 1 ? 'author' : 'authors'}
           </span>
         </div>
         <Button onClick={() => setCreateDialogOpen(true)}>
@@ -138,92 +236,119 @@ function AuthorsPage() {
         </Button>
       </div>
 
-        <div className="flex-1 overflow-auto px-8 py-6">
-          {loading ? (
-            <div className="flex items-center justify-center h-32">
-              <p className="text-sm text-muted-foreground">Loading...</p>
+      <div className="flex-1 overflow-hidden px-8 py-6">
+        {loading ? (
+          <div className="flex items-center justify-center h-32">
+            <p className="text-sm text-muted-foreground">Loading...</p>
+          </div>
+        ) : authors.length === 0 ? (
+          <div className="flex items-center justify-center h-32">
+            <p className="text-sm text-muted-foreground">
+              No authors yet. Click "Add Author" to create one.
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-md border h-full flex flex-col overflow-hidden">
+            <div className="grid grid-cols-[1fr_120px] items-center gap-3 px-4 py-2 border-b border-border bg-muted/30 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              <span>Name</span>
+              <span>Actions</span>
             </div>
-          ) : (
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead className="w-[100px]">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {authors.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={2} className="h-24 text-center">
-                        No authors yet. Click "Add Author" to create one.
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    authors.map((author) => (
-                      <TableRow key={author.id}>
-                        <TableCell>
-                          {editingId === author.id ? (
-                            <Input
-                              value={editName}
-                              onChange={(e) => setEditName(e.target.value)}
-                              className="h-8 w-full"
-                              autoFocus
-                            />
-                          ) : (
-                            <Link
-                              to="/authors/$authorId"
-                              params={{ authorId: String(author.id) }}
-                              className="text-foreground hover:text-primary hover:underline underline-offset-4"
+            <div ref={scrollRef} className="flex-1 overflow-auto">
+              <div
+                style={{ height: totalSize, position: 'relative' }}
+                aria-rowcount={authors.length}
+                role="rowgroup"
+              >
+                {virtualItems.map((vi) => {
+                  const author = authors[vi.index];
+                  if (!author) return null;
+                  return (
+                    <div
+                      key={author.id}
+                      role="row"
+                      aria-rowindex={vi.index + 1}
+                      className="absolute left-0 right-0 grid grid-cols-[1fr_120px] items-center gap-3 px-4 border-b border-border hover:bg-muted/30 transition-colors"
+                      style={{
+                        top: vi.start,
+                        height: vi.size,
+                      }}
+                    >
+                      <div className="min-w-0">
+                        {editingId === author.id ? (
+                          <Input
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            className="h-8 w-full"
+                            autoFocus
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleRowClick(author)}
+                            className="text-foreground hover:text-primary hover:underline underline-offset-4 text-left focus:outline-none"
+                            aria-label={`Filter Library by ${author.name}`}
+                          >
+                            {author.name}
+                            {author.usageCount > 0 && (
+                              <span className="ml-2 text-xs text-muted-foreground font-serif-italic">
+                                — {author.usageCount}
+                              </span>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex gap-1">
+                        {editingId === author.id ? (
+                          <>
+                            <Button size="sm" onClick={handleSaveEdit}>
+                              Save
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={handleCancelEdit}>
+                              Cancel
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-8 w-8"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleStartEdit(author);
+                              }}
+                              aria-label={`Edit ${author.name}`}
                             >
-                              {author.name}
-                              {author.usageCount > 0 && (
-                                <span className="ml-2 text-xs text-muted-foreground font-serif-italic">
-                                  — {author.usageCount}
-                                </span>
-                              )}
-                            </Link>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {editingId === author.id ? (
-                            <div className="flex gap-1">
-                              <Button size="sm" onClick={handleSaveEdit}>
-                                Save
-                              </Button>
-                              <Button size="sm" variant="ghost" onClick={handleCancelEdit}>
-                                Cancel
-                              </Button>
-                            </div>
-                          ) : (
-                            <div className="flex gap-1">
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-8 w-8"
-                                onClick={() => handleStartEdit(author)}
-                              >
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-8 w-8 text-destructive"
-                                onClick={() => handleDeleteClick(author)}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-8 w-8 text-destructive"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteClick(author);
+                              }}
+                              aria-label={`Delete ${author.name}`}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {loadingMore && (
+                <div className="flex items-center justify-center py-3 text-xs text-muted-foreground font-serif-italic">
+                  Loading more…
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
+      </div>
 
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent>
@@ -231,12 +356,20 @@ function AuthorsPage() {
             <DialogTitle>Create Author</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
-            <Input
-              value={newAuthorName}
-              onChange={(e) => setNewAuthorName(e.target.value)}
-              placeholder="Author name"
-              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-            />
+            <div>
+              <label className="text-sm font-medium mb-2 block">Name</label>
+              <Input
+                value={newAuthorName}
+                onChange={(e) => setNewAuthorName(e.target.value)}
+                placeholder="Author name"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && newAuthorName.trim()) {
+                    void handleCreate();
+                  }
+                }}
+              />
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>
@@ -254,10 +387,8 @@ function AuthorsPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Author</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{deletingAuthor?.name}"?
-              {deletingAuthor && deletingAuthor.usageCount > 0 && (
-                <> This will remove the author from {deletingAuthor.usageCount} files.</>
-              )}
+              Are you sure you want to delete "{deletingAuthor?.name}"? They will
+              be removed from any files currently crediting them.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -19,8 +19,14 @@ function serializeConditions(conditions: ReadonlyArray<Condition>): unknown[] {
     if (c.field === 'tags' && (c.op === 'includes' || c.op === 'excludes')) {
       return { ...base, tagId: c.tagId };
     }
+    if (c.field === 'tags' && (c.op === 'includes_any' || c.op === 'excludes_any')) {
+      return { ...base, tagIds: c.tagIds };
+    }
     if (c.field === 'authors' && (c.op === 'count_gte' || c.op === 'count_lt')) {
       return { ...base, n: c.n };
+    }
+    if (c.field === 'authors' && c.op === 'includes') {
+      return { ...base, authorId: c.authorId };
     }
     if (c.field === 'progress' && c.op === 'contains') {
       return { ...base, text: c.text };

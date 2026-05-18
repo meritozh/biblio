@@ -291,10 +291,20 @@ export async function categoryUpdate(
   });
 }
 
-export async function tagList(
-  includeUsage?: boolean
-): Promise<{ tags: (Tag & { usageCount: number })[] }> {
-  return invoke('tag_list', { includeUsage: includeUsage || false });
+export async function tagList(params?: {
+  includeUsage?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<{ tags: (Tag & { usageCount: number })[] }> {
+  return invoke('tag_list', {
+    includeUsage: params?.includeUsage || false,
+    limit: params?.limit ?? null,
+    offset: params?.offset ?? null,
+  });
+}
+
+export async function tagCount(): Promise<number> {
+  return invoke('tag_count');
 }
 
 export async function tagCreate(name: string, color?: string): Promise<{ id: number }> {
@@ -324,14 +334,6 @@ export async function tagUnassign(
   return invoke('tag_unassign', { fileId: file_id, tagIds: tag_ids });
 }
 
-export async function fileListByTag(tagId: number): Promise<FileEntry[]> {
-  return invoke('file_list_by_tag', { tagId });
-}
-
-export async function fileListByAuthor(authorId: number): Promise<FileEntry[]> {
-  return invoke('file_list_by_author', { authorId });
-}
-
 export async function metadataGet(file_id: number): Promise<{ metadata: Metadata[] }> {
   return invoke('metadata_get', { fileId: file_id });
 }
@@ -349,10 +351,20 @@ export async function metadataDelete(file_id: number, key: string): Promise<{ su
   return invoke('metadata_delete', { fileId: file_id, key });
 }
 
-export async function authorList(
-  includeUsage?: boolean
-): Promise<{ authors: (Author & { usageCount: number })[] }> {
-  return invoke('author_list', { includeUsage: includeUsage || false });
+export async function authorList(params?: {
+  includeUsage?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<{ authors: (Author & { usageCount: number })[] }> {
+  return invoke('author_list', {
+    includeUsage: params?.includeUsage || false,
+    limit: params?.limit ?? null,
+    offset: params?.offset ?? null,
+  });
+}
+
+export async function authorCount(): Promise<number> {
+  return invoke('author_count');
 }
 
 export async function authorCreate(name: string): Promise<{ id: number }> {

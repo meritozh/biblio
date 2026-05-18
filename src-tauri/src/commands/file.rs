@@ -48,6 +48,16 @@ pub struct FilterCondition {
     pub op: String,
     pub n: Option<i64>,
     pub tag_id: Option<i64>,
+    /// `includes_any` / `excludes_any` carry a tag set. Empty / absent
+    /// behaves the same as a missing `tag_id` on the single-tag ops: the
+    /// condition is treated as a no-op so a half-built editor row
+    /// doesn't suddenly hide every file.
+    pub tag_ids: Option<Vec<i64>>,
+    /// Used by `authors includes` to point at a single author. Kept
+    /// separate from `tag_id` so the wire shape stays self-describing
+    /// — the discriminator is still `(field, op)`, but each id field
+    /// names the entity it refers to.
+    pub author_id: Option<i64>,
     pub text: Option<String>,
     pub value: Option<String>,
 }
@@ -101,6 +111,15 @@ fn build_filter_sql(
                         ));
                     }
                 }
+                "includes" => {
+                    if let Some(a) = c.author_id {
+                        sql.push_str(&format!(
+                            " AND EXISTS (SELECT 1 FROM file_authors WHERE file_id = {p}id AND author_id = {a})",
+                            p = prefix,
+                            a = a
+                        ));
+                    }
+                }
                 _ => {}
             },
             "tags" => match c.op.as_str() {
@@ -145,6 +164,37 @@ fn build_filter_sql(
                             " AND NOT EXISTS (SELECT 1 FROM file_tags WHERE file_id = {p}id AND tag_id = {t})",
                             p = prefix,
                             t = t
+                        ));
+                    }
+                }
+                // `_any` ops: build an IN list inline. `tag_ids` is typed
+                // `Vec<i64>` so values can't inject; empty list = no-op
+                // (skip emitting any AND) to match the frontend.
+                "includes_any" => {
+                    if let Some(ids) = c.tag_ids.as_ref().filter(|v| !v.is_empty()) {
+                        let list = ids
+                            .iter()
+                            .map(|n| n.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        sql.push_str(&format!(
+                            " AND EXISTS (SELECT 1 FROM file_tags WHERE file_id = {p}id AND tag_id IN ({list}))",
+                            p = prefix,
+                            list = list
+                        ));
+                    }
+                }
+                "excludes_any" => {
+                    if let Some(ids) = c.tag_ids.as_ref().filter(|v| !v.is_empty()) {
+                        let list = ids
+                            .iter()
+                            .map(|n| n.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        sql.push_str(&format!(
+                            " AND NOT EXISTS (SELECT 1 FROM file_tags WHERE file_id = {p}id AND tag_id IN ({list}))",
+                            p = prefix,
+                            list = list
                         ));
                     }
                 }
@@ -598,68 +648,6 @@ pub async fn file_list_by_ids(
         files.append(&mut rows);
     }
     hydrate_file_items(&pool, files).await
-}
-
-/// Core query for `file_list_by_tag` — testable without a Tauri `AppHandle`.
-pub(crate) async fn list_files_by_tag_impl(
-    pool: &sqlx::SqlitePool,
-    tag_id: i64,
-) -> Result<Vec<FileListItem>, String> {
-    let files: Vec<FileEntry> = sqlx::query_as(
-        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status,
-                f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at
-         FROM files f
-         INNER JOIN file_tags ft ON ft.file_id = f.id
-         WHERE ft.tag_id = ?
-         ORDER BY f.created_at DESC",
-    )
-    .bind(tag_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    hydrate_file_items(pool, files).await
-}
-
-#[tauri::command]
-pub async fn file_list_by_tag(
-    app: AppHandle,
-    tag_id: i64,
-) -> Result<Vec<FileListItem>, String> {
-    let instances = app.state::<DbInstances>();
-    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-    list_files_by_tag_impl(&pool, tag_id).await
-}
-
-/// Core query for `file_list_by_author` — testable without a Tauri `AppHandle`.
-pub(crate) async fn list_files_by_author_impl(
-    pool: &sqlx::SqlitePool,
-    author_id: i64,
-) -> Result<Vec<FileListItem>, String> {
-    let files: Vec<FileEntry> = sqlx::query_as(
-        "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status,
-                f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at
-         FROM files f
-         INNER JOIN file_authors fa ON fa.file_id = f.id
-         WHERE fa.author_id = ?
-         ORDER BY f.created_at DESC",
-    )
-    .bind(author_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    hydrate_file_items(pool, files).await
-}
-
-#[tauri::command]
-pub async fn file_list_by_author(
-    app: AppHandle,
-    author_id: i64,
-) -> Result<Vec<FileListItem>, String> {
-    let instances = app.state::<DbInstances>();
-    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-    list_files_by_author_impl(&pool, author_id).await
 }
 
 #[tauri::command]

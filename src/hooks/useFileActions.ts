@@ -52,8 +52,8 @@ export function useFileActions() {
   // selectors, so they need to be populated before any row is clicked.
   useEffect(() => {
     void fetchCategories().then(setCategories);
-    void tagList(true).then((r) => setTags(r.tags));
-    void authorList(true).then((r) => setAuthors(r.authors));
+    void tagList({ includeUsage: true }).then((r) => setTags(r.tags));
+    void authorList({ includeUsage: true }).then((r) => setAuthors(r.authors));
   }, []);
 
   // Keep relations fresh when the user edits them on /tags or /authors.
@@ -63,8 +63,8 @@ export function useFileActions() {
     let unlisten: UnlistenFn | null = null;
     let cancelled = false;
     listenTagAuthorChanges(() => {
-      void tagList(true).then((r) => setTags(r.tags));
-      void authorList(true).then((r) => setAuthors(r.authors));
+      void tagList({ includeUsage: true }).then((r) => setTags(r.tags));
+      void authorList({ includeUsage: true }).then((r) => setAuthors(r.authors));
       refreshActiveView();
     })
       .then((u) => {

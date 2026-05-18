@@ -29,9 +29,16 @@ pub struct AuthorWithUsage {
 pub async fn author_list(
     app: AppHandle,
     include_usage: Option<bool>,
+    limit: Option<i64>,
+    offset: Option<i64>,
 ) -> Result<AuthorListResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    // `LIMIT -1 OFFSET 0` returns every row in SQLite — lets the unpaginated
+    // callers (edit dialog's author picker etc.) reuse the same SQL.
+    let limit_val: i64 = limit.unwrap_or(-1);
+    let offset_val: i64 = offset.unwrap_or(0);
 
     let authors: Vec<AuthorWithUsage> = if include_usage.unwrap_or(false) {
         sqlx::query_as(
@@ -39,15 +46,23 @@ pub async fn author_list(
              FROM authors a
              LEFT JOIN file_authors fa ON a.id = fa.author_id
              GROUP BY a.id
-             ORDER BY a.name"
+             ORDER BY a.name
+             LIMIT ? OFFSET ?"
         )
+        .bind(limit_val)
+        .bind(offset_val)
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())?
     } else {
         sqlx::query_as(
-            "SELECT a.id, a.name, a.created_at, 0 as usage_count FROM authors a ORDER BY a.name"
+            "SELECT a.id, a.name, a.created_at, 0 as usage_count
+             FROM authors a
+             ORDER BY a.name
+             LIMIT ? OFFSET ?"
         )
+        .bind(limit_val)
+        .bind(offset_val)
         .fetch_all(&pool)
         .await
         .map_err(|e| e.to_string())?
@@ -59,6 +74,17 @@ pub async fn author_list(
 #[derive(Serialize)]
 pub struct AuthorListResponse {
     pub authors: Vec<AuthorWithUsage>,
+}
+
+#[tauri::command]
+pub async fn author_count(app: AppHandle) -> Result<i64, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM authors")
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(total)
 }
 
 #[tauri::command]

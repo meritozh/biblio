@@ -652,6 +652,7 @@ function HomePage() {
             onBulkDelete={handleBulkDelete}
             remoteEnabled={remoteEnabled}
             availableTags={tags}
+            availableAuthors={authors}
             sortBy={sortBy}
             sortDesc={sortDesc}
             onSortChange={handleSortChange}

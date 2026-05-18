@@ -19,12 +19,22 @@ export type Condition =
   | { id: string; field: 'authors'; op: 'not_empty' }
   | { id: string; field: 'authors'; op: 'count_gte'; n?: number }
   | { id: string; field: 'authors'; op: 'count_lt'; n?: number }
+  | { id: string; field: 'authors'; op: 'includes'; authorId?: number }
   | { id: string; field: 'tags'; op: 'empty' }
   | { id: string; field: 'tags'; op: 'not_empty' }
   | { id: string; field: 'tags'; op: 'count_gte'; n?: number }
   | { id: string; field: 'tags'; op: 'count_lt'; n?: number }
   | { id: string; field: 'tags'; op: 'includes'; tagId?: number }
   | { id: string; field: 'tags'; op: 'excludes'; tagId?: number }
+  // `_any` ops carry a tag set. Semantics: matches when the file's tags
+  // intersect (`includes_any`) or do not intersect (`excludes_any`) the
+  // condition's `tagIds`. Empty array = no-op (matches all) so a half-
+  // built editor row doesn't suddenly hide every file. Coexists with the
+  // single-tag `includes`/`excludes` so existing stored conditions keep
+  // working — the user opts into the array form via the editor or the
+  // multi-select tag-click flow.
+  | { id: string; field: 'tags'; op: 'includes_any'; tagIds: number[] }
+  | { id: string; field: 'tags'; op: 'excludes_any'; tagIds: number[] }
   | { id: string; field: 'progress'; op: 'empty' }
   | { id: string; field: 'progress'; op: 'not_empty' }
   | { id: string; field: 'progress'; op: 'contains'; text?: string }
@@ -50,13 +60,24 @@ export const OP_LABELS: Record<Op, string> = {
   count_lt: 'has fewer than',
   includes: 'includes',
   excludes: 'excludes',
+  includes_any: 'any of',
+  excludes_any: 'none of',
   contains: 'contains',
   is: 'is',
 };
 
 export const OPS_BY_FIELD: Record<Field, ReadonlyArray<Op>> = {
-  authors: ['empty', 'not_empty', 'count_gte', 'count_lt'],
-  tags: ['empty', 'not_empty', 'count_gte', 'count_lt', 'includes', 'excludes'],
+  authors: ['empty', 'not_empty', 'count_gte', 'count_lt', 'includes'],
+  tags: [
+    'empty',
+    'not_empty',
+    'count_gte',
+    'count_lt',
+    'includes',
+    'excludes',
+    'includes_any',
+    'excludes_any',
+  ],
   progress: ['empty', 'not_empty', 'contains'],
   file_status: ['is'],
   storage_kind: ['is'],
@@ -119,6 +140,13 @@ export function withOp(c: Condition, op: Op): Condition {
         case 'count_gte':
         case 'count_lt':
           return { id: c.id, field: 'authors', op, n: 'n' in c ? c.n : undefined };
+        case 'includes':
+          return {
+            id: c.id,
+            field: 'authors',
+            op,
+            authorId: 'authorId' in c ? c.authorId : undefined,
+          };
         default:
           return c;
       }
@@ -131,13 +159,28 @@ export function withOp(c: Condition, op: Op): Condition {
         case 'count_lt':
           return { id: c.id, field: 'tags', op, n: 'n' in c ? c.n : undefined };
         case 'includes':
-        case 'excludes':
-          return {
-            id: c.id,
-            field: 'tags',
-            op,
-            tagId: 'tagId' in c ? c.tagId : undefined,
-          };
+        case 'excludes': {
+          // Demote from array form: keep first tagId so toggling
+          // includes_any → includes preserves at least one selection.
+          const tagId =
+            'tagId' in c
+              ? c.tagId
+              : 'tagIds' in c
+                ? c.tagIds[0]
+                : undefined;
+          return { id: c.id, field: 'tags', op, tagId };
+        }
+        case 'includes_any':
+        case 'excludes_any': {
+          // Promote single-tag form: wrap existing tagId into an array.
+          const tagIds =
+            'tagIds' in c
+              ? c.tagIds
+              : 'tagId' in c && c.tagId !== undefined
+                ? [c.tagId]
+                : [];
+          return { id: c.id, field: 'tags', op, tagIds };
+        }
         default:
           return c;
       }
@@ -173,7 +216,8 @@ function matchAuthors(
   c: Extract<Condition, { field: 'authors' }>,
   file: FileEntry
 ): boolean {
-  const n = file.authors?.length ?? 0;
+  const authors = file.authors ?? [];
+  const n = authors.length;
   switch (c.op) {
     case 'empty':
       return n === 0;
@@ -183,6 +227,8 @@ function matchAuthors(
       return c.n === undefined ? true : n >= c.n;
     case 'count_lt':
       return c.n === undefined ? true : n < c.n;
+    case 'includes':
+      return c.authorId === undefined ? true : authors.some((a) => a.id === c.authorId);
   }
 }
 
@@ -204,6 +250,16 @@ function matchTags(
       return c.tagId === undefined ? true : tags.some((t) => t.id === c.tagId);
     case 'excludes':
       return c.tagId === undefined ? true : !tags.some((t) => t.id === c.tagId);
+    case 'includes_any':
+      // Empty array = no-op so a half-built editor row doesn't suddenly
+      // hide every file.
+      return c.tagIds.length === 0
+        ? true
+        : tags.some((t) => c.tagIds.includes(t.id));
+    case 'excludes_any':
+      return c.tagIds.length === 0
+        ? true
+        : !tags.some((t) => c.tagIds.includes(t.id));
   }
 }
 
@@ -246,7 +302,10 @@ export function applyConditions(files: FileEntry[], conditions: ReadonlyArray<Co
 
 // ── Chip rendering ───────────────────────────────────────────────────────────
 
-function describeAuthors(c: Extract<Condition, { field: 'authors' }>): string {
+function describeAuthors(
+  c: Extract<Condition, { field: 'authors' }>,
+  authorsById: Map<number, { id: number; name: string }>
+): string {
   const f = FIELD_LABELS.authors;
   switch (c.op) {
     case 'empty':
@@ -257,6 +316,11 @@ function describeAuthors(c: Extract<Condition, { field: 'authors' }>): string {
       return `${f} ≥ ${c.n ?? '…'}`;
     case 'count_lt':
       return `${f} < ${c.n ?? '…'}`;
+    case 'includes': {
+      const name =
+        c.authorId !== undefined ? authorsById.get(c.authorId)?.name : undefined;
+      return `${f} includes ${name ?? '…'}`;
+    }
   }
 }
 
@@ -282,7 +346,24 @@ function describeTags(
       const name = c.tagId !== undefined ? tagsById.get(c.tagId)?.name : undefined;
       return `${f} excludes ${name ?? '…'}`;
     }
+    case 'includes_any':
+      return `${f} any of ${formatTagSet(c.tagIds, tagsById)}`;
+    case 'excludes_any':
+      return `${f} none of ${formatTagSet(c.tagIds, tagsById)}`;
   }
+}
+
+/** Shorten long tag-set chip labels: show up to 2 names + "+N more".
+ *  Empty list renders as "…" so a half-built editor row still has a
+ *  legible placeholder. */
+function formatTagSet(
+  tagIds: ReadonlyArray<number>,
+  tagsById: Map<number, Tag>
+): string {
+  if (tagIds.length === 0) return '…';
+  const names = tagIds.map((id) => tagsById.get(id)?.name ?? `#${id}`);
+  if (names.length <= 2) return names.join(', ');
+  return `${names.slice(0, 2).join(', ')} +${names.length - 2} more`;
 }
 
 function describeProgress(c: Extract<Condition, { field: 'progress' }>): string {
@@ -297,11 +378,18 @@ function describeProgress(c: Extract<Condition, { field: 'progress' }>): string 
   }
 }
 
-/** One-line summary used in chips and aria-labels. */
-export function describeCondition(c: Condition, tagsById: Map<number, Tag>): string {
+/** One-line summary used in chips and aria-labels. The `authorsById`
+ *  map is optional — chip text falls back to "…" when an author lookup
+ *  table isn't available (e.g. test fixtures), matching how the tag
+ *  branch already degrades. */
+export function describeCondition(
+  c: Condition,
+  tagsById: Map<number, Tag>,
+  authorsById?: Map<number, { id: number; name: string }>
+): string {
   switch (c.field) {
     case 'authors':
-      return describeAuthors(c);
+      return describeAuthors(c, authorsById ?? new Map());
     case 'tags':
       return describeTags(c, tagsById);
     case 'progress':
