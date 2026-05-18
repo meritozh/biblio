@@ -52,8 +52,8 @@ export function EditFileDialog({
 
   // Populate form when file changes or dialog opens.
   // Fetch full details (including the metadata array) because the file list
-  // only ships a flat `description` field — other metadata keys (e.g. comics
-  // `volume`) are only available via file_get.
+  // doesn't ship row-level metadata — keys like the comic `volume` are only
+  // available via file_get.
   useEffect(() => {
     if (!file || !open) return;
 
@@ -66,10 +66,7 @@ export function EditFileDialog({
       category_id: file.category_id,
       tag_ids: file.tags?.map((t) => t.id) ?? [],
       author_ids: file.authors?.map((a) => a.id) ?? [],
-      metadata:
-        file.description != null && file.description !== ''
-          ? [{ key: 'description', value: file.description, data_type: 'text' }]
-          : [],
+      metadata: [],
       progress: file.progress ?? '',
     });
 

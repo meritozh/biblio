@@ -1,14 +1,13 @@
 use async_trait::async_trait;
 
 use super::content_sample::is_novel_file;
-use super::mime::upsert_field;
 use crate::pipeline::{FileContext, NodeError, Phase2Node, PipelineEnv};
 use crate::pipeline::runner::emit_progress;
 
-/// LLM Call 2: classify the novel via content samples (category / tags /
-/// description). Runs only when the filename LLM applies *and* the user
-/// has opted in via `settings.analyze_content` *and* a content sample is
-/// available. The request timeout lives inside `extract_content_metadata`.
+/// LLM Call 2: classify the novel via content samples (category / tags).
+/// Runs only when the filename LLM applies *and* the user has opted in
+/// via `settings.analyze_content` *and* a content sample is available.
+/// The request timeout lives inside `extract_content_metadata`.
 pub struct ContentLlmNode;
 
 #[async_trait]
@@ -70,11 +69,6 @@ impl Phase2Node for ContentLlmNode {
                 }
             } else if !ctx.suggested_tags.contains(&tag) {
                 ctx.suggested_tags.push(tag);
-            }
-        }
-        if let Some(desc) = meta.description {
-            if !desc.is_empty() {
-                upsert_field(&mut ctx.extracted_metadata, "description", &desc);
             }
         }
 

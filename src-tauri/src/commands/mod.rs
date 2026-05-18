@@ -114,7 +114,6 @@ pub struct FileListItem {
     pub storage_kind: Option<String>,
     pub remote_provider: Option<String>,
     pub local_cache_path: Option<String>,
-    pub description: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub tags: Vec<Tag>,

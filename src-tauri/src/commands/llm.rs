@@ -58,9 +58,6 @@ pub struct LlmContentMetadata {
     /// Genre/theme tags
     #[serde(default, deserialize_with = "lenient_string_vec")]
     pub tags: Vec<String>,
-    /// Brief description based on content
-    #[serde(default, deserialize_with = "lenient_opt_string")]
-    pub description: Option<String>,
 }
 
 /// Comic-path Call 1: LLM ranks up to 5 filenames most likely to be the

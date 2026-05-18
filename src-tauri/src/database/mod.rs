@@ -181,5 +181,28 @@ pub fn get_migrations() -> Vec<Migration> {
             sql: "ALTER TABLE categories ADD COLUMN view_config TEXT;",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 9,
+            description: "drop file description metadata",
+            // The novel-card layout no longer exposes a `description` field
+            // (LLM-generated plot summaries weren't earning their UI cost).
+            // Clean up the existing rows so the metadata table doesn't carry
+            // dead keys, and strip the description bullet from the seeded
+            // Content Analysis prompt so the LLM stops generating it on the
+            // next run. Customized prompts (LIKE no-match) are left as-is —
+            // the field is silently dropped by the Rust extraction struct
+            // either way.
+            sql: "
+                DELETE FROM metadata WHERE key = 'description';
+                UPDATE prompts
+                   SET content = REPLACE(
+                       content,
+                       char(10) || '- description: 1-2 sentence plot summary based on content',
+                       ''
+                   )
+                 WHERE content LIKE '%- description: 1-2 sentence plot summary based on content%';
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }

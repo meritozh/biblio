@@ -35,7 +35,6 @@ export type FormFieldKey =
   | 'authors'
   | 'tags'
   | 'progress'
-  | 'description'
   | 'cover'
   | 'volume';
 
@@ -64,9 +63,8 @@ export const REGISTRY: Readonly<Record<SchemaSlug, CategorySchema>> = {
       'authors',
       'tags',
       'progress',
-      'description',
     ],
-    cardFields: ['authors', 'progress'],
+    cardFields: ['authors'],
     acceptedExtensions: ['txt'],
   },
   comic: {

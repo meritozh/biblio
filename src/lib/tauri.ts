@@ -201,10 +201,10 @@ export async function comicCollectionList(params: {
   });
 }
 
-/** Hydrate a set of files by id, with tags/authors/description joined. The
- *  drill-down from a comic collection card calls this so the FileList grid
- *  can resolve every file regardless of which paginated page it sits on in
- *  the main view. */
+/** Hydrate a set of files by id, with tags/authors joined. The drill-down
+ *  from a comic collection card calls this so the FileList grid can resolve
+ *  every file regardless of which paginated page it sits on in the main
+ *  view. */
 export async function fileListByIds(
   ids: number[]
 ): Promise<import('@/types').FileEntry[]> {

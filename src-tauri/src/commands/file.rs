@@ -512,14 +512,6 @@ pub async fn file_list(
         .await
         .map_err(|e| e.to_string())?;
 
-        let description: Option<String> = sqlx::query_scalar(
-            "SELECT value FROM metadata WHERE file_id = ? AND key = 'description'"
-        )
-        .bind(file.id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
         file_items.push(FileListItem {
             id: file.id,
             path: file.path,
@@ -532,7 +524,6 @@ pub async fn file_list(
             storage_kind: file.storage_kind,
             remote_provider: file.remote_provider,
             local_cache_path: file.local_cache_path,
-            description,
             created_at: file.created_at,
             updated_at: file.updated_at,
             tags,
@@ -578,14 +569,6 @@ async fn hydrate_file_items(
         .await
         .map_err(|e| e.to_string())?;
 
-        let description: Option<String> = sqlx::query_scalar(
-            "SELECT value FROM metadata WHERE file_id = ? AND key = 'description'",
-        )
-        .bind(file.id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
         items.push(FileListItem {
             id: file.id,
             path: file.path,
@@ -598,7 +581,6 @@ async fn hydrate_file_items(
             storage_kind: file.storage_kind,
             remote_provider: file.remote_provider,
             local_cache_path: file.local_cache_path,
-            description,
             created_at: file.created_at,
             updated_at: file.updated_at,
             tags,
@@ -608,7 +590,7 @@ async fn hydrate_file_items(
     Ok(items)
 }
 
-/// Fetch a set of files by id, hydrated with tags/authors/description so the
+/// Fetch a set of files by id, hydrated with tags/authors so the
 /// frontend's `fileStore.byId` can be populated directly. Used by the comic
 /// collection drill-down: `comic_collection_list` returns ids only; the
 /// route hydrates the drilled-into collection's rows on click so the

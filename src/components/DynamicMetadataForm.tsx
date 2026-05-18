@@ -302,24 +302,6 @@ export function DynamicMetadataForm({
           </div>
         );
 
-      case 'description':
-        return (
-          <div className="space-y-2" key={key}>
-            <Label htmlFor="description" className="text-sm font-medium">
-              Description
-            </Label>
-            <textarea
-              id="description"
-              value={getMetadataValue('description')}
-              onChange={(e) =>
-                handleMetadataFieldChange('description', e.target.value, 'text')
-              }
-              placeholder="Short plot summary (auto-filled by content analysis)"
-              className="w-full min-h-[80px] px-3 py-2 text-sm rounded-xl border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-y"
-            />
-          </div>
-        );
-
       case 'volume':
         return (
           <div className="space-y-2" key={key}>

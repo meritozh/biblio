@@ -68,6 +68,7 @@ export const NovelFileCard = memo(function NovelFileCard({
             tags={file.tags}
             fileId={file.id}
             displayName={file.display_name}
+            progress={file.progress}
           />
           <div className="absolute bottom-1.5 left-1.5">
             <CardStatus
