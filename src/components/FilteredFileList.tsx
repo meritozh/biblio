@@ -7,7 +7,6 @@ import { EditFileDialog } from '@/components/EditFileDialog';
 import { ConfirmDeleteDialog } from '@/components/ConfirmDeleteDialog';
 import { useFileActions } from '@/hooks/useFileActions';
 import { useView, type ViewFetcherResult } from '@/hooks/useView';
-import { useAppState } from '@/stores/appStore';
 import {
   enqueueUpload,
 } from '@/stores/remoteUploadStore';
@@ -84,11 +83,10 @@ export function FilteredFileList({
   seededConditions,
   viewKey,
 }: FilteredFileListProps) {
-  const selectedCategoryId = useAppState((s) => s.selectedCategoryId);
-
-  // Local sort + extra filter conditions, owned by this page. Mirrors
-  // HomePage's shape but lives entirely inside the filtered view —
-  // toggling sidebar category re-runs the fetch via the viewKey change.
+  // Filter pages span all categories. The sidebar's selectedCategoryId is
+  // intentionally ignored here — clicking an author or tag means "all files
+  // by this author across the whole library", not "files by this author in
+  // whichever category the sidebar happened to be on when I clicked".
   const [sortBy, setSortBy] = useState<SortKey>('name');
   const [sortDesc, setSortDesc] = useState(false);
   const handleSortChange = useCallback((next: SortKey, desc: boolean) => {
@@ -111,30 +109,27 @@ export function FilteredFileList({
 
   const fullViewKey = useMemo(
     () =>
-      `${viewKey}::category=${selectedCategoryId ?? 'none'}::sort=${sortBy}:${sortDesc ? 'desc' : 'asc'}::filters=${conditionsKey}`,
-    [viewKey, selectedCategoryId, sortBy, sortDesc, conditionsKey]
+      `${viewKey}::sort=${sortBy}:${sortDesc ? 'desc' : 'asc'}::filters=${conditionsKey}`,
+    [viewKey, sortBy, sortDesc, conditionsKey]
   );
 
   const fetchView = useCallback(async (): Promise<ViewFetcherResult> => {
-    if (selectedCategoryId === null) return { files: [], total: 0 };
     return await fetchFiles({
-      category_id: selectedCategoryId,
       sort_by: sortBy,
       sort_desc: sortDesc,
       conditions: effectiveConditions,
       limit: FILES_PAGE_SIZE,
       offset: 0,
     });
-  }, [selectedCategoryId, sortBy, sortDesc, effectiveConditions]);
+  }, [sortBy, sortDesc, effectiveConditions]);
 
   const { ids, total, loading, appendMore } = useView(fullViewKey, fetchView);
 
   const handleLoadMore = useCallback(async () => {
-    if (loadingMore || selectedCategoryId === null) return;
+    if (loadingMore) return;
     setLoadingMore(true);
     try {
       const result = await fetchFiles({
-        category_id: selectedCategoryId,
         sort_by: sortBy,
         sort_desc: sortDesc,
         conditions: effectiveConditions,
@@ -147,7 +142,6 @@ export function FilteredFileList({
     }
   }, [
     loadingMore,
-    selectedCategoryId,
     sortBy,
     sortDesc,
     effectiveConditions,
