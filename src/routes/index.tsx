@@ -658,7 +658,7 @@ function HomePage() {
             applySort={!!expandedCollection}
             conditions={conditions}
             onConditionsChange={setConditions}
-            applyConditionsClientSide={false}
+            applyConditionsClientSide={!!expandedCollection}
             viewMode={viewMode}
             onViewModeChange={setViewMode}
             viewModeAvailable={isComicCategory}

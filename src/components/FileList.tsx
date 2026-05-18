@@ -61,7 +61,7 @@ function ComicCover({ fileId }: { fileId: number }) {
   useEffect(() => {
     coverGet(fileId)
       .then(({ data, mime_type }) => setSrc(`data:${mime_type};base64,${data}`))
-      .catch(() => {});
+      .catch(() => { });
   }, [fileId]);
   return src ? (
     <img src={src} alt="Cover" className="h-full w-full object-cover" />
@@ -206,7 +206,7 @@ const CollectionCard = memo(function CollectionCard({
       .then(({ data, mime_type }) => {
         if (!cancelled) setSrc(`data:${mime_type};base64,${data}`);
       })
-      .catch(() => {});
+      .catch(() => { });
     return () => {
       cancelled = true;
     };
@@ -224,7 +224,7 @@ const CollectionCard = memo(function CollectionCard({
         className="w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 transition-colors hover:bg-muted/50 focus:outline-none focus:ring-2 focus:ring-ring"
         aria-label={`Open ${collection.title} (${count} items)`}
       >
-        <div className="relative aspect-[2/3] w-full">
+        <div className="relative aspect-2/3 w-full">
           {/* Two offset card-shaped layers behind the cover, peeking out
            *  beyond the right/bottom edges to read as a stack instead of a
            *  single card. */}
@@ -327,11 +327,10 @@ const FileCard = memo(function FileCard({
       <button
         type="button"
         onClick={() => onCardClick(file)}
-        className={`w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring ${
-          isSelected
-            ? 'bg-primary/10 ring-1 ring-primary/40'
-            : 'hover:bg-muted/50'
-        }`}
+        className={`w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring ${isSelected
+          ? 'bg-primary/10 ring-1 ring-primary/40'
+          : 'hover:bg-muted/50'
+          }`}
         aria-label={
           selectionMode
             ? `Toggle selection of ${file.display_name}`
@@ -339,7 +338,7 @@ const FileCard = memo(function FileCard({
         }
         aria-pressed={selectionMode ? isSelected : undefined}
       >
-        <div className="relative aspect-[2/3] w-full rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
+        <div className="relative aspect-2/3 w-full rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
           <CardCover file={file} schema={schema} />
           <div className="absolute bottom-1.5 left-1.5">
             <CardStatus
@@ -766,80 +765,88 @@ export function FileList({
               <span className="h-5 w-px bg-border mx-1" aria-hidden="true" />
             </>
           )}
-          <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortKey)}>
-            <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
-              <span className="text-muted-foreground">Sort</span>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {SORT_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value} className="text-xs">
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button
-            variant="outline"
-            size="icon"
-            className="h-8 w-8 shrink-0"
-            aria-label={sortDesc ? 'Sort descending' : 'Sort ascending'}
-            onClick={() => setSortDesc(!sortDesc)}
-          >
-            {sortDesc ? (
-              <ArrowDown className="h-3.5 w-3.5" />
-            ) : (
-              <ArrowUp className="h-3.5 w-3.5" />
-            )}
-          </Button>
-          <span className="h-5 w-px bg-border mx-1" aria-hidden="true" />
-          <Popover open={filterOpen} onOpenChange={setFilterOpen}>
-            <PopoverTrigger asChild>
+          {/* Sort + Filter operate on file rows (compareFiles, applyConditions);
+           *  the collections grid renders ComicCollection cards directly, so
+           *  these controls have no effect there. Hide them when grouped to
+           *  keep the toolbar honest — they reappear after drill-down. */}
+          {!showCollections && (
+            <>
+              <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortKey)}>
+                <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
+                  <span className="text-muted-foreground">Sort</span>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SORT_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Button
-                variant={conditions.length > 0 ? 'default' : 'outline'}
-                size="sm"
-                className="h-8 text-xs gap-1.5"
+                variant="outline"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                aria-label={sortDesc ? 'Sort descending' : 'Sort ascending'}
+                onClick={() => setSortDesc(!sortDesc)}
               >
-                <FilterIcon className="h-3.5 w-3.5" />
-                Filter
-                {conditions.length > 0 && (
-                  <span className="ml-0.5 rounded-full bg-background/30 px-1.5 text-[10px] leading-tight">
-                    {conditions.length}
-                  </span>
+                {sortDesc ? (
+                  <ArrowDown className="h-3.5 w-3.5" />
+                ) : (
+                  <ArrowUp className="h-3.5 w-3.5" />
                 )}
               </Button>
-            </PopoverTrigger>
-            <PopoverContent align="start" sideOffset={6} className="w-auto p-3">
-              <FilterEditor
-                conditions={conditions}
-                onConditionsChange={setConditions}
-                tags={availableTags}
-              />
-            </PopoverContent>
-          </Popover>
-          {conditions.map((c) => (
-            <div
-              key={c.id}
-              className="inline-flex items-center rounded-full border bg-secondary/50 hover:bg-secondary transition-colors h-8"
-            >
-              <button
-                type="button"
-                onClick={() => setFilterOpen(true)}
-                className="text-xs pl-3 pr-1.5 h-full text-foreground/80 focus:outline-none"
-                aria-label={`Edit condition: ${describeCondition(c, tagsById)}`}
-              >
-                {describeCondition(c, tagsById)}
-              </button>
-              <button
-                type="button"
-                onClick={() => removeCondition(c.id)}
-                className="px-1.5 h-full text-muted-foreground hover:text-foreground rounded-r-full focus:outline-none"
-                aria-label="Remove condition"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
+              <span className="h-5 w-px bg-border mx-1" aria-hidden="true" />
+              <Popover open={filterOpen} onOpenChange={setFilterOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant={conditions.length > 0 ? 'default' : 'outline'}
+                    size="sm"
+                    className="h-8 text-xs gap-1.5"
+                  >
+                    <FilterIcon className="h-3.5 w-3.5" />
+                    Filter
+                    {conditions.length > 0 && (
+                      <span className="ml-0.5 rounded-full bg-background/30 px-1.5 text-[10px] leading-tight">
+                        {conditions.length}
+                      </span>
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="start" sideOffset={6} className="w-auto p-3">
+                  <FilterEditor
+                    conditions={conditions}
+                    onConditionsChange={setConditions}
+                    tags={availableTags}
+                  />
+                </PopoverContent>
+              </Popover>
+              {conditions.map((c) => (
+                <div
+                  key={c.id}
+                  className="inline-flex items-center rounded-full border bg-secondary/50 hover:bg-secondary transition-colors h-8"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setFilterOpen(true)}
+                    className="text-xs pl-3 pr-1.5 h-full text-foreground/80 focus:outline-none"
+                    aria-label={`Edit condition: ${describeCondition(c, tagsById)}`}
+                  >
+                    {describeCondition(c, tagsById)}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeCondition(c.id)}
+                    className="px-1.5 h-full text-muted-foreground hover:text-foreground rounded-r-full focus:outline-none"
+                    aria-label="Remove condition"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+            </>
+          )}
           <div className="flex-1" />
           <Button
             variant="outline"
@@ -1019,30 +1026,30 @@ export function FileList({
               >
                 {showCollections
                   ? (collections ?? []).slice(startIdx, endIdx).map((c) => (
-                      <CollectionCard
-                        key={`${c.mode}:${c.key}`}
-                        collection={c}
-                        onOpen={(col) => onOpenCollection?.(col)}
-                      />
-                    ))
+                    <CollectionCard
+                      key={`${c.mode}:${c.key}`}
+                      collection={c}
+                      onOpen={(col) => onOpenCollection?.(col)}
+                    />
+                  ))
                   : visibleEntries.slice(startIdx, endIdx).map((file) => {
-                      const blocked = inFlightAnyIds.has(file.id);
-                      const isSelected = selectedIds.has(file.id);
-                      return (
-                        <FileCard
-                          key={file.id}
-                          id={file.id}
-                          isSelected={isSelected}
-                          isUploading={inFlightUploadIds.has(file.id)}
-                          blocked={blocked}
-                          selectionMode={selectionMode}
-                          onCardClick={handleCardClick}
-                          onToggleSelect={toggleSelection}
-                          onEdit={onFileEdit}
-                          onDelete={onFileDelete}
-                        />
-                      );
-                    })}
+                    const blocked = inFlightAnyIds.has(file.id);
+                    const isSelected = selectedIds.has(file.id);
+                    return (
+                      <FileCard
+                        key={file.id}
+                        id={file.id}
+                        isSelected={isSelected}
+                        isUploading={inFlightUploadIds.has(file.id)}
+                        blocked={blocked}
+                        selectionMode={selectionMode}
+                        onCardClick={handleCardClick}
+                        onToggleSelect={toggleSelection}
+                        onEdit={onFileEdit}
+                        onDelete={onFileDelete}
+                      />
+                    );
+                  })}
               </div>
             );
           })}
