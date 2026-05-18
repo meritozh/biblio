@@ -412,34 +412,6 @@ export async function coverDelete(file_id: number): Promise<{ success: boolean }
   return invoke('cover_delete', { fileId: file_id });
 }
 
-export interface RecompressCoversProgress {
-  done: number;
-  total: number;
-  skipped: number;
-}
-
-export interface RecompressCoversResult {
-  total: number;
-  recompressed: number;
-  skipped: number;
-}
-
-/** Walk every row in the `covers` table and re-encode it through the
- *  shared compression helper. Irreversible + lossy: existing covers
- *  lose detail. Returns a summary; subscribe via
- *  {@link onRecompressCoversProgress} for live progress while it runs. */
-export async function recompressCovers(): Promise<RecompressCoversResult> {
-  return invoke('db_recompress_covers');
-}
-
-export function onRecompressCoversProgress(
-  callback: (progress: RecompressCoversProgress) => void
-): Promise<UnlistenFn> {
-  return listen<RecompressCoversProgress>('recompress-covers-progress', (event) =>
-    callback(event.payload)
-  );
-}
-
 export async function settingsGet(key: string): Promise<string | null> {
   return invoke('settings_get', { key });
 }
