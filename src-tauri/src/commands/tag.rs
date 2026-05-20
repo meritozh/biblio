@@ -36,6 +36,7 @@ pub async fn tag_list(
     include_usage: Option<bool>,
     limit: Option<i64>,
     offset: Option<i64>,
+    name_query: Option<String>,
 ) -> Result<TagListResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
@@ -45,33 +46,67 @@ pub async fn tag_list(
     // call sites without branching on the option twice.
     let limit_val: i64 = limit.unwrap_or(-1);
     let offset_val: i64 = offset.unwrap_or(0);
+    // Trim + lower-case once; empty after trim is "no filter" (same as
+    // None) so callers don't have to special-case the empty input box.
+    let like_pattern = name_query
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{}%", s.to_lowercase()));
 
-    let tags: Vec<TagWithUsage> = if include_usage.unwrap_or(false) {
-        sqlx::query_as(
+    let tags: Vec<TagWithUsage> = match (include_usage.unwrap_or(false), like_pattern.as_deref()) {
+        (true, Some(pat)) => sqlx::query_as(
+            "SELECT t.id, t.name, t.color, t.created_at, COUNT(ft.file_id) as usage_count
+             FROM tags t
+             LEFT JOIN file_tags ft ON t.id = ft.tag_id
+             WHERE LOWER(t.name) LIKE ?
+             GROUP BY t.id
+             ORDER BY t.name
+             LIMIT ? OFFSET ?",
+        )
+        .bind(pat)
+        .bind(limit_val)
+        .bind(offset_val)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| e.to_string())?,
+        (true, None) => sqlx::query_as(
             "SELECT t.id, t.name, t.color, t.created_at, COUNT(ft.file_id) as usage_count
              FROM tags t
              LEFT JOIN file_tags ft ON t.id = ft.tag_id
              GROUP BY t.id
              ORDER BY t.name
-             LIMIT ? OFFSET ?"
+             LIMIT ? OFFSET ?",
         )
         .bind(limit_val)
         .bind(offset_val)
         .fetch_all(&pool)
         .await
-        .map_err(|e| e.to_string())?
-    } else {
-        sqlx::query_as(
+        .map_err(|e| e.to_string())?,
+        (false, Some(pat)) => sqlx::query_as(
+            "SELECT t.id, t.name, t.color, t.created_at, 0 as usage_count
+             FROM tags t
+             WHERE LOWER(t.name) LIKE ?
+             ORDER BY t.name
+             LIMIT ? OFFSET ?",
+        )
+        .bind(pat)
+        .bind(limit_val)
+        .bind(offset_val)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| e.to_string())?,
+        (false, None) => sqlx::query_as(
             "SELECT t.id, t.name, t.color, t.created_at, 0 as usage_count
              FROM tags t
              ORDER BY t.name
-             LIMIT ? OFFSET ?"
+             LIMIT ? OFFSET ?",
         )
         .bind(limit_val)
         .bind(offset_val)
         .fetch_all(&pool)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?,
     };
 
     Ok(TagListResponse { tags })
@@ -83,13 +118,26 @@ pub struct TagListResponse {
 }
 
 #[tauri::command]
-pub async fn tag_count(app: AppHandle) -> Result<i64, String> {
+pub async fn tag_count(app: AppHandle, name_query: Option<String>) -> Result<i64, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-    let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tags")
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
+    let like_pattern = name_query
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("%{}%", s.to_lowercase()));
+    let (total,): (i64,) = if let Some(pat) = like_pattern {
+        sqlx::query_as("SELECT COUNT(*) FROM tags WHERE LOWER(name) LIKE ?")
+            .bind(pat)
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        sqlx::query_as("SELECT COUNT(*) FROM tags")
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| e.to_string())?
+    };
     Ok(total)
 }
 

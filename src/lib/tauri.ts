@@ -312,16 +312,20 @@ export async function tagList(params?: {
   includeUsage?: boolean;
   limit?: number;
   offset?: number;
+  /** Case-insensitive substring match against `tags.name`. Trimmed
+   *  empty strings are treated as "no filter" both here and in Rust. */
+  nameQuery?: string;
 }): Promise<{ tags: (Tag & { usageCount: number })[] }> {
   return invoke('tag_list', {
     includeUsage: params?.includeUsage || false,
     limit: params?.limit ?? null,
     offset: params?.offset ?? null,
+    nameQuery: params?.nameQuery ?? null,
   });
 }
 
-export async function tagCount(): Promise<number> {
-  return invoke('tag_count');
+export async function tagCount(params?: { nameQuery?: string }): Promise<number> {
+  return invoke('tag_count', { nameQuery: params?.nameQuery ?? null });
 }
 
 export async function tagCreate(name: string, color?: string): Promise<{ id: number }> {
@@ -381,16 +385,19 @@ export async function authorList(params?: {
   includeUsage?: boolean;
   limit?: number;
   offset?: number;
+  /** Case-insensitive substring match against `authors.name`. */
+  nameQuery?: string;
 }): Promise<{ authors: (Author & { usageCount: number })[] }> {
   return invoke('author_list', {
     includeUsage: params?.includeUsage || false,
     limit: params?.limit ?? null,
     offset: params?.offset ?? null,
+    nameQuery: params?.nameQuery ?? null,
   });
 }
 
-export async function authorCount(): Promise<number> {
-  return invoke('author_count');
+export async function authorCount(params?: { nameQuery?: string }): Promise<number> {
+  return invoke('author_count', { nameQuery: params?.nameQuery ?? null });
 }
 
 export async function authorCreate(name: string): Promise<{ id: number }> {

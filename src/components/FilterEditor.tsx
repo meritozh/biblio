@@ -1,3 +1,4 @@
+import { useCallback, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -12,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Check, Plus, X } from 'lucide-react';
+import { Plus, X } from 'lucide-react';
 import {
   FIELD_LABELS,
   FILE_STATUS_OPTIONS,
@@ -26,6 +27,8 @@ import {
   type Field,
   type Op,
 } from '@/lib/filters';
+import { PaginatedPicker, type PickerPage } from '@/components/PaginatedPicker';
+import { authorList, tagList } from '@/lib/tauri';
 import type { FileStatus, StorageKind, Tag } from '@/types';
 
 interface FilterEditorProps {
@@ -193,26 +196,18 @@ function ValueEditor({ condition: c, onChange, tags, authors }: ValueEditorProps
   }
 
   if (c.field === 'authors' && c.op === 'includes') {
+    const name =
+      c.authorId !== undefined
+        ? authors.find((a) => a.id === c.authorId)?.name ?? `#${c.authorId}`
+        : null;
     return (
-      <Select
-        value={c.authorId !== undefined ? String(c.authorId) : undefined}
-        onValueChange={(v) => onChange({ ...c, authorId: Number(v) })}
-      >
-        <SelectTrigger className="h-8 flex-1 text-xs">
-          <SelectValue placeholder="pick an author…" />
-        </SelectTrigger>
-        <SelectContent>
-          {authors.length === 0 ? (
-            <div className="text-xs text-muted-foreground p-2">No authors defined</div>
-          ) : (
-            authors.map((a) => (
-              <SelectItem key={a.id} value={String(a.id)} className="text-xs">
-                {a.name}
-              </SelectItem>
-            ))
-          )}
-        </SelectContent>
-      </Select>
+      <SinglePickerButton
+        kind="author"
+        label={name ?? 'pick an author…'}
+        muted={name == null}
+        selectedId={c.authorId}
+        onSelect={(id) => onChange({ ...c, authorId: id })}
+      />
     );
   }
 
@@ -235,81 +230,34 @@ function ValueEditor({ condition: c, onChange, tags, authors }: ValueEditorProps
       );
     }
     if (c.op === 'includes' || c.op === 'excludes') {
+      const name =
+        c.tagId !== undefined
+          ? tags.find((t) => t.id === c.tagId)?.name ?? `#${c.tagId}`
+          : null;
       return (
-        <Select
-          value={c.tagId !== undefined ? String(c.tagId) : undefined}
-          onValueChange={(v) => onChange({ ...c, tagId: Number(v) })}
-        >
-          <SelectTrigger className="h-8 flex-1 text-xs">
-            <SelectValue placeholder="pick a tag…" />
-          </SelectTrigger>
-          <SelectContent>
-            {tags.length === 0 ? (
-              <div className="text-xs text-muted-foreground p-2">No tags defined</div>
-            ) : (
-              tags.map((t) => (
-                <SelectItem key={t.id} value={String(t.id)} className="text-xs">
-                  {t.name}
-                </SelectItem>
-              ))
-            )}
-          </SelectContent>
-        </Select>
+        <SinglePickerButton
+          kind="tag"
+          label={name ?? 'pick a tag…'}
+          muted={name == null}
+          selectedId={c.tagId}
+          onSelect={(id) => onChange({ ...c, tagId: id })}
+        />
       );
     }
     if (c.op === 'includes_any' || c.op === 'excludes_any') {
-      // Multi-tag picker: popover with a checkbox list, since the
-      // shadcn Select primitive is single-value only. Trigger button
-      // surfaces the count + first picked tag's name as a preview.
-      const selected = new Set(c.tagIds);
-      const togglePick = (id: number) => {
-        const next = selected.has(id)
-          ? c.tagIds.filter((x) => x !== id)
-          : [...c.tagIds, id];
-        onChange({ ...c, tagIds: next });
-      };
+      // Multi-tag picker: reuses PaginatedPicker so the dropdown stays
+      // smooth at scale. Trigger button surfaces the count + first
+      // picked tag's name as a preview.
       const previewName =
         c.tagIds.length > 0
           ? tags.find((t) => t.id === c.tagIds[0])?.name ?? `#${c.tagIds[0]}`
           : null;
       return (
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 flex-1 text-xs justify-start font-normal"
-            >
-              {c.tagIds.length === 0 ? (
-                <span className="text-muted-foreground">pick tags…</span>
-              ) : c.tagIds.length === 1 ? (
-                previewName
-              ) : (
-                `${previewName} +${c.tagIds.length - 1}`
-              )}
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent align="start" sideOffset={4} className="w-60 p-1 max-h-72 overflow-auto">
-            {tags.length === 0 ? (
-              <div className="text-xs text-muted-foreground p-2">No tags defined</div>
-            ) : (
-              tags.map((t) => {
-                const picked = selected.has(t.id);
-                return (
-                  <button
-                    type="button"
-                    key={t.id}
-                    onClick={() => togglePick(t.id)}
-                    className="w-full flex items-center justify-between gap-2 px-2 py-1.5 text-xs rounded hover:bg-muted text-left"
-                  >
-                    <span className="truncate">{t.name}</span>
-                    {picked && <Check className="h-3.5 w-3.5 shrink-0" />}
-                  </button>
-                );
-              })
-            )}
-          </PopoverContent>
-        </Popover>
+        <MultiTagPicker
+          tagIds={c.tagIds}
+          previewName={previewName}
+          onChange={(next) => onChange({ ...c, tagIds: next })}
+        />
       );
     }
   }
@@ -367,3 +315,144 @@ function ValueEditor({ condition: c, onChange, tags, authors }: ValueEditorProps
 
   return <div className="flex-1" aria-hidden="true" />;
 }
+
+// ── Picker sub-components ─────────────────────────────────────────────────────
+
+interface SinglePickerButtonProps {
+  kind: 'tag' | 'author';
+  /** Text shown on the button. When `muted` is true, render in
+   *  muted-foreground so the placeholder reads visually distinct from a
+   *  picked name. */
+  label: string;
+  muted: boolean;
+  selectedId?: number;
+  onSelect: (id: number) => void;
+}
+
+/** Popover trigger + paginated single-pick body for tag/author
+ *  filter rows. Picking auto-closes (single-pick semantics). */
+function SinglePickerButton({
+  kind,
+  label,
+  muted,
+  selectedId,
+  onSelect,
+}: SinglePickerButtonProps) {
+  const [open, setOpen] = useState(false);
+  const fetcher = useCallback(
+    async ({ query, offset, limit }: { query: string; offset: number; limit: number }): Promise<PickerPage> => {
+      if (kind === 'tag') {
+        const { tags: page } = await tagList({
+          limit,
+          offset,
+          nameQuery: query.length > 0 ? query : undefined,
+        });
+        const total = page.length < limit ? offset + page.length : offset + page.length + 1;
+        return {
+          items: page.map((t) => ({ id: t.id, name: t.name, color: t.color })),
+          total,
+        };
+      }
+      const { authors: page } = await authorList({
+        limit,
+        offset,
+        nameQuery: query.length > 0 ? query : undefined,
+      });
+      const total = page.length < limit ? offset + page.length : offset + page.length + 1;
+      return {
+        items: page.map((a) => ({ id: a.id, name: a.name })),
+        total,
+      };
+    },
+    [kind]
+  );
+  const selectedIds = useMemo(
+    () => (selectedId !== undefined ? [selectedId] : []),
+    [selectedId]
+  );
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 flex-1 text-xs justify-start font-normal"
+        >
+          <span className={muted ? 'text-muted-foreground' : undefined}>
+            {label}
+          </span>
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" sideOffset={4} className="p-0" disablePortal>
+        <PaginatedPicker
+          mode="single"
+          selectedIds={selectedIds}
+          fetcher={fetcher}
+          onSelect={(id) => {
+            onSelect(id);
+            setOpen(false);
+          }}
+          searchPlaceholder={kind === 'tag' ? 'Search tags…' : 'Search authors…'}
+          emptyLabel={kind === 'tag' ? 'No tags defined' : 'No authors defined'}
+          noMatchLabel={kind === 'tag' ? 'No matching tags' : 'No matching authors'}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+interface MultiTagPickerProps {
+  tagIds: number[];
+  previewName: string | null;
+  onChange: (next: number[]) => void;
+}
+
+/** Multi-pick tag chooser for `tags includes_any` / `excludes_any`. */
+function MultiTagPicker({ tagIds, previewName, onChange }: MultiTagPickerProps) {
+  const fetcher = useCallback(
+    async ({ query, offset, limit }: { query: string; offset: number; limit: number }): Promise<PickerPage> => {
+      const { tags: page } = await tagList({
+        limit,
+        offset,
+        nameQuery: query.length > 0 ? query : undefined,
+      });
+      const total = page.length < limit ? offset + page.length : offset + page.length + 1;
+      return {
+        items: page.map((t) => ({ id: t.id, name: t.name, color: t.color })),
+        total,
+      };
+    },
+    []
+  );
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 flex-1 text-xs justify-start font-normal"
+        >
+          {tagIds.length === 0 ? (
+            <span className="text-muted-foreground">pick tags…</span>
+          ) : tagIds.length === 1 ? (
+            previewName
+          ) : (
+            `${previewName} +${tagIds.length - 1}`
+          )}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" sideOffset={4} className="p-0" disablePortal>
+        <PaginatedPicker
+          mode="multi"
+          selectedIds={tagIds}
+          fetcher={fetcher}
+          onToggle={onChange}
+          searchPlaceholder="Search tags…"
+          emptyLabel="No tags defined"
+          noMatchLabel="No matching tags"
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+

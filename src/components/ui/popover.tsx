@@ -9,11 +9,22 @@ const PopoverTrigger = PopoverPrimitive.Trigger;
 
 const PopoverAnchor = PopoverPrimitive.Anchor;
 
+interface PopoverContentProps
+  extends React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content> {
+  /** Render inline instead of portaling to document.body. Use when the
+   *  popover is nested inside a Radix Dialog: Radix Dialog wraps its
+   *  content in `react-remove-scroll`, which swallows wheel events on
+   *  anything outside the dialog's scroll-shard. A Portaled popover
+   *  lives outside that shard and loses native scroll. Rendering inline
+   *  keeps the popover in the shard so scroll works as-is. */
+  disablePortal?: boolean;
+}
+
 const PopoverContent = React.forwardRef<
   React.ElementRef<typeof PopoverPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content>
->(({ className, align = 'center', sideOffset = 4, ...props }, ref) => (
-  <PopoverPrimitive.Portal>
+  PopoverContentProps
+>(({ className, align = 'center', sideOffset = 4, disablePortal = false, ...props }, ref) => {
+  const content = (
     <PopoverPrimitive.Content
       ref={ref}
       align={align}
@@ -24,8 +35,9 @@ const PopoverContent = React.forwardRef<
       )}
       {...props}
     />
-  </PopoverPrimitive.Portal>
-));
+  );
+  return disablePortal ? content : <PopoverPrimitive.Portal>{content}</PopoverPrimitive.Portal>;
+});
 PopoverContent.displayName = PopoverPrimitive.Content.displayName;
 
 export { Popover, PopoverTrigger, PopoverContent, PopoverAnchor };
