@@ -1097,6 +1097,80 @@ pub async fn file_reanalyze_missing_tags(
     })
 }
 
+// ── Assign author to authorless files in a category ──────────────────────────
+
+#[derive(Serialize)]
+pub struct AssignAuthorResponse {
+    pub assigned: i64,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct EmitAuthorsBulkChange {
+    id: i64,
+}
+
+/// Count files with no `file_authors` row, optionally scoped to one
+/// category. Feeds the affected-count badge on `/cleanup`'s "Assign
+/// author" Debug card. `category_id = None` counts across all
+/// categories.
+#[tauri::command]
+pub async fn file_count_authorless_in_category(
+    app: AppHandle,
+    category_id: Option<i64>,
+) -> Result<i64, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM files f
+         WHERE (?1 IS NULL OR f.category_id = ?1)
+           AND f.file_status = 'available'
+           AND NOT EXISTS (SELECT 1 FROM file_authors WHERE file_id = f.id)",
+    )
+    .bind(category_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+/// Insert a `file_authors` link from `author_id` to every file in the
+/// given category (or library-wide when `category_id` is None) that
+/// currently has zero authors. Single transaction via `INSERT ... SELECT`;
+/// `INSERT OR IGNORE` defends against the unlikely race where a parallel
+/// import inserted a row between our COUNT and our INSERT.
+///
+/// Emits one `author-updated` event (sentinel id `0`) so the existing
+/// `listenTagAuthorChanges` listener picks the change up across the app.
+#[tauri::command]
+pub async fn file_assign_author_to_authorless(
+    app: AppHandle,
+    category_id: Option<i64>,
+    author_id: i64,
+) -> Result<AssignAuthorResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    let result = sqlx::query(
+        "INSERT OR IGNORE INTO file_authors (file_id, author_id)
+         SELECT f.id, ?2 FROM files f
+         WHERE (?1 IS NULL OR f.category_id = ?1)
+           AND f.file_status = 'available'
+           AND NOT EXISTS (SELECT 1 FROM file_authors WHERE file_id = f.id)",
+    )
+    .bind(category_id)
+    .bind(author_id)
+    .execute(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let assigned = result.rows_affected() as i64;
+    if assigned > 0 {
+        let _ = app.emit("author-updated", EmitAuthorsBulkChange { id: 0 });
+    }
+
+    Ok(AssignAuthorResponse { assigned })
+}
+
 #[tauri::command]
 pub async fn file_get(
     app: AppHandle,

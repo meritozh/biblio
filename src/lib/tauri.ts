@@ -234,6 +234,26 @@ export async function fileReanalyzeMissingTags(): Promise<ReanalyzeResponse> {
   return invoke('file_reanalyze_missing_tags');
 }
 
+/** Count files with no `file_authors` row, optionally scoped to one
+ *  category. Pass `null` to count library-wide. Feeds the affected-count
+ *  badge on /cleanup's "Assign author" Debug card. */
+export async function fileCountAuthorlessInCategory(
+  categoryId: number | null
+): Promise<number> {
+  return invoke('file_count_authorless_in_category', { categoryId });
+}
+
+/** Bulk-assign `authorId` to every file with no current author, optionally
+ *  scoped to one category. Single-transaction `INSERT OR IGNORE`. Emits
+ *  one bulk `author-updated` event (sentinel id 0). Returns the number
+ *  of join rows actually inserted. */
+export async function fileAssignAuthorToAuthorless(
+  categoryId: number | null,
+  authorId: number
+): Promise<{ assigned: number }> {
+  return invoke('file_assign_author_to_authorless', { categoryId, authorId });
+}
+
 /** Find groups of files whose `display_name`s share a long prefix. Used
  *  by /cleanup. Returns groups of size ≥ 2 with hydrated rows so the
  *  card can render storage badges without a follow-up IPC. Defaults

@@ -38,8 +38,9 @@ interface PaginatedPickerProps {
   }) => Promise<PickerPage>;
   /** Multi-mode: called with the next full id list on each toggle. */
   onToggle?: (nextIds: number[]) => void;
-  /** Single-mode: called with the picked id. */
-  onSelect?: (id: number) => void;
+  /** Single-mode: called with the picked id and the full item (so the
+   *  caller can render a name preview without re-fetching). */
+  onSelect?: (id: number, item: PickerItem) => void;
   /** Optional inline-create row. Shown only when the query has no exact
    *  match. Result is auto-toggled into the selection (multi) or set as
    *  the picked value (single). */
@@ -118,14 +119,14 @@ export function PaginatedPicker({
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   const handleToggle = useCallback(
-    (id: number) => {
+    (item: PickerItem) => {
       if (mode === 'single') {
-        onSelect?.(id);
+        onSelect?.(item.id, item);
         return;
       }
-      const next = selected.has(id)
-        ? Array.from(selected).filter((x) => x !== id)
-        : [...selected, id];
+      const next = selected.has(item.id)
+        ? Array.from(selected).filter((x) => x !== item.id)
+        : [...selected, item.id];
       onToggle?.(next);
     },
     [mode, onSelect, onToggle, selected]
@@ -147,7 +148,7 @@ export function PaginatedPicker({
       setItems((prev) => [created, ...prev]);
       setTotal((t) => t + 1);
       if (mode === 'single') {
-        onSelect?.(created.id);
+        onSelect?.(created.id, created);
       } else {
         onToggle?.([...selected, created.id]);
       }
@@ -236,7 +237,7 @@ export function PaginatedPicker({
                 <button
                   type="button"
                   key={item.id}
-                  onClick={() => handleToggle(item.id)}
+                  onClick={() => handleToggle(item)}
                   className="absolute inset-x-1 flex items-center gap-3 px-2 py-2 text-sm rounded-md hover:bg-accent transition-colors text-left"
                   style={{
                     top: 0,
