@@ -2,7 +2,7 @@ use crate::commands::*;
 use crate::commands::validation::{validate_display_name, sanitize_folder_name};
 use serde::Serialize;
 use tauri::AppHandle;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_sql::{DbPool, DbInstances};
 use std::path::PathBuf;
 use std::fs;
@@ -777,6 +777,324 @@ pub async fn file_duplicate_groups(
     }
 
     Ok(result)
+}
+
+// ── Re-analyze novels with no tags ────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ReanalyzeError {
+    pub file_id: i64,
+    pub display_name: String,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct ReanalyzeResponse {
+    pub processed: i64,
+    pub succeeded: i64,
+    pub failed: i64,
+    pub errors: Vec<ReanalyzeError>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct EmitTagsBulkChange {
+    id: i64,
+}
+
+/// Count novels with zero tags — feeds the affected-count badge on
+/// `/cleanup`'s Debug action card so the user sees the scale before
+/// committing to the LLM run.
+#[tauri::command]
+pub async fn file_count_novels_missing_tags(app: AppHandle) -> Result<i64, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM files f
+         JOIN categories c ON c.id = f.category_id
+         WHERE c.schema_slug = 'novel'
+           AND f.file_status = 'available'
+           AND NOT EXISTS (SELECT 1 FROM file_tags WHERE file_id = f.id)",
+    )
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+/// Find novel-schema files that have zero `file_tags` rows, run them
+/// through the import-time LLM content-extraction pipeline, and apply the
+/// returned tags + category. Used by `/cleanup`'s Debug actions.
+///
+/// Re-uses `extract_content_metadata` / `sample_text_content` so the
+/// behavior matches what the import flow does for fresh files. Tags the
+/// LLM proposes that don't exist yet are created on the spot (same
+/// validation path as `tag_create`); category names that don't match any
+/// existing category are ignored (the file's current category stays).
+///
+/// Per-file failures are collected into the `errors` list and don't stop
+/// the run. The whole thing is one blocking IPC; live progress is a v2.
+#[tauri::command]
+pub async fn file_reanalyze_missing_tags(
+    app: AppHandle,
+) -> Result<ReanalyzeResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    // Fail fast if LLM isn't configured — re-using the same loader the
+    // import flow uses, so the error string is the same one the user
+    // already sees elsewhere.
+    let config = crate::commands::llm::llm_config_get(app.clone()).await?;
+
+    #[derive(sqlx::FromRow)]
+    struct Candidate {
+        id: i64,
+        display_name: String,
+        path: String,
+        local_cache_path: Option<String>,
+        storage_kind: Option<String>,
+        category_id: Option<i64>,
+    }
+
+    let candidates: Vec<Candidate> = sqlx::query_as(
+        "SELECT f.id, f.display_name, f.path, f.local_cache_path,
+                f.storage_kind, f.category_id
+         FROM files f
+         JOIN categories c ON c.id = f.category_id
+         WHERE c.schema_slug = 'novel'
+           AND f.file_status = 'available'
+           AND NOT EXISTS (SELECT 1 FROM file_tags WHERE file_id = f.id)
+         ORDER BY f.id",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if candidates.is_empty() {
+        return Ok(ReanalyzeResponse {
+            processed: 0,
+            succeeded: 0,
+            failed: 0,
+            errors: Vec::new(),
+        });
+    }
+
+    // Pre-load categories + tags once. The LLM gets the name lists in its
+    // prompt; we use the ids to resolve its string output back to rows.
+    let categories: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id, name FROM categories")
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    let category_names: Vec<String> = categories.iter().map(|(_, n)| n.clone()).collect();
+    let mut existing_tags: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id, name FROM tags")
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    let tag_names: Vec<String> = existing_tags.iter().map(|(_, n)| n.clone()).collect();
+
+    let mut succeeded = 0i64;
+    let mut failed = 0i64;
+    let mut errors: Vec<ReanalyzeError> = Vec::new();
+
+    for c in &candidates {
+        // Read path: local rows use `path` directly; remote rows need a
+        // cached copy. Without one we skip the file rather than silently
+        // triggering a download (would amplify LLM cost without consent).
+        let read_path = match c.storage_kind.as_deref().unwrap_or("local") {
+            "local" => c.path.clone(),
+            _ => match c.local_cache_path.as_deref().filter(|s| !s.is_empty()) {
+                Some(cache) => cache.to_string(),
+                None => {
+                    failed += 1;
+                    errors.push(ReanalyzeError {
+                        file_id: c.id,
+                        display_name: c.display_name.clone(),
+                        message: "skipped: remote file not cached locally".to_string(),
+                    });
+                    continue;
+                }
+            },
+        };
+
+        // Inline the read → decode → sample steps with explicit error
+        // attribution per step. Lumping all three into one "decode failed"
+        // (which sample_text_content does) hides whether the file is
+        // missing on disk, empty, or in an encoding the detector can't
+        // pin down — and the right user response differs for each.
+        let sample = match std::fs::read(&read_path) {
+            Err(e) => {
+                failed += 1;
+                errors.push(ReanalyzeError {
+                    file_id: c.id,
+                    display_name: c.display_name.clone(),
+                    message: format!("file unreadable at {}: {}", read_path, e),
+                });
+                continue;
+            }
+            Ok(bytes) if bytes.is_empty() => {
+                failed += 1;
+                errors.push(ReanalyzeError {
+                    file_id: c.id,
+                    display_name: c.display_name.clone(),
+                    message: "file is empty".to_string(),
+                });
+                continue;
+            }
+            Ok(bytes) => {
+                let Some(text) =
+                    crate::pipeline::nodes::decode_to_utf8(&bytes)
+                else {
+                    failed += 1;
+                    errors.push(ReanalyzeError {
+                        file_id: c.id,
+                        display_name: c.display_name.clone(),
+                        message: "encoding detection failed — try opening \
+                                  the file in a text editor and re-saving \
+                                  as UTF-8"
+                            .to_string(),
+                    });
+                    continue;
+                };
+                let Some(sample) =
+                    crate::pipeline::nodes::sample_from_text(&text, 5, 1000)
+                else {
+                    failed += 1;
+                    errors.push(ReanalyzeError {
+                        file_id: c.id,
+                        display_name: c.display_name.clone(),
+                        message: "no content after decoding (zero chars)"
+                            .to_string(),
+                    });
+                    continue;
+                };
+                sample
+            }
+        };
+
+        let meta = match crate::commands::llm::extract_content_metadata(
+            &config,
+            &pool,
+            &sample,
+            Some(&c.display_name),
+            &category_names,
+            &tag_names,
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                failed += 1;
+                errors.push(ReanalyzeError {
+                    file_id: c.id,
+                    display_name: c.display_name.clone(),
+                    message: format!("LLM error: {e}"),
+                });
+                continue;
+            }
+        };
+
+        // Apply category — only if the LLM picked one that maps to an
+        // existing row and it's different from the file's current. Move
+        // via the existing primitive so the disk move happens too.
+        if let Some(new_cat_name) = meta.category.as_deref() {
+            if let Some((new_cat_id, _)) =
+                categories.iter().find(|(_, n)| n == new_cat_name)
+            {
+                if Some(*new_cat_id) != c.category_id {
+                    if let Err(e) = file_move_category(
+                        app.clone(),
+                        c.id,
+                        Some(*new_cat_id),
+                    )
+                    .await
+                    {
+                        errors.push(ReanalyzeError {
+                            file_id: c.id,
+                            display_name: c.display_name.clone(),
+                            message: format!("category move failed: {e}"),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Apply tags — resolve names to ids, creating any unknown ones
+        // via INSERT OR IGNORE so a race with a concurrent insert (e.g.
+        // a parallel import) doesn't double-create.
+        let mut tag_ids: Vec<i64> = Vec::new();
+        for tag_name in &meta.tags {
+            let trimmed = tag_name.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some((tid, _)) =
+                existing_tags.iter().find(|(_, n)| n == trimmed)
+            {
+                tag_ids.push(*tid);
+                continue;
+            }
+            // Tag is new to this run. Create-or-lookup.
+            let insert = sqlx::query("INSERT OR IGNORE INTO tags (name) VALUES (?)")
+                .bind(trimmed)
+                .execute(&pool)
+                .await;
+            let new_id = match insert {
+                Ok(r) if r.rows_affected() > 0 => Some(r.last_insert_rowid()),
+                _ => {
+                    // Already existed (lost the race or wasn't in our
+                    // cached list); look up by name.
+                    sqlx::query_as::<_, (i64,)>("SELECT id FROM tags WHERE name = ?")
+                        .bind(trimmed)
+                        .fetch_optional(&pool)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|(id,)| id)
+                }
+            };
+            if let Some(id) = new_id {
+                tag_ids.push(id);
+                // Cache locally so a later file in the same run sees it.
+                existing_tags.push((id, trimmed.to_string()));
+            }
+        }
+
+        for tid in &tag_ids {
+            let _ = sqlx::query(
+                "INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)",
+            )
+            .bind(c.id)
+            .bind(tid)
+            .execute(&pool)
+            .await;
+        }
+
+        if !tag_ids.is_empty() {
+            succeeded += 1;
+        } else {
+            // LLM returned no usable tags. Count as failure with a hint
+            // so the user knows why this file is still untagged.
+            failed += 1;
+            errors.push(ReanalyzeError {
+                file_id: c.id,
+                display_name: c.display_name.clone(),
+                message: "LLM returned no tags".to_string(),
+            });
+        }
+    }
+
+    // One bulk event at the end matches the cleanup commit's pattern —
+    // the existing listenTagAuthorChanges listener refetches the picker
+    // lists and refreshes the active file view.
+    let _ = app.emit("tag-deleted", EmitTagsBulkChange { id: 0 });
+
+    Ok(ReanalyzeResponse {
+        processed: candidates.len() as i64,
+        succeeded,
+        failed,
+        errors,
+    })
 }
 
 #[tauri::command]
@@ -2515,6 +2833,12 @@ mod reverse_index_tests {
     use super::*;
     use crate::commands::test_helpers::setup_db;
 
+    // Note: tests for `list_files_by_tag_impl` and `list_files_by_author_impl`
+    // were removed when those helpers were deleted during the tag/author
+    // route revamp (the routes now query through the general `file_list`
+    // path with seeded conditions). The smoke test stays so the module
+    // doesn't become empty.
+
     #[tokio::test]
     async fn setup_db_smoke_test() {
         let pool = setup_db().await;
@@ -2525,131 +2849,4 @@ mod reverse_index_tests {
         assert_eq!(count, 0);
     }
 
-    #[tokio::test]
-    async fn list_files_by_tag_returns_joined_files_sorted_desc() {
-        let pool = setup_db().await;
-
-        // Seed 3 files with distinct created_at values (oldest → newest = A → B → C).
-        sqlx::query(
-            "INSERT INTO files (path, display_name, created_at) VALUES \
-             ('/a.txt', 'File A', '2026-01-01 10:00:00'), \
-             ('/b.txt', 'File B', '2026-01-02 10:00:00'), \
-             ('/c.txt', 'File C', '2026-01-03 10:00:00')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query("INSERT INTO tags (name) VALUES ('sci-fi'), ('unused')")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO authors (name) VALUES ('Liu Cixin')")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        // Tag 'sci-fi' (id 1) applied to File A (id 1) and File B (id 2), not File C.
-        sqlx::query(
-            "INSERT INTO file_tags (file_id, tag_id) VALUES (1, 1), (2, 1)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            "INSERT INTO file_authors (file_id, author_id) VALUES (2, 1)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let result = list_files_by_tag_impl(&pool, 1).await.unwrap();
-
-        // Two files matched the tag.
-        assert_eq!(result.len(), 2);
-        // Sorted by created_at DESC: File B first (newer), File A second.
-        assert_eq!(result[0].display_name, "File B");
-        assert_eq!(result[1].display_name, "File A");
-        // Tags hydrated on each row.
-        assert_eq!(result[0].tags.len(), 1);
-        assert_eq!(result[0].tags[0].name, "sci-fi");
-        assert_eq!(result[1].tags[0].name, "sci-fi");
-        // Authors hydrated (only File B has an author).
-        assert_eq!(result[0].authors.len(), 1);
-        assert_eq!(result[0].authors[0].name, "Liu Cixin");
-        assert_eq!(result[1].authors.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn list_files_by_tag_returns_empty_when_tag_has_no_files() {
-        let pool = setup_db().await;
-        sqlx::query("INSERT INTO tags (name) VALUES ('unused')")
-            .execute(&pool).await.unwrap();
-
-        let result = list_files_by_tag_impl(&pool, 1).await.unwrap();
-        assert!(result.is_empty());
-    }
-
-    #[tokio::test]
-    async fn list_files_by_author_returns_joined_files_sorted_desc() {
-        let pool = setup_db().await;
-
-        sqlx::query(
-            "INSERT INTO files (path, display_name, created_at) VALUES \
-             ('/a.txt', 'File A', '2026-01-01 10:00:00'), \
-             ('/b.txt', 'File B', '2026-01-02 10:00:00'), \
-             ('/c.txt', 'File C', '2026-01-03 10:00:00')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query("INSERT INTO authors (name) VALUES ('Liu Cixin'), ('Unused')")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO tags (name) VALUES ('sci-fi')")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        sqlx::query(
-            "INSERT INTO file_authors (file_id, author_id) VALUES (1, 1), (3, 1)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query("INSERT INTO file_tags (file_id, tag_id) VALUES (3, 1)")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let result = list_files_by_author_impl(&pool, 1).await.unwrap();
-
-        assert_eq!(result.len(), 2);
-        // Sorted by created_at DESC: File C (newer) first, File A second.
-        assert_eq!(result[0].display_name, "File C");
-        assert_eq!(result[1].display_name, "File A");
-        // Authors hydrated.
-        assert_eq!(result[0].authors.len(), 1);
-        assert_eq!(result[0].authors[0].name, "Liu Cixin");
-        // Tags hydrated (File C has the sci-fi tag, File A has none).
-        assert_eq!(result[0].tags.len(), 1);
-        assert_eq!(result[0].tags[0].name, "sci-fi");
-        assert_eq!(result[1].tags.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn list_files_by_author_returns_empty_when_author_has_no_files() {
-        let pool = setup_db().await;
-        sqlx::query("INSERT INTO authors (name) VALUES ('Unused')")
-            .execute(&pool).await.unwrap();
-
-        let result = list_files_by_author_impl(&pool, 1).await.unwrap();
-        assert!(result.is_empty());
-    }
 }

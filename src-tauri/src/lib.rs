@@ -59,6 +59,8 @@ pub fn run() {
             commands::file::file_replace,
             commands::file::file_list_by_ids,
             commands::file::file_duplicate_groups,
+            commands::file::file_count_novels_missing_tags,
+            commands::file::file_reanalyze_missing_tags,
             commands::file::comic_collection_list,
             commands::category::category_list,
             commands::category::category_get,

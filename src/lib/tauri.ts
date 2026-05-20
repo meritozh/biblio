@@ -201,6 +201,39 @@ export async function comicCollectionList(params: {
   });
 }
 
+/** Result of `file_reanalyze_missing_tags`. Per-file failures live in
+ *  `errors` so the UI can surface them inline; the run keeps going past
+ *  individual file failures. */
+export interface ReanalyzeError {
+  file_id: number;
+  display_name: string;
+  message: string;
+}
+
+export interface ReanalyzeResponse {
+  processed: number;
+  succeeded: number;
+  failed: number;
+  errors: ReanalyzeError[];
+}
+
+/** Count novels with zero tags. Cheap query — feeds the "N files
+ *  affected" badge on the /cleanup Debug card without committing to
+ *  the LLM run. */
+export async function fileCountNovelsMissingTags(): Promise<number> {
+  return invoke('file_count_novels_missing_tags');
+}
+
+/** Re-run the import-time LLM content extraction against every novel
+ *  file that currently has zero tags assigned. Applies returned tags
+ *  (creating unknown ones) and the new category (when it differs from
+ *  the file's current). Blocking IPC — at a few seconds per file × N
+ *  files this can take minutes; the caller should disable its trigger
+ *  and show a spinner. */
+export async function fileReanalyzeMissingTags(): Promise<ReanalyzeResponse> {
+  return invoke('file_reanalyze_missing_tags');
+}
+
 /** Find groups of files whose `display_name`s share a long prefix. Used
  *  by /cleanup. Returns groups of size ≥ 2 with hydrated rows so the
  *  card can render storage badges without a follow-up IPC. Defaults

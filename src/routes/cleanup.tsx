@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '@tanstack/react-store';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { Loader2, Settings2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,6 +20,7 @@ import {
 } from '@/components/ui/select';
 import { useAppState } from '@/stores/appStore';
 import { UnusedItemsSection } from '@/components/cleanup/UnusedItemsSection';
+import { DebugActionsSection } from '@/components/cleanup/DebugActionsSection';
 import { DuplicateGroupCard } from '@/components/cleanup/DuplicateGroupCard';
 import {
   authorDeleteUnused,
@@ -189,6 +191,25 @@ function CleanupPage() {
   const expandByDefault = visibleGroups.length <= AUTO_EXPAND_LIMIT;
   const hasUnused = unusedTags.length > 0 || unusedAuthors.length > 0;
 
+  // Virtualize the similar-names list — at 100+ groups the flat render
+  // was paying for every card every paint. The scroll element is held in
+  // state (not a ref) so that when it mounts, the virtualizer re-reads
+  // it and attaches its scroll listener — same shape as PaginatedPicker.
+  const [groupsScrollEl, setGroupsScrollEl] = useState<HTMLDivElement | null>(null);
+  const groupVirtualizer = useVirtualizer({
+    count: visibleGroups.length,
+    getScrollElement: () => groupsScrollEl,
+    // Collapsed-card baseline. Real rendered heights are measured below
+    // via the ref callback so expanded cards (with N file rows + footer)
+    // displace the rows beneath them correctly.
+    estimateSize: () => 64,
+    overscan: 4,
+    measureElement: (el) => el.getBoundingClientRect().height,
+    // Key per group prefix so dismissals / fetches re-key cleanly.
+    getItemKey: (i) => visibleGroups[i]?.prefix ?? i,
+  });
+  const groupVirtualItems = groupVirtualizer.getVirtualItems();
+
   return (
     <>
       <div
@@ -236,6 +257,9 @@ function CleanupPage() {
             </div>
           )}
         </section>
+
+        {/* ── Section: debug actions (LLM re-analyze, etc.) ──────────── */}
+        <DebugActionsSection onAfterRun={fetchUnused} />
 
         {/* ── Section B: duplicate-name candidates ────────────────── */}
         <section className="space-y-4">
@@ -294,17 +318,47 @@ function CleanupPage() {
                 : 'All groups dismissed for this session.'}
             </p>
           ) : (
-            <div className="space-y-2">
-              {visibleGroups.map((g) => (
-                <DuplicateGroupCard
-                  key={g.prefix}
-                  prefix={g.prefix}
-                  files={g.files}
-                  defaultExpanded={expandByDefault}
-                  onDeleteFile={handleDeleteFile}
-                  onDismiss={() => handleDismissGroup(g.prefix)}
-                />
-              ))}
+            <div
+              ref={setGroupsScrollEl}
+              className="max-h-[70vh] overflow-auto rounded-lg"
+            >
+              <div
+                style={{
+                  height: groupVirtualizer.getTotalSize(),
+                  position: 'relative',
+                }}
+              >
+                {groupVirtualItems.map((virtualRow) => {
+                  const g = visibleGroups[virtualRow.index];
+                  if (!g) return null;
+                  return (
+                    <div
+                      key={g.prefix}
+                      // Ref hands the rendered card to the virtualizer so
+                      // it can measure the real expanded/collapsed height
+                      // and shift downstream rows accordingly.
+                      ref={groupVirtualizer.measureElement}
+                      data-index={virtualRow.index}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        transform: `translateY(${virtualRow.start}px)`,
+                        paddingBottom: 8,
+                      }}
+                    >
+                      <DuplicateGroupCard
+                        prefix={g.prefix}
+                        files={g.files}
+                        defaultExpanded={expandByDefault}
+                        onDeleteFile={handleDeleteFile}
+                        onDismiss={() => handleDismissGroup(g.prefix)}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </section>
