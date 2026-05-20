@@ -27,6 +27,12 @@ export interface CategoryViewConfig {
   view_mode?: CategoryViewMode;
   sort?: { by: SortKey; desc: boolean };
   conditions?: Condition[];
+  /** Per-category "Open with" override for `cache_open`. Format is
+   *  platform-dependent: macOS app name (e.g. "iA Writer") or bundle id,
+   *  Windows full `.exe` path, Linux command name in PATH. Empty / unset
+   *  → OS default for the file's extension. The backend resolves this
+   *  in `cache_open`; callers stay one-arg (`cacheOpen(fileId)`). */
+  open_app?: string;
 }
 
 /** Fully-resolved view config — every field populated, ready for the
@@ -76,6 +82,9 @@ export function serializeViewConfig(
   }
   if (config.conditions && config.conditions.length > 0) {
     trimmed.conditions = config.conditions;
+  }
+  if (config.open_app && config.open_app.trim().length > 0) {
+    trimmed.open_app = config.open_app.trim();
   }
   if (Object.keys(trimmed).length === 0) return undefined;
   return JSON.stringify(trimmed);

@@ -249,8 +249,44 @@ function CategoryFormFields({
           />
         </div>
       </div>
+
+      {/* ── Open behavior ───────────────────────────────────────────────── */}
+      <div className="pt-2 border-t">
+        <div className="flex items-baseline justify-between mb-3">
+          <h3 className="text-sm font-medium">Open behavior</h3>
+          <span className="text-xs text-muted-foreground font-serif-italic">
+            Used by the Open action on file cards
+          </span>
+        </div>
+        <div>
+          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2 block">
+            Open with
+          </label>
+          <Input
+            value={values.viewConfig.open_app ?? ''}
+            onChange={(e) => patchViewConfig({ open_app: e.target.value })}
+            placeholder={openAppPlaceholder()}
+          />
+          <p className="text-xs text-muted-foreground mt-1.5">
+            Leave empty to use the system default app. Format is
+            platform-specific: macOS app name or bundle id ({'"'}iA Writer{'"'},
+            {' "'}com.apple.Preview{'"'}); Windows full path to the .exe; Linux
+            command name in PATH.
+          </p>
+        </div>
+      </div>
     </div>
   );
+}
+
+/** Hint for the "Open with" input. Platform detection is just for the
+ *  placeholder copy — the value the user enters is stored verbatim and
+ *  passed straight to `tauri_plugin_opener`. */
+function openAppPlaceholder(): string {
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes('mac')) return 'iA Writer';
+  if (ua.includes('win')) return 'C:\\Program Files\\AppName\\app.exe';
+  return 'app-command';
 }
 
 function CategoriesPage() {

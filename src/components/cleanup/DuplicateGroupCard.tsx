@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, ExternalLink, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   AlertDialog,
@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { CardStatus } from '@/components/cards/CardStatus';
+import { cacheOpen } from '@/lib/tauri';
 import { useAppState } from '@/stores/appStore';
 import type { Category, FileEntry } from '@/types';
 
@@ -125,6 +126,14 @@ export function DuplicateGroupCard({
               metaParts.push(pathTail(file.path));
               const metaLine = metaParts.join(' · ');
 
+              // Mirrors FileContextMenu's gate: a remote file with no
+              // cached copy can't be opened locally; the user has to
+              // download it first. Visible-but-disabled (with a title
+              // hint) is clearer than hiding the button entirely —
+              // keeps the row layout stable across rows in the group.
+              const isRemote = file.storage_kind === 'remote';
+              const hasLocalCopy = !isRemote || !!file.local_cache_path;
+
               return (
                 <li
                   key={file.id}
@@ -149,6 +158,27 @@ export function DuplicateGroupCard({
                       {metaLine}
                     </p>
                   </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-foreground shrink-0"
+                    onClick={async () => {
+                      try {
+                        await cacheOpen(file.id);
+                      } catch (error) {
+                        console.error('Failed to open file:', error);
+                      }
+                    }}
+                    disabled={!hasLocalCopy}
+                    aria-label={`Open ${file.display_name}`}
+                    title={
+                      hasLocalCopy
+                        ? 'Open file'
+                        : 'Download first to open'
+                    }
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </Button>
                   <Button
                     variant="ghost"
                     size="icon"

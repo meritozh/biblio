@@ -25,32 +25,46 @@ pub struct CacheActionResponse {
     pub success: bool,
 }
 
-/// Open the on-disk copy of a file with the system default app.
+/// Open the on-disk copy of a file with the configured app, or the
+/// system default if none is set on the file's category.
 ///
-/// Resolution order:
+/// Resolution order for the target path:
 ///   1. `local_cache_path` — present once the download worker has pulled
 ///      a remote row to `<storage_path>/.cache/`.
 ///   2. `path` when `storage_kind = 'local'` — the row's `path` is the
 ///      filesystem location.
 ///
+/// Resolution order for the app:
+///   1. `categories.view_config.open_app` — per-category override; the
+///      string format is platform-dependent (macOS app name / bundle id,
+///      Windows .exe path, Linux command), so we pass it through to
+///      `tauri_plugin_opener` as-is.
+///   2. None → OS default for the extension.
+///
+/// A missing category, NULL `view_config`, malformed JSON, or empty
+/// `open_app` all fall through to the OS default — never an error.
+///
 /// Returns `CACHE_NOT_FOUND` for remote rows that haven't been cached
 /// yet so the UI can surface a clear "Download first" hint. The opener
-/// plugin can still fail (no default app for the extension); that error
-/// is surfaced as-is.
+/// plugin can still fail (no default app for the extension, or the
+/// configured app isn't installed); that error is surfaced as-is.
 #[tauri::command]
 pub async fn cache_open(app: AppHandle, file_id: i64) -> Result<CacheActionResponse, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    let row: Option<(Option<String>, String, String)> = sqlx::query_as(
-        "SELECT local_cache_path, path, COALESCE(storage_kind, 'local') FROM files WHERE id = ?",
+    let row: Option<(Option<String>, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT f.local_cache_path, f.path, COALESCE(f.storage_kind, 'local'), c.view_config
+         FROM files f
+         LEFT JOIN categories c ON c.id = f.category_id
+         WHERE f.id = ?",
     )
     .bind(file_id)
     .fetch_optional(&pool)
     .await
     .map_err(|e| e.to_string())?;
 
-    let Some((local_cache_path, path, storage_kind)) = row else {
+    let Some((local_cache_path, path, storage_kind, view_config)) = row else {
         return Err("FILE_NOT_FOUND".to_string());
     };
 
@@ -60,11 +74,28 @@ pub async fn cache_open(app: AppHandle, file_id: i64) -> Result<CacheActionRespo
         _ => return Err("CACHE_NOT_FOUND".to_string()),
     };
 
+    let configured_app = extract_open_app(view_config.as_deref());
+
     app.opener()
-        .open_path(target, None::<&str>)
+        .open_path(target, configured_app.as_deref())
         .map_err(|e| format!("Failed to open: {e}"))?;
 
     Ok(CacheActionResponse { success: true })
+}
+
+/// Pull `open_app` out of a `view_config` JSON blob, returning `None`
+/// when the column is NULL, parse fails, the field is absent, or the
+/// value is the empty string. Centralizes the "treat as no-override"
+/// contract so `cache_open` doesn't sprout branches.
+fn extract_open_app(view_config: Option<&str>) -> Option<String> {
+    let raw = view_config?;
+    let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let s = parsed.get("open_app")?.as_str()?.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }
 
 /// Remove the local cache copy for a remote row.
