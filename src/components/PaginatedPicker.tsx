@@ -211,14 +211,37 @@ export function PaginatedPicker({
       <div
         ref={setScrollEl}
         className="overflow-auto"
-        style={{ height: LIST_HEIGHT }}
+        // `maxHeight` (not fixed `height`) so the scroll area shrinks to
+        // fit when items are few or empty — keeps the Create row from
+        // floating at the bottom of a 256px blank box when the search
+        // has no matches.
+        style={{ maxHeight: LIST_HEIGHT }}
+        onWheel={(e) => {
+          // Picker lives in a Radix Portal so its parent's overflow
+          // clip can't reach it. That Portal sits outside Radix
+          // Dialog's react-remove-scroll shard though, which swallows
+          // wheel events on anything outside the dialog — drive scroll
+          // manually so the picker remains scrollable inside a dialog.
+          //
+          // preventDefault suppresses the browser's own scroll on the
+          // same container: without it, contexts NOT inside a dialog
+          // (cleanup page's picker) would double-scroll (browser default
+          // + our manual scrollTop update). stopPropagation prevents
+          // ancestor scroll containers from also moving.
+          e.preventDefault();
+          e.stopPropagation();
+          e.currentTarget.scrollTop += e.deltaY;
+        }}
       >
         {loading && items.length === 0 ? (
           <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             Loading…
           </div>
-        ) : items.length === 0 && !showCreate ? (
+        ) : items.length === 0 ? (
+          // Show the empty message regardless of `showCreate`. The
+          // Create row still renders below this branch when available;
+          // letting both show explains *why* the Create is offered.
           <div className="px-3 py-6 text-center text-sm text-muted-foreground">
             {query ? noMatchLabel : emptyLabel}
           </div>

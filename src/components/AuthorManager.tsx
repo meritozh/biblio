@@ -85,7 +85,7 @@ export function AuthorManager({
             {selectedAuthors.length > 0 ? 'Edit authors' : 'Add authors'}
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-72 p-0" align="start" disablePortal>
+        <PopoverContent className="w-72 p-0" align="start">
           <PaginatedPicker
             mode="multi"
             selectedIds={selectedAuthorIds}

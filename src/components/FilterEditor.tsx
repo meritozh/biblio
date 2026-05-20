@@ -383,7 +383,7 @@ function SinglePickerButton({
           </span>
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" sideOffset={4} className="p-0" disablePortal>
+      <PopoverContent align="start" sideOffset={4} className="p-0">
         <PaginatedPicker
           mode="single"
           selectedIds={selectedIds}
@@ -441,7 +441,7 @@ function MultiTagPicker({ tagIds, previewName, onChange }: MultiTagPickerProps) 
           )}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" sideOffset={4} className="p-0" disablePortal>
+      <PopoverContent align="start" sideOffset={4} className="p-0">
         <PaginatedPicker
           mode="multi"
           selectedIds={tagIds}

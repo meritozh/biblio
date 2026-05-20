@@ -96,7 +96,7 @@ export function TagManager({
             {selectedTags.length > 0 ? 'Edit tags' : 'Add tags'}
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-72 p-0" align="start" disablePortal>
+        <PopoverContent className="w-72 p-0" align="start">
           <PaginatedPicker
             mode="multi"
             selectedIds={selectedTagIds}
