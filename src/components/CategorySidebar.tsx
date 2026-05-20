@@ -3,7 +3,15 @@ import { Link } from '@tanstack/react-router';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
-import { Settings, GripVertical, Tag, User, MessageSquare, LayoutGrid } from 'lucide-react';
+import {
+  GripVertical,
+  LayoutGrid,
+  MessageSquare,
+  Settings,
+  Sparkles,
+  Tag,
+  User,
+} from 'lucide-react';
 import type { Category } from '@/types';
 
 interface CategorySidebarProps {
@@ -21,6 +29,7 @@ const NAV_LINKS = [
   { to: '/categories', label: 'Categories', icon: LayoutGrid },
   { to: '/tags', label: 'Tags', icon: Tag },
   { to: '/authors', label: 'Authors', icon: User },
+  { to: '/cleanup', label: 'Cleanup', icon: Sparkles },
   { to: '/prompts', label: 'Prompts', icon: MessageSquare },
 ] as const;
 

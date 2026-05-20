@@ -201,6 +201,23 @@ export async function comicCollectionList(params: {
   });
 }
 
+/** Find groups of files whose `display_name`s share a long prefix. Used
+ *  by /cleanup. Returns groups of size ≥ 2 with hydrated rows so the
+ *  card can render storage badges without a follow-up IPC. Defaults
+ *  match the backend's: 3 chars min, 0.5 ratio. `categoryId` scopes
+ *  the scan to one category; null/undefined searches everything. */
+export async function fileDuplicateGroups(params?: {
+  minPrefixChars?: number;
+  prefixRatio?: number;
+  categoryId?: number | null;
+}): Promise<import('@/types').DuplicateGroup[]> {
+  return invoke('file_duplicate_groups', {
+    minPrefixChars: params?.minPrefixChars ?? null,
+    prefixRatio: params?.prefixRatio ?? null,
+    categoryId: params?.categoryId ?? null,
+  });
+}
+
 /** Hydrate a set of files by id, with tags/authors joined. The drill-down
  *  from a comic collection card calls this so the FileList grid can resolve
  *  every file regardless of which paginated page it sits on in the main
@@ -319,8 +336,17 @@ export async function tagUpdate(
   return invoke('tag_update', { id, name, color: color || null });
 }
 
-export async function tagDelete(id: number): Promise<{ success: boolean; affectedFiles: number }> {
+export async function tagDelete(
+  id: number
+): Promise<{ success: boolean; affected_files: number }> {
   return invoke('tag_delete', { id });
+}
+
+/** Bulk-delete every tag with no `file_tags` row referencing it. Emits a
+ *  single `tag-deleted` event (sentinel id `0`) at the end so the existing
+ *  `listenTagAuthorChanges` listener re-fetches once, not N times. */
+export async function tagDeleteUnused(): Promise<{ deleted: number }> {
+  return invoke('tag_delete_unused');
 }
 
 export async function tagAssign(file_id: number, tag_ids: number[]): Promise<{ success: boolean }> {
@@ -377,8 +403,14 @@ export async function authorUpdate(id: number, name: string): Promise<{ success:
 
 export async function authorDelete(
   id: number
-): Promise<{ success: boolean; affectedFiles: number }> {
+): Promise<{ success: boolean; affected_files: number }> {
   return invoke('author_delete', { id });
+}
+
+/** Bulk-delete every author with no `file_authors` row referencing it. See
+ *  `tagDeleteUnused` for the single-event rationale. */
+export async function authorDeleteUnused(): Promise<{ deleted: number }> {
+  return invoke('author_delete_unused');
 }
 
 export async function authorAssign(

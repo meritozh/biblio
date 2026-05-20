@@ -104,6 +104,14 @@ export interface FileListRequest extends Record<string, unknown> {
   offset?: number;
 }
 
+/** A group of files whose `display_name`s share a long prefix. Returned
+ *  by `file_duplicate_groups`. `prefix` is the case-original LCP across
+ *  the whole group, used as the card label on /cleanup. */
+export interface DuplicateGroup {
+  prefix: string;
+  files: FileEntry[];
+}
+
 export interface FileListResponse {
   files: FileEntry[];
   total: number;

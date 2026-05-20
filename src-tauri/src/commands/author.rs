@@ -22,6 +22,11 @@ pub struct AuthorWithUsage {
     pub id: i64,
     pub name: String,
     pub created_at: String,
+    /// Wire-format alias: TS reads `usageCount`. See `TagWithUsage` for
+    /// the same pattern; we avoid `rename_all = "camelCase"` so other
+    /// snake_case fields (created_at) stay aligned with the base
+    /// `Author` type.
+    #[serde(rename = "usageCount")]
     pub usage_count: i64,
 }
 
@@ -201,6 +206,36 @@ pub async fn author_delete(
 pub struct AuthorDeleteResponse {
     pub success: bool,
     pub affected_files: i64,
+}
+
+/// Bulk-delete authors with no `file_authors` row referencing them. Used
+/// by the `/cleanup` page. Emits one `author-deleted` event with `id: 0`
+/// as a bulk sentinel; see `tag_delete_unused` for the rationale.
+#[tauri::command]
+pub async fn author_delete_unused(
+    app: AppHandle,
+) -> Result<AuthorDeleteUnusedResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    let result = sqlx::query(
+        "DELETE FROM authors WHERE NOT EXISTS (SELECT 1 FROM file_authors WHERE author_id = authors.id)",
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let deleted = result.rows_affected() as i64;
+    if deleted > 0 {
+        let _ = app.emit("author-deleted", AuthorChangeEvent { id: 0 });
+    }
+
+    Ok(AuthorDeleteUnusedResponse { deleted })
+}
+
+#[derive(Serialize)]
+pub struct AuthorDeleteUnusedResponse {
+    pub deleted: i64,
 }
 
 #[tauri::command]

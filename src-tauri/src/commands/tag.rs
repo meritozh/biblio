@@ -23,6 +23,10 @@ pub struct TagWithUsage {
     pub name: String,
     pub color: Option<String>,
     pub created_at: String,
+    /// Wire-format alias: the TS consumer reads `usageCount`. Other Tag
+    /// fields stay snake_case to match the base `Tag` type, so we rename
+    /// per-field instead of `rename_all = "camelCase"`.
+    #[serde(rename = "usageCount")]
     pub usage_count: i64,
 }
 
@@ -211,6 +215,36 @@ pub async fn tag_delete(
 pub struct TagDeleteResponse {
     pub success: bool,
     pub affected_files: i64,
+}
+
+/// Bulk-delete tags with no `file_tags` row referencing them. Used by the
+/// `/cleanup` page. Emits one `tag-deleted` event (with `id: 0` as a bulk
+/// sentinel) instead of one per row — the existing listener re-fetches
+/// the full tag list on any event, so a thundering herd of N events
+/// would just trigger N redundant refetches.
+#[tauri::command]
+pub async fn tag_delete_unused(app: AppHandle) -> Result<TagDeleteUnusedResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    let result = sqlx::query(
+        "DELETE FROM tags WHERE NOT EXISTS (SELECT 1 FROM file_tags WHERE tag_id = tags.id)",
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let deleted = result.rows_affected() as i64;
+    if deleted > 0 {
+        let _ = app.emit("tag-deleted", TagChangeEvent { id: 0 });
+    }
+
+    Ok(TagDeleteUnusedResponse { deleted })
+}
+
+#[derive(Serialize)]
+pub struct TagDeleteUnusedResponse {
+    pub deleted: i64,
 }
 
 #[tauri::command]
