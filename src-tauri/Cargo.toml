@@ -28,7 +28,7 @@ base64 = "0.22"
 infer = "0.19"
 rig-core = "0.35"
 schemars = "1"
-chardet = { package = "chardet-rs", git = "https://github.com/meritozh/chardet-rust" }
+charset-normalizer-rs = "1.1"
 encoding_rs = "0.8"
 zip = "2"
 unrar = "0.5"

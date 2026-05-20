@@ -44,29 +44,26 @@ pub fn is_novel_file(path: &str) -> bool {
     path.to_lowercase().ends_with(".txt")
 }
 
-/// Detect encoding and decode bytes to UTF-8.
-/// Returns None on low detection confidence (<0.7) or an unknown encoding
-/// label. Replacement characters during decode are accepted: for a large
-/// real-world text file a single stray byte (mid-stream BOM, anomalous
-/// codepoint, etc.) is common, and bailing on it would discard an
-/// otherwise-usable body of text. The content is only used for LLM
-/// sampling downstream, which is lossy anyway.
-pub(super) fn decode_to_utf8(bytes: &[u8]) -> Option<String> {
-    let detected = chardet::detect_bytes(bytes, chardet::EncodingEra::All, 200_000);
-    if detected.confidence < 0.7 {
-        return None;
-    }
-
-    let encoding_label = detected.encoding?;
-    let encoding = encoding_rs::Encoding::for_label(encoding_label.as_bytes())?;
-    let (text, _, _had_errors) = encoding.decode(bytes);
-    Some(text.into_owned())
+/// Detect encoding and decode bytes to UTF-8 via `charset-normalizer-rs`,
+/// the Rust port of the Python `charset_normalizer` library. Returns
+/// `None` when no candidate match clears the library's internal quality
+/// thresholds (chaos + coherence scores).
+///
+/// The library already returns the decoded payload as a UTF-8 string, so
+/// we don't run a second pass through `encoding_rs::Encoding::decode`.
+/// Replacement characters in the decoded output are still tolerated:
+/// for a large real-world text file a single stray byte is common, and
+/// the downstream LLM sampling is lossy anyway.
+pub fn decode_to_utf8(bytes: &[u8]) -> Option<String> {
+    let matches = charset_normalizer_rs::from_bytes(bytes, None).ok()?;
+    let best = matches.get_best()?;
+    best.decoded_payload().map(|s| s.to_string())
 }
 
 /// Pick `num_samples` evenly-spaced chunks of `sample_size` characters from
 /// a string. Pure function — kept generic so future text formats can reuse
 /// the same shape.
-pub(super) fn sample_from_text(
+pub fn sample_from_text(
     content: &str,
     num_samples: usize,
     sample_size: usize,
@@ -103,7 +100,11 @@ pub(super) fn sample_from_text(
     Some(result)
 }
 
-fn sample_text_content(file_path: &Path, num_samples: usize, sample_size: usize) -> Option<String> {
+/// Read a .txt file, decode to UTF-8, and produce a samples blob shaped
+/// for LLM content classification. Exposed so the cleanup page's
+/// "re-analyze novels with no tags" debug action can re-run the same
+/// sampling the import pipeline uses.
+pub fn sample_text_content(file_path: &Path, num_samples: usize, sample_size: usize) -> Option<String> {
     let bytes = std::fs::read(file_path).ok()?;
     if bytes.is_empty() {
         return None;
@@ -135,7 +136,7 @@ mod tests {
 
     #[test]
     fn decode_utf8_chinese() {
-        let text = "你好，世界！这是一段中文测试内容，包含足够的字符让 chardet 有信心识别为 UTF-8。三体，刘慈欣。";
+        let text = "你好，世界！这是一段中文测试内容，包含足够的字符让编码探测器有信心识别为 UTF-8。三体，刘慈欣。";
         let bytes = text.as_bytes();
         assert_eq!(decode_to_utf8(bytes).as_deref(), Some(text));
     }
