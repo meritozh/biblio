@@ -24,6 +24,7 @@ import {
 import { SuggestedTagChip } from '@/components/SuggestedTagChip';
 import { DuplicateWarning } from '@/components/DuplicateWarning';
 import {
+  authorList,
   fileCreate,
   fileReplace,
   fileDeleteSource,
@@ -31,6 +32,7 @@ import {
   listenProcessingProgress,
   listenFilePrepared,
   importFinalize,
+  tagList,
 } from '@/lib/tauri';
 import {
   REGISTRY,
@@ -84,6 +86,10 @@ interface FileItemState {
   error?: string;
   userEdited: boolean;
   suggestedTags: string[];
+  /** LLM-extracted author names that didn't resolve against the existing
+   *  catalog. Surface as chips — the user adopts (find-or-create on the
+   *  authors snapshot) or dismisses. Authors are never auto-created. */
+  suggestedAuthors: string[];
   duplicateAction: DuplicateAction | null;
 }
 
@@ -163,8 +169,12 @@ export function ProcessingPipeline({
   // Refs so the long-lived listener callbacks always read the latest props
   // / context without re-subscribing on every parent re-render.
   const categoriesRef = useRef(categories);
-  const onAuthorCreateRef = useRef(onAuthorCreate);
-  const createdAuthorIdsRef = useRef<Record<string, number>>({});
+  // Snapshots of the parent's catalog used by the adopt handlers to do an
+  // in-memory case-insensitive lookup before falling back to *_create. The
+  // parent passes the canonical authors/tags arrays (loaded via LIMIT -1
+  // by useFileActions), so the local refs stay authoritative across re-renders.
+  const authorsRef = useRef(authors);
+  const tagsRef = useRef(tags);
   const listenersRef = useRef<{
     progress?: UnlistenFn;
     prepared?: UnlistenFn;
@@ -174,8 +184,11 @@ export function ProcessingPipeline({
     categoriesRef.current = categories;
   }, [categories]);
   useEffect(() => {
-    onAuthorCreateRef.current = onAuthorCreate;
-  }, [onAuthorCreate]);
+    authorsRef.current = authors;
+  }, [authors]);
+  useEffect(() => {
+    tagsRef.current = tags;
+  }, [tags]);
 
   // Listener-setup effect: runs on dialog open, tears down on close. The
   // worker emits per-file events for everything the route enqueues; we
@@ -191,7 +204,6 @@ export function ProcessingPipeline({
       void cancelProcessing();
       setFileItems([]);
       setExpandedIds(new Set());
-      createdAuthorIdsRef.current = {};
       return;
     }
 
@@ -221,27 +233,10 @@ export function ProcessingPipeline({
 
       try {
         const unsub = await listenFilePrepared(async (result) => {
-          // Auto-create unresolved authors. The cache is dialog-scoped via
-          // the ref so multiple enqueues within one open share dedup.
-          for (const name of result.unresolved_author_names) {
-            if (!createdAuthorIdsRef.current[name]) {
-              try {
-                const newAuthor = await onAuthorCreateRef.current(name);
-                createdAuthorIdsRef.current[name] = newAuthor.id;
-              } catch {
-                // Already exists or creation failed — ignore
-              }
-            }
-          }
-
-          const allAuthorIds = [...result.author_ids];
-          for (const name of result.unresolved_author_names) {
-            const id = createdAuthorIdsRef.current[name];
-            if (id && !allAuthorIds.includes(id)) {
-              allAuthorIds.push(id);
-            }
-          }
-
+          // LLM-suggested author names are NOT auto-created anymore. They
+          // arrive as `unresolved_author_names`, get surfaced as chips, and
+          // only land in the DB when the user clicks Approve (via the
+          // find-or-create handler below).
           setFileItems((prev) =>
             prev.map((item) => {
               if (item.path !== result.path) return item;
@@ -262,7 +257,7 @@ export function ProcessingPipeline({
                     display_name: result.display_name || result.file_name,
                     category_id: resolvedCategoryId,
                     tag_ids: result.tag_ids,
-                    author_ids: allAuthorIds,
+                    author_ids: result.author_ids,
                     metadata: result.metadata.map((m) => ({
                       key: m.key,
                       value: m.value,
@@ -288,6 +283,7 @@ export function ProcessingPipeline({
                 preparedImport: result,
                 formValues,
                 suggestedTags: result.suggested_tags ?? [],
+                suggestedAuthors: result.unresolved_author_names ?? [],
                 duplicateAction:
                   item.duplicateAction ??
                   result.duplicate_of?.recommendation ??
@@ -339,6 +335,7 @@ export function ProcessingPipeline({
           formValues: { ...EMPTY_FORM_VALUES, display_name: fileName },
           userEdited: false,
           suggestedTags: [],
+          suggestedAuthors: [],
           duplicateAction: null,
         });
       }
@@ -422,28 +419,78 @@ export function ProcessingPipeline({
     []
   );
 
+  // Find an existing row whose name matches `name` under the same key the
+  // Rust pipeline's resolve nodes use (NFC + trim + lowercase). When the
+  // user adopts an LLM suggestion that happens to already exist (or that
+  // a different casing / Unicode form of already exists), we reuse the
+  // row instead of creating a duplicate.
+  const findExistingId = useCallback(
+    (name: string, snapshot: ReadonlyArray<{ id: number; name: string }>): number | null => {
+      const key = name.normalize('NFC').trim().toLowerCase();
+      if (!key) return null;
+      const hit = snapshot.find(
+        (row) => row.name.normalize('NFC').trim().toLowerCase() === key
+      );
+      return hit?.id ?? null;
+    },
+    []
+  );
+
   const handleApproveSuggestedTag = useCallback(
     async (path: string, tagName: string) => {
-      try {
-        const newTag = await onTagCreate(tagName);
-        setFileItems((prev) =>
-          prev.map((item) => {
-            if (item.path !== path) return item;
-            return {
-              ...item,
-              suggestedTags: item.suggestedTags.filter((t) => t !== tagName),
-              formValues: {
-                ...item.formValues,
-                tag_ids: [...item.formValues.tag_ids, newTag.id],
-              },
-            };
-          })
-        );
-      } catch (error) {
-        console.error('Failed to create tag:', error);
+      // Try the in-memory catalog first. If the LLM suggested "Action" but
+      // the DB already has "action", reuse the existing row.
+      let id = findExistingId(tagName, tagsRef.current);
+      if (id == null) {
+        try {
+          const created = await onTagCreate(tagName);
+          id = created.id;
+          // Eager push so a rapid second adopt of the same name (e.g. the
+          // same LLM-suggested tag across multiple files in the batch)
+          // resolves via the snapshot on the next click instead of taking
+          // the TAG_EXISTS → refetch detour. The parent's setTags re-render
+          // will overwrite this via the syncing useEffect.
+          tagsRef.current = [
+            ...tagsRef.current,
+            { id: created.id, name: created.name, color: created.color, created_at: created.created_at },
+          ];
+        } catch (error) {
+          // TAG_EXISTS = the snapshot was stale (another window inserted).
+          // Refetch once, look up the canonical row, reuse it.
+          if (String(error).includes('TAG_EXISTS')) {
+            try {
+              const { tags: fresh } = await tagList({ includeUsage: true });
+              tagsRef.current = fresh;
+              id = findExistingId(tagName, fresh);
+            } catch (refetchErr) {
+              console.error('Failed to refetch tags:', refetchErr);
+            }
+          }
+          if (id == null) {
+            console.error('Failed to adopt tag:', error);
+            return;
+          }
+        }
       }
+      const resolvedId = id;
+      setFileItems((prev) =>
+        prev.map((item) => {
+          if (item.path !== path) return item;
+          const alreadyHas = item.formValues.tag_ids.includes(resolvedId);
+          return {
+            ...item,
+            suggestedTags: item.suggestedTags.filter((t) => t !== tagName),
+            formValues: alreadyHas
+              ? item.formValues
+              : {
+                  ...item.formValues,
+                  tag_ids: [...item.formValues.tag_ids, resolvedId],
+                },
+          };
+        })
+      );
     },
-    [onTagCreate]
+    [onTagCreate, findExistingId]
   );
 
   const handleDismissSuggestedTag = useCallback((path: string, tagName: string) => {
@@ -455,6 +502,72 @@ export function ProcessingPipeline({
       )
     );
   }, []);
+
+  const handleApproveSuggestedAuthor = useCallback(
+    async (path: string, authorName: string) => {
+      let id = findExistingId(authorName, authorsRef.current);
+      if (id == null) {
+        try {
+          const created = await onAuthorCreate(authorName);
+          id = created.id;
+          // Eager push — see the matching note in handleApproveSuggestedTag.
+          authorsRef.current = [
+            ...authorsRef.current,
+            { id: created.id, name: created.name, created_at: created.created_at },
+          ];
+        } catch (error) {
+          // AUTHOR_EXISTS = snapshot stale; refetch + reuse.
+          if (String(error).includes('AUTHOR_EXISTS')) {
+            try {
+              const { authors: fresh } = await authorList({ includeUsage: true });
+              authorsRef.current = fresh;
+              id = findExistingId(authorName, fresh);
+            } catch (refetchErr) {
+              console.error('Failed to refetch authors:', refetchErr);
+            }
+          }
+          if (id == null) {
+            console.error('Failed to adopt author:', error);
+            return;
+          }
+        }
+      }
+      const resolvedId = id;
+      setFileItems((prev) =>
+        prev.map((item) => {
+          if (item.path !== path) return item;
+          const alreadyHas = item.formValues.author_ids.includes(resolvedId);
+          return {
+            ...item,
+            suggestedAuthors: item.suggestedAuthors.filter((n) => n !== authorName),
+            formValues: alreadyHas
+              ? item.formValues
+              : {
+                  ...item.formValues,
+                  author_ids: [...item.formValues.author_ids, resolvedId],
+                },
+          };
+        })
+      );
+    },
+    [onAuthorCreate, findExistingId]
+  );
+
+  const handleDismissSuggestedAuthor = useCallback(
+    (path: string, authorName: string) => {
+      setFileItems((prev) =>
+        prev.map((item) =>
+          item.path === path
+            ? {
+                ...item,
+                suggestedAuthors: item.suggestedAuthors.filter((n) => n !== authorName),
+              }
+            : item
+        )
+      );
+    },
+    []
+  );
 
   const handleDuplicateAction = useCallback((path: string, action: DuplicateAction) => {
     setFileItems((prev) =>
@@ -739,6 +852,8 @@ export function ProcessingPipeline({
             onFormChange={handleFormChange}
             onApproveSuggestedTag={handleApproveSuggestedTag}
             onDismissSuggestedTag={handleDismissSuggestedTag}
+            onApproveSuggestedAuthor={handleApproveSuggestedAuthor}
+            onDismissSuggestedAuthor={handleDismissSuggestedAuthor}
             onDuplicateAction={handleDuplicateAction}
             categories={categories}
             tags={tags}
@@ -763,6 +878,8 @@ export function ProcessingPipeline({
             onFormChange={handleFormChange}
             onApproveSuggestedTag={handleApproveSuggestedTag}
             onDismissSuggestedTag={handleDismissSuggestedTag}
+            onApproveSuggestedAuthor={handleApproveSuggestedAuthor}
+            onDismissSuggestedAuthor={handleDismissSuggestedAuthor}
             onDuplicateAction={handleDuplicateAction}
             categories={categories}
             tags={tags}
@@ -783,6 +900,8 @@ export function ProcessingPipeline({
             onFormChange={handleFormChange}
             onApproveSuggestedTag={handleApproveSuggestedTag}
             onDismissSuggestedTag={handleDismissSuggestedTag}
+            onApproveSuggestedAuthor={handleApproveSuggestedAuthor}
+            onDismissSuggestedAuthor={handleDismissSuggestedAuthor}
             onDuplicateAction={handleDuplicateAction}
             categories={categories}
             tags={tags}
@@ -882,6 +1001,8 @@ interface TabPanelProps {
   onFormChange: (path: string, values: DynamicMetadataFormValues) => void;
   onApproveSuggestedTag: (path: string, tagName: string) => void;
   onDismissSuggestedTag: (path: string, tagName: string) => void;
+  onApproveSuggestedAuthor: (path: string, authorName: string) => void;
+  onDismissSuggestedAuthor: (path: string, authorName: string) => void;
   onDuplicateAction: (path: string, action: DuplicateAction) => void;
   categories: Category[];
   tags: Tag[];
@@ -902,6 +1023,8 @@ function TabPanel({
   onFormChange,
   onApproveSuggestedTag,
   onDismissSuggestedTag,
+  onApproveSuggestedAuthor,
+  onDismissSuggestedAuthor,
   onDuplicateAction,
   categories,
   tags,
@@ -987,11 +1110,13 @@ function TabPanel({
                     onFormChange={onFormChange}
                     onApproveSuggestedTag={onApproveSuggestedTag}
                     onDismissSuggestedTag={onDismissSuggestedTag}
+                    onApproveSuggestedAuthor={onApproveSuggestedAuthor}
+                    onDismissSuggestedAuthor={onDismissSuggestedAuthor}
                     onDuplicateAction={onDuplicateAction}
                     categories={categories}
                     tags={tags}
                     authors={authors}
-                            onTagCreate={onTagCreate}
+                    onTagCreate={onTagCreate}
                     onAuthorCreate={onAuthorCreate}
                   />
                 </div>
@@ -1013,6 +1138,8 @@ interface FileCardRowProps {
   onFormChange: (path: string, values: DynamicMetadataFormValues) => void;
   onApproveSuggestedTag: (path: string, tagName: string) => void;
   onDismissSuggestedTag: (path: string, tagName: string) => void;
+  onApproveSuggestedAuthor: (path: string, authorName: string) => void;
+  onDismissSuggestedAuthor: (path: string, authorName: string) => void;
   onDuplicateAction: (path: string, action: DuplicateAction) => void;
   categories: Category[];
   tags: Tag[];
@@ -1030,6 +1157,8 @@ function FileCardRow({
   onFormChange,
   onApproveSuggestedTag,
   onDismissSuggestedTag,
+  onApproveSuggestedAuthor,
+  onDismissSuggestedAuthor,
   onDuplicateAction,
   categories,
   tags,
@@ -1103,6 +1232,23 @@ function FileCardRow({
               />
             )}
 
+            {item.suggestedAuthors.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">Suggested authors:</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {item.suggestedAuthors.map((author) => (
+                    <SuggestedTagChip
+                      key={author}
+                      name={author}
+                      noun="author"
+                      onApprove={(name) => onApproveSuggestedAuthor(item.path, name)}
+                      onDismiss={(name) => onDismissSuggestedAuthor(item.path, name)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
             {item.suggestedTags.length > 0 && (
               <div className="space-y-2">
                 <p className="text-xs text-muted-foreground">Suggested new tags:</p>
@@ -1139,7 +1285,7 @@ function FileCardRow({
               categories={categories}
               tags={tags}
               authors={authors}
-                onTagCreate={onTagCreate}
+              onTagCreate={onTagCreate}
               onAuthorCreate={onAuthorCreate}
             />
           </div>
