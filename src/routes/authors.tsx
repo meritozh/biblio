@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { VirtualList } from '@/components/VirtualList';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -97,6 +97,11 @@ function AuthorsManagementPage() {
   const [deletingAuthor, setDeletingAuthor] = useState<AuthorWithUsage | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // Initial-mount fetch only. Mutations (create / edit / delete) apply a
+  // local diff instead of calling reload — that keeps the virtualizer's
+  // count and scrollTop stable, and avoids a redundant IPC round-trip
+  // since the mutation command already returned success. See the
+  // handler bodies below for the diff shape per action.
   const reload = useCallback(async () => {
     setLoading(true);
     const [page, count] = await Promise.all([
@@ -128,13 +133,32 @@ function AuthorsManagementPage() {
   }, [loadingMore, authors.length, total]);
 
   const handleCreate = async () => {
-    if (!newAuthorName.trim()) return;
+    const trimmed = newAuthorName.trim();
+    if (!trimmed) return;
     setSaving(true);
     try {
-      await authorCreate(newAuthorName.trim());
+      const { id } = await authorCreate(trimmed);
       setCreateDialogOpen(false);
       setNewAuthorName('');
-      void reload();
+      // Local diff: insert at the alphabetical position so the new row
+      // appears where the user expects without refetching. The server
+      // sorts by raw `name` (binary compare); JS `localeCompare` is a
+      // close-enough approximation for visual placement — order
+      // resolves exactly on next mount.
+      const created: AuthorWithUsage = {
+        id,
+        name: trimmed,
+        created_at: new Date().toISOString(),
+        usageCount: 0,
+      };
+      setAuthors((prev) => {
+        const insertAt = prev.findIndex(
+          (a) => a.name.localeCompare(trimmed) > 0
+        );
+        if (insertAt === -1) return [...prev, created];
+        return [...prev.slice(0, insertAt), created, ...prev.slice(insertAt)];
+      });
+      setTotal((t) => t + 1);
     } catch (error) {
       console.error('Failed to create author:', error);
       alert(`Failed to create author: ${error}`);
@@ -148,12 +172,21 @@ function AuthorsManagementPage() {
   };
 
   const handleSaveEdit = async () => {
-    if (!editingId || !editName.trim()) return;
+    const trimmed = editName.trim();
+    if (!editingId || !trimmed) return;
+    const targetId = editingId;
     try {
-      await authorUpdate(editingId, editName.trim());
+      await authorUpdate(targetId, trimmed);
       setEditingId(null);
       setEditName('');
-      void reload();
+      // Local diff: patch the row's name in place. The list stays at
+      // the row's original position even if the rename moved it
+      // alphabetically — re-sorting client-side would jump the row
+      // away from the user, which is worse UX than a slight ordering
+      // anomaly until next mount.
+      setAuthors((prev) =>
+        prev.map((a) => (a.id === targetId ? { ...a, name: trimmed } : a))
+      );
     } catch (error) {
       console.error('Failed to update author:', error);
       alert(`Failed to update author: ${error}`);
@@ -173,11 +206,15 @@ function AuthorsManagementPage() {
   const handleConfirmDelete = async () => {
     if (!deletingAuthor) return;
     setDeleting(true);
+    const deletedId = deletingAuthor.id;
     try {
-      await authorDelete(deletingAuthor.id);
+      await authorDelete(deletedId);
       setDeleteDialogOpen(false);
       setDeletingAuthor(null);
-      void reload();
+      // Local diff: drop the row, decrement the header count. Surrounding
+      // rows stay in place, so the virtualizer's scrollTop is preserved.
+      setAuthors((prev) => prev.filter((a) => a.id !== deletedId));
+      setTotal((t) => Math.max(0, t - 1));
     } catch (error) {
       console.error('Failed to delete author:', error);
       alert(`Failed to delete author: ${error}`);
@@ -190,24 +227,6 @@ function AuthorsManagementPage() {
   const handleRowClick = (author: AuthorWithUsage) => {
     void navigate({ to: '/authors', search: { author: author.id } });
   };
-
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const virtualizer = useVirtualizer({
-    count: authors.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: 8,
-  });
-  const virtualItems = virtualizer.getVirtualItems();
-  const totalSize = virtualizer.getTotalSize();
-
-  useEffect(() => {
-    const last = virtualItems[virtualItems.length - 1];
-    if (!last || loadingMore || authors.length >= total) return;
-    if (last.index >= authors.length - 1 - LOAD_MORE_THRESHOLD) {
-      void handleLoadMore();
-    }
-  }, [virtualItems, authors.length, total, loadingMore, handleLoadMore]);
 
   const tally = useMemo(() => {
     if (loading) return '…';
@@ -253,99 +272,94 @@ function AuthorsManagementPage() {
               <span>Name</span>
               <span>Actions</span>
             </div>
-            <div ref={scrollRef} className="flex-1 overflow-auto">
-              <div
-                style={{ height: totalSize, position: 'relative' }}
-                aria-rowcount={authors.length}
-                role="rowgroup"
-              >
-                {virtualItems.map((vi) => {
-                  const author = authors[vi.index];
-                  if (!author) return null;
-                  return (
-                    <div
-                      key={author.id}
-                      role="row"
-                      aria-rowindex={vi.index + 1}
-                      className="absolute left-0 right-0 grid grid-cols-[1fr_120px] items-center gap-3 px-4 border-b border-border hover:bg-muted/30 transition-colors"
-                      style={{
-                        top: vi.start,
-                        height: vi.size,
-                      }}
-                    >
-                      <div className="min-w-0">
-                        {editingId === author.id ? (
-                          <Input
-                            value={editName}
-                            onChange={(e) => setEditName(e.target.value)}
-                            className="h-8 w-full"
-                            autoFocus
-                          />
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => handleRowClick(author)}
-                            className="text-foreground hover:text-primary hover:underline underline-offset-4 text-left focus:outline-none"
-                            aria-label={`Filter Library by ${author.name}`}
-                          >
-                            {author.name}
-                            {author.usageCount > 0 && (
-                              <span className="ml-2 text-xs text-muted-foreground font-serif-italic">
-                                — {author.usageCount}
-                              </span>
-                            )}
-                          </button>
+            <VirtualList<AuthorWithUsage>
+              items={authors}
+              getKey={(a) => a.id}
+              estimateSize={ROW_HEIGHT}
+              overscan={8}
+              onLoadMore={handleLoadMore}
+              hasMore={authors.length < total}
+              loadMoreThreshold={LOAD_MORE_THRESHOLD}
+              className="flex-1 overflow-auto"
+              renderItem={(author) => (
+                <div
+                  role="row"
+                  className="grid grid-cols-[1fr_120px] items-center gap-3 px-4 border-b border-border hover:bg-muted/30"
+                  style={{ height: ROW_HEIGHT }}
+                >
+                  <div className="min-w-0">
+                    {editingId === author.id ? (
+                      <Input
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        className="h-8 w-full"
+                        autoFocus
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleRowClick(author)}
+                        className="text-foreground hover:text-primary hover:underline underline-offset-4 text-left focus:outline-none"
+                        aria-label={`Filter Library by ${author.name}`}
+                      >
+                        {author.name}
+                        {author.usageCount > 0 && (
+                          <span className="ml-2 text-xs text-muted-foreground font-serif-italic">
+                            — {author.usageCount}
+                          </span>
                         )}
-                      </div>
-                      <div className="flex gap-1">
-                        {editingId === author.id ? (
-                          <>
-                            <Button size="sm" onClick={handleSaveEdit}>
-                              Save
-                            </Button>
-                            <Button size="sm" variant="ghost" onClick={handleCancelEdit}>
-                              Cancel
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-8 w-8"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleStartEdit(author);
-                              }}
-                              aria-label={`Edit ${author.name}`}
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-8 w-8 text-destructive"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteClick(author);
-                              }}
-                              aria-label={`Delete ${author.name}`}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {loadingMore && (
-                <div className="flex items-center justify-center py-3 text-xs text-muted-foreground font-serif-italic">
-                  Loading more…
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex gap-1">
+                    {editingId === author.id ? (
+                      <>
+                        <Button size="sm" onClick={handleSaveEdit}>
+                          Save
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={handleCancelEdit}>
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleStartEdit(author);
+                          }}
+                          aria-label={`Edit ${author.name}`}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8 text-destructive"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteClick(author);
+                          }}
+                          aria-label={`Delete ${author.name}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
-            </div>
+              loadingMoreSlot={
+                loadingMore ? (
+                  <div className="flex items-center justify-center py-3 text-xs text-muted-foreground font-serif-italic">
+                    Loading more…
+                  </div>
+                ) : null
+              }
+            />
           </div>
         )}
       </div>

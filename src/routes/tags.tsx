@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { VirtualList } from '@/components/VirtualList';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -122,8 +122,9 @@ function TagsManagementPage() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
-  // Initial page load + page count for the header tally. Refresh on
-  // mount + after every mutation that changes the total.
+  // Initial-mount fetch only. Mutations (create / edit / delete) apply a
+  // local diff instead of calling reload — preserves scrollTop, no
+  // redundant IPC. See the handler bodies below for the diff shape.
   const reload = useCallback(async () => {
     setLoading(true);
     const [page, count] = await Promise.all([
@@ -155,13 +156,32 @@ function TagsManagementPage() {
   }, [loadingMore, tags.length, total]);
 
   const handleCreate = async () => {
-    if (!newTagName.trim()) return;
+    const trimmed = newTagName.trim();
+    if (!trimmed) return;
     setSaving(true);
     try {
-      await tagCreate(newTagName.trim(), undefined);
+      const { id } = await tagCreate(trimmed, undefined);
       setCreateDialogOpen(false);
       setNewTagName('');
-      void reload();
+      // Local diff: insert at the alphabetical position so the new row
+      // appears where the user expects without refetching. localeCompare
+      // is a close-enough approximation of the server's `ORDER BY name`
+      // for visual placement; order resolves exactly on next mount.
+      const created: TagWithUsage = {
+        id,
+        name: trimmed,
+        color: null,
+        created_at: new Date().toISOString(),
+        usageCount: 0,
+      };
+      setTags((prev) => {
+        const insertAt = prev.findIndex(
+          (t) => t.name.localeCompare(trimmed) > 0
+        );
+        if (insertAt === -1) return [...prev, created];
+        return [...prev.slice(0, insertAt), created, ...prev.slice(insertAt)];
+      });
+      setTotal((t) => t + 1);
     } catch (error) {
       console.error('Failed to create tag:', error);
       alert(`Failed to create tag: ${error}`);
@@ -175,12 +195,19 @@ function TagsManagementPage() {
   };
 
   const handleSaveEdit = async () => {
-    if (!editingId || !editName.trim()) return;
+    const trimmed = editName.trim();
+    if (!editingId || !trimmed) return;
+    const targetId = editingId;
     try {
-      await tagUpdate(editingId, editName.trim(), undefined);
+      await tagUpdate(targetId, trimmed, undefined);
       setEditingId(null);
       setEditName('');
-      void reload();
+      // Local diff: patch the row's name in place. Don't re-sort — the
+      // row stays under the user's pointer even if the rename moved it
+      // alphabetically. Order resolves on next mount.
+      setTags((prev) =>
+        prev.map((t) => (t.id === targetId ? { ...t, name: trimmed } : t))
+      );
     } catch (error) {
       console.error('Failed to update tag:', error);
       alert(`Failed to update tag: ${error}`);
@@ -200,17 +227,21 @@ function TagsManagementPage() {
   const handleConfirmDelete = async () => {
     if (!deletingTag) return;
     setDeleting(true);
+    const deletedId = deletingTag.id;
     try {
-      await tagDelete(deletingTag.id);
+      await tagDelete(deletedId);
       setDeleteDialogOpen(false);
       setDeletingTag(null);
       // Drop from selection too — gone is gone.
       setSelectedIds((prev) => {
         const next = new Set(prev);
-        next.delete(deletingTag.id);
+        next.delete(deletedId);
         return next;
       });
-      void reload();
+      // Local diff: drop the row, decrement the header tally. Surrounding
+      // rows stay in place, so scrollTop is preserved.
+      setTags((prev) => prev.filter((t) => t.id !== deletedId));
+      setTotal((t) => Math.max(0, t - 1));
     } catch (error) {
       console.error('Failed to delete tag:', error);
       alert(`Failed to delete tag: ${error}`);
@@ -247,27 +278,6 @@ function TagsManagementPage() {
       return !prev;
     });
   };
-
-  // ── Virtualizer ──────────────────────────────────────────────────────────
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const virtualizer = useVirtualizer({
-    count: tags.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: 8,
-  });
-  const virtualItems = virtualizer.getVirtualItems();
-  const totalSize = virtualizer.getTotalSize();
-
-  // Sentinel-style load-more: when the last virtual item is within
-  // LOAD_MORE_THRESHOLD of the end, kick the next page.
-  useEffect(() => {
-    const last = virtualItems[virtualItems.length - 1];
-    if (!last || loadingMore || tags.length >= total) return;
-    if (last.index >= tags.length - 1 - LOAD_MORE_THRESHOLD) {
-      void handleLoadMore();
-    }
-  }, [virtualItems, tags.length, total, loadingMore, handleLoadMore]);
 
   const tally = useMemo(() => {
     if (loading) return '…';
@@ -335,112 +345,111 @@ function TagsManagementPage() {
               <span>Actions</span>
             </div>
             {/* Virtual scroller */}
-            <div ref={scrollRef} className="flex-1 overflow-auto">
-              <div
-                style={{ height: totalSize, position: 'relative' }}
-                aria-rowcount={tags.length}
-                role="rowgroup"
-              >
-                {virtualItems.map((vi) => {
-                  const tag = tags[vi.index];
-                  if (!tag) return null;
-                  const checked = selectedIds.has(tag.id);
-                  return (
-                    <div
-                      key={tag.id}
-                      role="row"
-                      aria-rowindex={vi.index + 1}
-                      className={`absolute left-0 right-0 grid items-center gap-3 px-4 border-b border-border hover:bg-muted/30 transition-colors ${
-                        selectionMode ? 'grid-cols-[auto_1fr_120px]' : 'grid-cols-[1fr_120px]'
-                      } ${checked ? 'bg-primary/5' : ''}`}
-                      style={{
-                        top: vi.start,
-                        height: vi.size,
-                      }}
-                    >
-                      {selectionMode && (
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => handleRowClick(tag)}
-                          aria-label={`Select ${tag.name}`}
-                          className="h-4 w-4 accent-primary cursor-pointer"
-                          onClick={(e) => e.stopPropagation()}
+            <VirtualList<TagWithUsage>
+              items={tags}
+              getKey={(t) => t.id}
+              estimateSize={ROW_HEIGHT}
+              overscan={8}
+              onLoadMore={handleLoadMore}
+              hasMore={tags.length < total}
+              loadMoreThreshold={LOAD_MORE_THRESHOLD}
+              className="flex-1 overflow-auto"
+              loadingMoreSlot={
+                loadingMore ? (
+                  <div className="flex items-center justify-center py-3 text-xs text-muted-foreground font-serif-italic">
+                    Loading more…
+                  </div>
+                ) : null
+              }
+              renderItem={(tag) => {
+                const checked = selectedIds.has(tag.id);
+                return (
+                  <div
+                    role="row"
+                    className={`grid items-center gap-3 px-4 border-b border-border hover:bg-muted/30 ${
+                      selectionMode
+                        ? 'grid-cols-[auto_1fr_120px]'
+                        : 'grid-cols-[1fr_120px]'
+                    } ${checked ? 'bg-primary/5' : ''}`}
+                    style={{ height: ROW_HEIGHT }}
+                  >
+                    {selectionMode && (
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => handleRowClick(tag)}
+                        aria-label={`Select ${tag.name}`}
+                        className="h-4 w-4 accent-primary cursor-pointer"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    )}
+                    <div className="min-w-0">
+                      {editingId === tag.id ? (
+                        <Input
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          className="h-8 w-full"
+                          autoFocus
                         />
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleRowClick(tag)}
+                          className="text-foreground hover:text-primary hover:underline underline-offset-4 text-left focus:outline-none"
+                          aria-label={`Filter Library by ${tag.name}`}
+                        >
+                          {tag.name}
+                          {tag.usageCount > 0 && (
+                            <span className="ml-2 text-xs text-muted-foreground font-serif-italic">
+                              — {tag.usageCount}
+                            </span>
+                          )}
+                        </button>
                       )}
-                      <div className="min-w-0">
-                        {editingId === tag.id ? (
-                          <Input
-                            value={editName}
-                            onChange={(e) => setEditName(e.target.value)}
-                            className="h-8 w-full"
-                            autoFocus
-                          />
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => handleRowClick(tag)}
-                            className="text-foreground hover:text-primary hover:underline underline-offset-4 text-left focus:outline-none"
-                            aria-label={`Filter Library by ${tag.name}`}
-                          >
-                            {tag.name}
-                            {tag.usageCount > 0 && (
-                              <span className="ml-2 text-xs text-muted-foreground font-serif-italic">
-                                — {tag.usageCount}
-                              </span>
-                            )}
-                          </button>
-                        )}
-                      </div>
-                      <div className="flex gap-1">
-                        {editingId === tag.id ? (
-                          <>
-                            <Button size="sm" onClick={handleSaveEdit}>
-                              Save
-                            </Button>
-                            <Button size="sm" variant="ghost" onClick={handleCancelEdit}>
-                              Cancel
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-8 w-8"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleStartEdit(tag);
-                              }}
-                              aria-label={`Edit ${tag.name}`}
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-8 w-8 text-destructive"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteClick(tag);
-                              }}
-                              aria-label={`Delete ${tag.name}`}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </>
-                        )}
-                      </div>
                     </div>
-                  );
-                })}
-              </div>
-              {loadingMore && (
-                <div className="flex items-center justify-center py-3 text-xs text-muted-foreground font-serif-italic">
-                  Loading more…
-                </div>
-              )}
-            </div>
+                    <div className="flex gap-1">
+                      {editingId === tag.id ? (
+                        <>
+                          <Button size="sm" onClick={handleSaveEdit}>
+                            Save
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={handleCancelEdit}>
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleStartEdit(tag);
+                            }}
+                            aria-label={`Edit ${tag.name}`}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8 text-destructive"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteClick(tag);
+                            }}
+                            aria-label={`Delete ${tag.name}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              }}
+            />
           </div>
         )}
       </div>
