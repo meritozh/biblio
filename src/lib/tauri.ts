@@ -234,6 +234,46 @@ export async function fileReanalyzeMissingTags(): Promise<ReanalyzeResponse> {
   return invoke('file_reanalyze_missing_tags');
 }
 
+/** Result of `file_reanalyze_for_category` — same error-collection shape
+ *  as ReanalyzeResponse, but the success vs. no-op split is explicit
+ *  (moved vs. skipped) because the LLM frequently picks a non-target
+ *  category and we don't want that to look like a failure. */
+export interface ReclassifyResponse {
+  processed: number;
+  moved: number;
+  skipped: number;
+  failed: number;
+  errors: ReanalyzeError[];
+}
+
+/** Count novel-schema files that could be re-classified into the target
+ *  category — i.e. not already in it. `sourceCategoryId` scopes the
+ *  candidate set to one source category when set; `null` means "every
+ *  novel-schema category except the target". */
+export async function fileCountForCategoryReanalyze(
+  targetCategoryId: number,
+  sourceCategoryId: number | null
+): Promise<number> {
+  return invoke('file_count_for_category_reanalyze', {
+    targetCategoryId,
+    sourceCategoryId,
+  });
+}
+
+/** Run the import-time content LLM on each candidate. Only moves a file
+ *  into `targetCategoryId` when the LLM's category pick matches the
+ *  target's name (NFC + case-insensitive). Tags returned by the LLM are
+ *  ignored on this path — use `fileReanalyzeMissingTags` for tag fills. */
+export async function fileReanalyzeForCategory(
+  targetCategoryId: number,
+  sourceCategoryId: number | null
+): Promise<ReclassifyResponse> {
+  return invoke('file_reanalyze_for_category', {
+    targetCategoryId,
+    sourceCategoryId,
+  });
+}
+
 /** Count files with no `file_authors` row, optionally scoped to one
  *  category. Pass `null` to count library-wide. Feeds the affected-count
  *  badge on /cleanup's "Assign author" Debug card. */

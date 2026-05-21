@@ -61,6 +61,8 @@ pub fn run() {
             commands::file::file_duplicate_groups,
             commands::file::file_count_novels_missing_tags,
             commands::file::file_reanalyze_missing_tags,
+            commands::file::file_count_for_category_reanalyze,
+            commands::file::file_reanalyze_for_category,
             commands::file::file_count_authorless_in_category,
             commands::file::file_assign_author_to_authorless,
             commands::file::comic_collection_list,

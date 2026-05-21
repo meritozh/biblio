@@ -4,6 +4,7 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tauri::{Emitter, Manager};
 use tauri_plugin_sql::{DbPool, DbInstances};
+use unicode_normalization::UnicodeNormalization;
 use std::path::PathBuf;
 use std::fs;
 
@@ -224,6 +225,32 @@ fn build_filter_sql(
                             .replace('%', "\\%")
                             .replace('_', "\\_");
                         binds.push(format!("%{}%", escaped));
+                    }
+                }
+                _ => {}
+            },
+            // SQLite's LENGTH() on TEXT returns characters (not bytes), so the
+            // comparison matches the user's intuition for CJK + Latin titles.
+            // Frontend uses JS String.length (UTF-16 code units) which agrees
+            // for everything outside surrogate-pair characters — close enough
+            // for a coarse filter.
+            "display_name" => match c.op.as_str() {
+                "length_gte" => {
+                    if let Some(n) = c.n {
+                        sql.push_str(&format!(
+                            " AND LENGTH({p}display_name) >= {n}",
+                            p = prefix,
+                            n = n
+                        ));
+                    }
+                }
+                "length_lt" => {
+                    if let Some(n) = c.n {
+                        sql.push_str(&format!(
+                            " AND LENGTH({p}display_name) < {n}",
+                            p = prefix,
+                            n = n
+                        ));
                     }
                 }
                 _ => {}
@@ -1092,6 +1119,260 @@ pub async fn file_reanalyze_missing_tags(
     Ok(ReanalyzeResponse {
         processed: candidates.len() as i64,
         succeeded,
+        failed,
+        errors,
+    })
+}
+
+// ── Re-classify novels for a target category ────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ReclassifyResponse {
+    /// Files inspected (LLM call attempted).
+    pub processed: i64,
+    /// Files moved into the target category.
+    pub moved: i64,
+    /// LLM returned non-target (or unrecognized) category; file left alone.
+    pub skipped: i64,
+    /// Per-file errors that prevented even attempting the LLM call (or
+    /// failed during the move).
+    pub failed: i64,
+    pub errors: Vec<ReanalyzeError>,
+}
+
+/// Count novel-schema files that are candidates for re-classification into
+/// `target_category_id` — i.e. not already in that category. When
+/// `source_category_id` is set, the count is restricted to that one source
+/// category; `None` means "all novel-schema categories except the target".
+#[tauri::command]
+pub async fn file_count_for_category_reanalyze(
+    app: AppHandle,
+    target_category_id: i64,
+    source_category_id: Option<i64>,
+) -> Result<i64, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM files f
+         JOIN categories c ON c.id = f.category_id
+         WHERE c.schema_slug = 'novel'
+           AND f.file_status = 'available'
+           AND f.category_id != ?1
+           AND (?2 IS NULL OR f.category_id = ?2)",
+    )
+    .bind(target_category_id)
+    .bind(source_category_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+/// Run the import-time content LLM on each candidate. Only act on the
+/// LLM's category pick: if it equals the target category's name
+/// (NFC + case-insensitive), move the file into the target; otherwise
+/// leave it alone. Tags returned by the LLM are intentionally ignored on
+/// this path — `file_reanalyze_missing_tags` is the right tool for that.
+///
+/// Per-file failures (unreadable / undecodable / LLM error / move error)
+/// land in `errors` and don't stop the run.
+#[tauri::command]
+pub async fn file_reanalyze_for_category(
+    app: AppHandle,
+    target_category_id: i64,
+    source_category_id: Option<i64>,
+) -> Result<ReclassifyResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    let config = crate::commands::llm::llm_config_get(app.clone()).await?;
+
+    let target_name: Option<(String,)> = sqlx::query_as(
+        "SELECT name FROM categories WHERE id = ?",
+    )
+    .bind(target_category_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let target_name = target_name
+        .ok_or_else(|| "target category not found".to_string())?
+        .0;
+    let target_key = target_name.nfc().collect::<String>().trim().to_lowercase();
+
+    #[derive(sqlx::FromRow)]
+    struct Candidate {
+        id: i64,
+        display_name: String,
+        path: String,
+        local_cache_path: Option<String>,
+        storage_kind: Option<String>,
+    }
+
+    let candidates: Vec<Candidate> = sqlx::query_as(
+        "SELECT f.id, f.display_name, f.path, f.local_cache_path,
+                f.storage_kind
+         FROM files f
+         JOIN categories c ON c.id = f.category_id
+         WHERE c.schema_slug = 'novel'
+           AND f.file_status = 'available'
+           AND f.category_id != ?1
+           AND (?2 IS NULL OR f.category_id = ?2)
+         ORDER BY f.id",
+    )
+    .bind(target_category_id)
+    .bind(source_category_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if candidates.is_empty() {
+        return Ok(ReclassifyResponse {
+            processed: 0,
+            moved: 0,
+            skipped: 0,
+            failed: 0,
+            errors: Vec::new(),
+        });
+    }
+
+    let categories: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id, name FROM categories")
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    let category_names: Vec<String> = categories.iter().map(|(_, n)| n.clone()).collect();
+
+    let mut moved = 0i64;
+    let mut skipped = 0i64;
+    let mut failed = 0i64;
+    let mut errors: Vec<ReanalyzeError> = Vec::new();
+
+    for c in &candidates {
+        let read_path = match c.storage_kind.as_deref().unwrap_or("local") {
+            "local" => c.path.clone(),
+            _ => match c.local_cache_path.as_deref().filter(|s| !s.is_empty()) {
+                Some(cache) => cache.to_string(),
+                None => {
+                    failed += 1;
+                    errors.push(ReanalyzeError {
+                        file_id: c.id,
+                        display_name: c.display_name.clone(),
+                        message: "skipped: remote file not cached locally".to_string(),
+                    });
+                    continue;
+                }
+            },
+        };
+
+        let sample = match std::fs::read(&read_path) {
+            Err(e) => {
+                failed += 1;
+                errors.push(ReanalyzeError {
+                    file_id: c.id,
+                    display_name: c.display_name.clone(),
+                    message: format!("file unreadable at {}: {}", read_path, e),
+                });
+                continue;
+            }
+            Ok(bytes) if bytes.is_empty() => {
+                failed += 1;
+                errors.push(ReanalyzeError {
+                    file_id: c.id,
+                    display_name: c.display_name.clone(),
+                    message: "file is empty".to_string(),
+                });
+                continue;
+            }
+            Ok(bytes) => {
+                let Some(text) =
+                    crate::pipeline::nodes::decode_to_utf8(&bytes)
+                else {
+                    failed += 1;
+                    errors.push(ReanalyzeError {
+                        file_id: c.id,
+                        display_name: c.display_name.clone(),
+                        message: "encoding detection failed — try opening \
+                                  the file in a text editor and re-saving \
+                                  as UTF-8"
+                            .to_string(),
+                    });
+                    continue;
+                };
+                let Some(sample) =
+                    crate::pipeline::nodes::sample_from_text(&text, 5, 1000)
+                else {
+                    failed += 1;
+                    errors.push(ReanalyzeError {
+                        file_id: c.id,
+                        display_name: c.display_name.clone(),
+                        message: "no content after decoding (zero chars)"
+                            .to_string(),
+                    });
+                    continue;
+                };
+                sample
+            }
+        };
+
+        let meta = match crate::commands::llm::extract_category_only(
+            &config,
+            &pool,
+            &sample,
+            Some(&c.display_name),
+            &category_names,
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                failed += 1;
+                errors.push(ReanalyzeError {
+                    file_id: c.id,
+                    display_name: c.display_name.clone(),
+                    message: format!("LLM error: {e}"),
+                });
+                continue;
+            }
+        };
+
+        // Only act when the LLM picks the target category. Compare under
+        // NFC + lowercase to defend against the LLM returning a casing or
+        // Unicode variant of the catalog name. Strip parenthetical tails
+        // (e.g. "h-novel (novel with sexual content)") — the import-time
+        // ContentLlmNode does the same.
+        let llm_key = meta
+            .category
+            .as_deref()
+            .and_then(|s| s.split('(').next())
+            .map(|s| s.nfc().collect::<String>().trim().to_lowercase())
+            .unwrap_or_default();
+        if llm_key != target_key {
+            skipped += 1;
+            continue;
+        }
+
+        if let Err(e) = file_move_category(
+            app.clone(),
+            c.id,
+            Some(target_category_id),
+        )
+        .await
+        {
+            failed += 1;
+            errors.push(ReanalyzeError {
+                file_id: c.id,
+                display_name: c.display_name.clone(),
+                message: format!("category move failed: {e}"),
+            });
+            continue;
+        }
+        moved += 1;
+    }
+
+    Ok(ReclassifyResponse {
+        processed: candidates.len() as i64,
+        moved,
+        skipped,
         failed,
         errors,
     })

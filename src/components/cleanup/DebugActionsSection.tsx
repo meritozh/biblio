@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Loader2,
   Sparkles,
+  Tag as TagIcon,
   UserPlus,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -37,10 +38,13 @@ import {
   authorList,
   fileAssignAuthorToAuthorless,
   fileCountAuthorlessInCategory,
+  fileCountForCategoryReanalyze,
   fileCountNovelsMissingTags,
+  fileReanalyzeForCategory,
   fileReanalyzeMissingTags,
   type ReanalyzeError,
   type ReanalyzeResponse,
+  type ReclassifyResponse,
 } from '@/lib/tauri';
 import { useAppState } from '@/stores/appStore';
 
@@ -182,6 +186,8 @@ export function DebugActionsSection({ onAfterRun }: DebugActionsSectionProps) {
       </AlertDialog>
 
       <AssignAuthorCard onAfterRun={onAfterRun} />
+
+      <ReclassifyToCategoryCard onAfterRun={onAfterRun} />
     </section>
   );
 }
@@ -470,6 +476,276 @@ function AssignAuthorCard({ onAfterRun }: AssignAuthorCardProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+// ── Re-classify card ─────────────────────────────────────────────────────────
+
+interface ReclassifyToCategoryCardProps {
+  onAfterRun?: () => void;
+}
+
+/** Re-runs the import-time content LLM on every novel-schema file that
+ *  isn't already in the chosen target category, optionally narrowed to a
+ *  single source category. Files whose LLM-picked category equals the
+ *  target's name get moved into the target (disk + DB). The intended use
+ *  is "find novels that should actually be h-novel", but the card is
+ *  generic — the user picks the target from their novel-schema
+ *  categories. */
+function ReclassifyToCategoryCard({ onAfterRun }: ReclassifyToCategoryCardProps) {
+  const categories = useAppState((s) => s.categories);
+
+  const novelCategories = useMemo(
+    () => categories.filter((c) => c.schema_slug === 'novel'),
+    [categories]
+  );
+
+  const [targetCategoryId, setTargetCategoryId] = useState<number | null>(null);
+  // null = all novel-schema categories except the target.
+  const [sourceCategoryId, setSourceCategoryId] = useState<number | null>(null);
+  const [count, setCount] = useState<number | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<ReclassifyResponse | null>(null);
+  const [errorsExpanded, setErrorsExpanded] = useState(false);
+
+  const refreshCount = useCallback(async () => {
+    if (targetCategoryId == null) {
+      setCount(null);
+      return;
+    }
+    try {
+      const c = await fileCountForCategoryReanalyze(
+        targetCategoryId,
+        sourceCategoryId
+      );
+      setCount(c);
+    } catch (err) {
+      console.error('Failed to count re-classify candidates:', err);
+      setCount(null);
+    }
+  }, [targetCategoryId, sourceCategoryId]);
+
+  useEffect(() => {
+    void refreshCount();
+  }, [refreshCount]);
+
+  const handleRun = useCallback(async () => {
+    if (targetCategoryId == null) return;
+    setRunning(true);
+    setResult(null);
+    try {
+      const res = await fileReanalyzeForCategory(targetCategoryId, sourceCategoryId);
+      setResult(res);
+      onAfterRun?.();
+      void refreshCount();
+    } catch (err) {
+      // Surface single-shot failures (e.g. LLM not configured) the same
+      // way the tags-reanalyze card does: synthesize a one-row result so
+      // the message lands in the same panel.
+      const message = err instanceof Error ? err.message : String(err);
+      setResult({
+        processed: 0,
+        moved: 0,
+        skipped: 0,
+        failed: 0,
+        errors: [
+          {
+            file_id: 0,
+            display_name: 'Re-classify action failed',
+            message,
+          },
+        ],
+      });
+    } finally {
+      setRunning(false);
+      setConfirmOpen(false);
+    }
+  }, [targetCategoryId, sourceCategoryId, onAfterRun, refreshCount]);
+
+  const targetLabel = useMemo(() => {
+    if (targetCategoryId == null) return null;
+    return novelCategories.find((c) => c.id === targetCategoryId)?.name ?? null;
+  }, [targetCategoryId, novelCategories]);
+
+  const sourceLabel = useMemo(() => {
+    if (sourceCategoryId == null) return 'All novel categories';
+    return novelCategories.find((c) => c.id === sourceCategoryId)?.name ?? 'Unknown';
+  }, [sourceCategoryId, novelCategories]);
+
+  const canRun =
+    !running && targetCategoryId != null && count != null && count > 0;
+
+  return (
+    <div className="rounded-lg border bg-background p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-1 min-w-0">
+          <h3 className="text-sm font-medium flex items-center gap-1.5">
+            <TagIcon
+              className="h-3.5 w-3.5 text-muted-foreground"
+              aria-hidden="true"
+            />
+            Re-classify novels for category
+            {count != null && (
+              <span className="text-muted-foreground font-normal">· {count}</span>
+            )}
+          </h3>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Runs the import-time LLM content extraction on every novel-schema
+            file that&apos;s not already in the target category. Files whose
+            LLM-picked category matches the target are moved into it (disk +
+            DB). Useful for catching novels that should actually be h-novel.
+            Tags returned by the LLM are ignored on this path. Remote files
+            without a local cache are skipped.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 text-xs shrink-0"
+          onClick={() => setConfirmOpen(true)}
+          disabled={!canRun}
+        >
+          {running ? (
+            <>
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+              Running…
+            </>
+          ) : (
+            'Run'
+          )}
+        </Button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          value={targetCategoryId == null ? '' : String(targetCategoryId)}
+          onValueChange={(v) => setTargetCategoryId(v === '' ? null : Number(v))}
+        >
+          <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
+            <span className="text-muted-foreground">Target</span>
+            <SelectValue placeholder="pick a category…" />
+          </SelectTrigger>
+          <SelectContent>
+            {novelCategories.map((c) => (
+              <SelectItem key={c.id} value={String(c.id)} className="text-xs">
+                {c.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select
+          value={sourceCategoryId == null ? 'all' : String(sourceCategoryId)}
+          onValueChange={(v) =>
+            setSourceCategoryId(v === 'all' ? null : Number(v))
+          }
+        >
+          <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
+            <span className="text-muted-foreground">Source</span>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all" className="text-xs">
+              All novel categories
+            </SelectItem>
+            {novelCategories
+              .filter((c) => c.id !== targetCategoryId)
+              .map((c) => (
+                <SelectItem key={c.id} value={String(c.id)} className="text-xs">
+                  {c.name}
+                </SelectItem>
+              ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {result != null && !running && (
+        <ReclassifyResultPanel
+          result={result}
+          expanded={errorsExpanded}
+          onToggleExpand={() => setErrorsExpanded((v) => !v)}
+        />
+      )}
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Re-classify {count ?? 0} files for &ldquo;{targetLabel}&rdquo;?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Source: <span className="font-medium">{sourceLabel}</span>. This
+              calls your configured LLM once per file. Files whose
+              LLM-picked category matches &ldquo;{targetLabel}&rdquo; will be
+              moved into that category on disk and in the DB. Files whose pick
+              doesn&apos;t match stay where they are. At a few seconds per
+              file the run can take minutes — wait for the result before
+              closing the page.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={running}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void handleRun();
+              }}
+              disabled={running}
+            >
+              {running ? 'Running…' : 'Run'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+interface ReclassifyResultPanelProps {
+  result: ReclassifyResponse;
+  expanded: boolean;
+  onToggleExpand: () => void;
+}
+
+function ReclassifyResultPanel({
+  result,
+  expanded,
+  onToggleExpand,
+}: ReclassifyResultPanelProps) {
+  const summary =
+    result.processed === 0
+      ? 'No files matched — nothing to re-classify.'
+      : `${result.moved} moved, ${result.skipped} left alone, ${result.failed} failed (out of ${result.processed}).`;
+  return (
+    <div className="border-t pt-3 space-y-2">
+      <p className="text-xs text-foreground">{summary}</p>
+      {result.errors.length > 0 && (
+        <div className="space-y-1">
+          <button
+            type="button"
+            onClick={onToggleExpand}
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring rounded"
+            aria-expanded={expanded}
+          >
+            {expanded ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+            {result.errors.length}{' '}
+            {result.errors.length === 1 ? 'issue' : 'issues'}
+          </button>
+          {expanded && (
+            <ul className="space-y-1 pl-4 border-l text-[11px] text-muted-foreground">
+              {result.errors.map((err, i) => (
+                <ErrorRow key={`${err.file_id}-${i}`} err={err} />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }
