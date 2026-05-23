@@ -10,6 +10,39 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
     }
 }
 
+/// The two roots that the path resolver needs. Most callers don't care
+/// which one is empty — the resolver tolerates empty roots by returning
+/// the stored value unchanged. Loaded once per command via a single
+/// query; cheap enough that even hot paths can re-read each call rather
+/// than caching.
+#[derive(Debug, Clone, Default)]
+pub struct PathRoots {
+    pub storage_path: String,
+    pub app_root: String,
+}
+
+/// Read both `storage_path` and `remote_app_root` in one shot. Missing
+/// rows / NULL values become empty strings — the resolver passes the
+/// stored path through unchanged in that case, so a freshly-installed
+/// app with no settings still functions for existing absolute rows.
+pub async fn load_path_roots(pool: &sqlx::SqlitePool) -> Result<PathRoots, String> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM app_settings WHERE key IN ('storage_path', 'remote_app_root')",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut roots = PathRoots::default();
+    for (k, v) in rows {
+        match k.as_str() {
+            "storage_path" => roots.storage_path = v,
+            "remote_app_root" => roots.app_root = v,
+            _ => {}
+        }
+    }
+    Ok(roots)
+}
+
 #[tauri::command]
 pub async fn settings_get(
     app: AppHandle,
@@ -38,19 +71,14 @@ pub async fn settings_set(
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    // Special handling for storage_path: block change if files exist in storage
+    // Special handling for storage_path: validate accessibility (the
+    // old "block change when any file exists" guard is gone — file rows
+    // now hold paths relative to `storage_path`, so changing the root
+    // is a one-line UPDATE on app_settings with no DB rewrite. The user
+    // is responsible for actually moving the folder contents to the new
+    // location off-band; biblio just resolves against whatever the
+    // setting currently says).
     if key == "storage_path" {
-        let files_in_storage: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM files WHERE in_storage = 1"
-        )
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        if files_in_storage.0 > 0 {
-            return Err("STORAGE_PATH_CHANGE_BLOCKED".to_string());
-        }
-
         // Validate path is accessible
         if !value.is_empty() {
             let path = std::path::PathBuf::from(&value);

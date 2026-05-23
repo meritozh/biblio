@@ -231,5 +231,53 @@ pub fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 11,
+            description: "strip storage_path / app_root prefix from files.path + local_cache_path",
+            // Move from absolute paths to root-relative paths so the user
+            // can change `storage_path` / `remote_app_root` without
+            // rewriting every row.
+            //
+            // Idempotent: each UPDATE matches only rows whose stored
+            // value starts with the current root prefix; rows already
+            // relative (or absolute outside the root — legacy escapes)
+            // are untouched. The runtime resolver passes absolute paths
+            // through unchanged, so untouched rows keep working.
+            //
+            // `||` is SQLite string concat. `RTRIM(prefix, '/')` strips
+            // any trailing slash from the setting so the LIKE pattern
+            // and the SUBSTR offset agree whether the user stored the
+            // path as `/Users/x/Books` or `/Users/x/Books/`. The `+ 2`
+            // skips the normalized prefix plus the separating slash.
+            // Settings are queried inline via subselects so the migration
+            // is pure SQL (no Rust glue needed for what is data, not schema).
+            sql: "
+                -- Local file rows: strip storage_path prefix from files.path.
+                UPDATE files
+                    SET path = SUBSTR(path, LENGTH(RTRIM((SELECT value FROM app_settings WHERE key = 'storage_path'), '/')) + 2)
+                    WHERE storage_kind = 'local'
+                      AND (SELECT value FROM app_settings WHERE key = 'storage_path') IS NOT NULL
+                      AND (SELECT value FROM app_settings WHERE key = 'storage_path') <> ''
+                      AND path LIKE RTRIM((SELECT value FROM app_settings WHERE key = 'storage_path'), '/') || '/%';
+
+                -- Remote file rows: strip remote_app_root prefix from files.path.
+                UPDATE files
+                    SET path = SUBSTR(path, LENGTH(RTRIM((SELECT value FROM app_settings WHERE key = 'remote_app_root'), '/')) + 2)
+                    WHERE storage_kind = 'remote'
+                      AND (SELECT value FROM app_settings WHERE key = 'remote_app_root') IS NOT NULL
+                      AND (SELECT value FROM app_settings WHERE key = 'remote_app_root') <> ''
+                      AND path LIKE RTRIM((SELECT value FROM app_settings WHERE key = 'remote_app_root'), '/') || '/%';
+
+                -- Cache rows: strip storage_path prefix from local_cache_path.
+                UPDATE files
+                    SET local_cache_path = SUBSTR(local_cache_path, LENGTH(RTRIM((SELECT value FROM app_settings WHERE key = 'storage_path'), '/')) + 2)
+                    WHERE local_cache_path IS NOT NULL
+                      AND local_cache_path <> ''
+                      AND (SELECT value FROM app_settings WHERE key = 'storage_path') IS NOT NULL
+                      AND (SELECT value FROM app_settings WHERE key = 'storage_path') <> ''
+                      AND local_cache_path LIKE RTRIM((SELECT value FROM app_settings WHERE key = 'storage_path'), '/') || '/%';
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }

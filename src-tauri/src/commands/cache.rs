@@ -7,7 +7,6 @@
 //! the backend resolves the right path from the DB.
 
 use serde::Serialize;
-use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_sql::{DbInstances, DbPool};
@@ -68,9 +67,20 @@ pub async fn cache_open(app: AppHandle, file_id: i64) -> Result<CacheActionRespo
         return Err("FILE_NOT_FOUND".to_string());
     };
 
+    // Stored paths are relative to storage_path (cache + local rows) or
+    // app_root (remote rows). Resolve to absolute before opening.
+    let roots = super::settings::load_path_roots(&pool).await?;
     let target = match (local_cache_path.as_deref(), storage_kind.as_str()) {
-        (Some(cache), _) if !cache.is_empty() => cache.to_string(),
-        (_, "local") => path,
+        (Some(cache), _) if !cache.is_empty() => {
+            crate::path_resolve::cache_to_absolute(cache, &roots.storage_path)
+                .to_string_lossy()
+                .to_string()
+        }
+        (_, "local") => crate::path_resolve::to_absolute(
+            "local", &path, &roots.storage_path, &roots.app_root,
+        )
+        .to_string_lossy()
+        .to_string(),
         _ => return Err("CACHE_NOT_FOUND".to_string()),
     };
 
@@ -128,7 +138,10 @@ pub async fn cache_clear(app: AppHandle, file_id: i64) -> Result<CacheActionResp
         return Ok(CacheActionResponse { success: true });
     };
 
-    if let Err(e) = std::fs::remove_file(PathBuf::from(&cache_path)) {
+    // Resolve relative cache path → absolute for the disk delete.
+    let roots = super::settings::load_path_roots(&pool).await?;
+    let abs_cache = crate::path_resolve::cache_to_absolute(&cache_path, &roots.storage_path);
+    if let Err(e) = std::fs::remove_file(&abs_cache) {
         if e.kind() != std::io::ErrorKind::NotFound {
             return Err(format!("Failed to remove cache file: {e}"));
         }

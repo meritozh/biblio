@@ -156,9 +156,16 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
         return;
     }
 
+    // Store the cache path RELATIVE to storage_root so the user can
+    // move the storage folder later without rewriting every row's
+    // cache pointer. The resolver in path_resolve::cache_to_absolute
+    // rebuilds the full path at read time.
     let cache_path_str = cache_path.to_string_lossy().to_string();
+    let storage_root_str = storage_root.to_string_lossy().to_string();
+    let stored_cache =
+        crate::path_resolve::to_relative_cache(&cache_path_str, &storage_root_str);
     if let Err(e) = sqlx::query("UPDATE files SET local_cache_path = ? WHERE id = ?")
-        .bind(&cache_path_str)
+        .bind(&stored_cache)
         .bind(file_id)
         .execute(&pool)
         .await

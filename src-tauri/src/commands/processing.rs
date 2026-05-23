@@ -307,6 +307,10 @@ async fn build_pipeline_env(app: &tauri::AppHandle) -> Result<Arc<PipelineEnv>, 
     let llm_config = super::llm::load_config(&pool).await?;
     let analyze_content = llm_config.analyze_content;
 
+    // Load the two path roots so duplicate detection (and future pipeline
+    // nodes that stat existing rows) can resolve stored relative paths.
+    let roots = super::settings::load_path_roots(&pool).await?;
+
     Ok(Arc::new(PipelineEnv {
         pool,
         llm_config,
@@ -318,6 +322,8 @@ async fn build_pipeline_env(app: &tauri::AppHandle) -> Result<Arc<PipelineEnv>, 
         category_names,
         tag_names,
         existing_files,
+        storage_path: roots.storage_path,
+        app_root: roots.app_root,
         settings: PipelineSettings { analyze_content },
     }))
 }

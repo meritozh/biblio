@@ -62,7 +62,19 @@ impl Phase2Node for DbDuplicateDetectNode {
                 // unreadable path renders as None in the UI ("—") so the
                 // user knows we couldn't resolve a size — distinct from a
                 // genuine zero-byte file.
-                let existing_size = std::fs::metadata(&existing.path)
+                //
+                // Existing rows store paths RELATIVE to either
+                // `storage_path` (local) or `app_root` (remote, though
+                // remote rows aren't on local disk so stat() will fail
+                // and return None — correct, we render "—").
+                let existing_kind = existing.storage_kind.as_deref().unwrap_or("local");
+                let existing_abs = crate::path_resolve::to_absolute(
+                    existing_kind,
+                    &existing.path,
+                    &env.storage_path,
+                    &env.app_root,
+                );
+                let existing_size = std::fs::metadata(&existing_abs)
                     .ok()
                     .map(|m| m.len() as i64);
                 let new_size = if ctx.file_path.is_dir() {

@@ -134,13 +134,16 @@ pub async fn category_update(
                     .map_err(|e| e.to_string())?;
 
                     for (file_id, old_path) in files {
+                        // `old_path` is now relative to storage_path
+                        // (post-v11). Just take the basename and pin
+                        // it under the new folder name — the result is
+                        // also relative, no need to join with storage.
                         let path = std::path::PathBuf::from(&old_path);
                         if let Some(filename) = path.file_name() {
-                            let new_file_path = std::path::PathBuf::from(&storage)
-                                .join(&new_folder)
+                            let new_rel_path = std::path::PathBuf::from(&new_folder)
                                 .join(filename);
                             sqlx::query("UPDATE files SET path = ? WHERE id = ?")
-                                .bind(new_file_path.to_string_lossy().to_string())
+                                .bind(new_rel_path.to_string_lossy().to_string())
                                 .bind(file_id)
                                 .execute(&pool)
                                 .await

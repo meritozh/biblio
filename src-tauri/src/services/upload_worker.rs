@@ -139,13 +139,20 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
     };
 
     let app_root = remote_cfg.app_root.trim_end_matches('/');
-    let mut remote_path = format!("{app_root}/{encoded_filename}");
+    // Two views of the remote path: the absolute form Baidu's API needs,
+    // and the relative form we store in the DB (so `app_root` can be
+    // changed later without rewriting every row). `relative_path` is
+    // everything after the `app_root/` prefix.
+    let mut relative_path = encoded_filename.clone();
+    let mut remote_path = format!("{app_root}/{relative_path}");
 
     let mut counter = 1u32;
     loop {
+        // De-dup check against stored RELATIVE paths — the column is
+        // root-relative after migration v11.
         let existing: Result<Option<(i64,)>, _> =
             sqlx::query_as("SELECT id FROM files WHERE path = ? AND id != ?")
-                .bind(&remote_path)
+                .bind(&relative_path)
                 .bind(file_id)
                 .fetch_optional(&pool)
                 .await;
@@ -153,12 +160,13 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
         match existing {
             Ok(None) => break,
             Ok(Some(_)) => {
-                remote_path = match ext {
+                relative_path = match ext {
                     Some(e) if !e.is_empty() => {
-                        format!("{app_root}/{encoded_stem}_{counter}.{e}")
+                        format!("{encoded_stem}_{counter}.{e}")
                     }
-                    _ => format!("{app_root}/{encoded_stem}_{counter}"),
+                    _ => format!("{encoded_stem}_{counter}"),
                 };
+                remote_path = format!("{app_root}/{relative_path}");
                 counter += 1;
             }
             Err(e) => {
@@ -185,7 +193,7 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
                  in_storage = 0, original_path = ?, file_status = 'available' \
                  WHERE id = ?",
             )
-            .bind(&remote_path)
+            .bind(&relative_path)
             .bind(&upload.fs_id)
             .bind(&upload.md5)
             .bind(upload.size)

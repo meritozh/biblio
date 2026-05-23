@@ -28,5 +28,11 @@ pub struct PipelineEnv {
     pub tag_names: Vec<String>,
     pub existing_files: Vec<FileEntry>,
 
+    /// Path roots used by duplicate detection (and any future node that
+    /// needs to stat existing rows on disk). Each `existing_files` row's
+    /// `path` is relative to one of these; resolve via `path_resolve`.
+    pub storage_path: String,
+    pub app_root: String,
+
     pub settings: PipelineSettings,
 }

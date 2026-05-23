@@ -1,5 +1,6 @@
 mod commands;
 mod database;
+mod path_resolve;
 mod pipeline;
 mod providers;
 mod schema;

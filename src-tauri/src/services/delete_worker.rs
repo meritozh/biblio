@@ -12,7 +12,6 @@
 //! effect succeeds do we actually drop the row.
 
 use serde::Serialize;
-use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_sql::{DbInstances, DbPool};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -82,12 +81,27 @@ async fn process_one(app: &AppHandle, job: DeleteJob) {
         }
     };
 
-    let Some((path, display_name, in_storage, local_cache_path, storage_kind)) = row else {
+    let Some((stored_path, display_name, in_storage, local_cache_path, storage_kind)) = row else {
         // Row already gone — treat as success so a duplicate-enqueue
         // doesn't surface a confusing error.
         emit(app, file_id, "", "success", None);
         return;
     };
+
+    // Resolve stored relative paths → absolute for the external op
+    // (Baidu API for remote, fs::remove_file for local).
+    let roots = match crate::commands::settings::load_path_roots(&pool).await {
+        Ok(r) => r,
+        Err(e) => {
+            emit(app, file_id, &display_name, "error", Some(e));
+            return;
+        }
+    };
+    let path = crate::path_resolve::to_absolute(
+        &storage_kind, &stored_path, &roots.storage_path, &roots.app_root,
+    )
+    .to_string_lossy()
+    .to_string();
 
     emit(app, file_id, &display_name, "deleting", None);
 
@@ -114,8 +128,12 @@ async fn process_one(app: &AppHandle, job: DeleteJob) {
     if let Some(cache) = local_cache_path.filter(|s| !s.is_empty()) {
         // Best-effort: a stale cache file is worth a log line but
         // shouldn't block the DB delete the user just confirmed.
-        if let Err(e) = std::fs::remove_file(PathBuf::from(&cache)) {
-            eprintln!("Cache cleanup failed for file {file_id} ({cache}): {e}");
+        let abs_cache = crate::path_resolve::cache_to_absolute(&cache, &roots.storage_path);
+        if let Err(e) = std::fs::remove_file(&abs_cache) {
+            eprintln!(
+                "Cache cleanup failed for file {file_id} ({}): {e}",
+                abs_cache.display()
+            );
         }
     }
 

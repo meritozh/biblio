@@ -534,6 +534,11 @@ pub async fn file_list(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Resolve stored relative paths → absolute at the IPC boundary so
+    // every TS consumer keeps seeing the same shape it always has.
+    // Single roots lookup amortizes across every row in this list.
+    let roots = crate::commands::settings::load_path_roots(&pool).await?;
+
     let mut file_items = Vec::with_capacity(files.len());
     for file in files {
         let tags: Vec<Tag> = sqlx::query_as(
@@ -554,9 +559,21 @@ pub async fn file_list(
         .await
         .map_err(|e| e.to_string())?;
 
+        let storage_kind_ref = file.storage_kind.as_deref().unwrap_or("local");
+        let abs_path = crate::path_resolve::to_absolute(
+            storage_kind_ref, &file.path, &roots.storage_path, &roots.app_root,
+        )
+        .to_string_lossy()
+        .to_string();
+        let abs_cache = file.local_cache_path.as_ref().map(|p| {
+            crate::path_resolve::cache_to_absolute(p, &roots.storage_path)
+                .to_string_lossy()
+                .to_string()
+        });
+
         file_items.push(FileListItem {
             id: file.id,
-            path: file.path,
+            path: abs_path,
             display_name: file.display_name,
             category_id: file.category_id,
             file_status: file.file_status,
@@ -565,7 +582,7 @@ pub async fn file_list(
             progress: file.progress,
             storage_kind: file.storage_kind,
             remote_provider: file.remote_provider,
-            local_cache_path: file.local_cache_path,
+            local_cache_path: abs_cache,
             created_at: file.created_at,
             updated_at: file.updated_at,
             tags,
@@ -591,6 +608,10 @@ async fn hydrate_file_items(
     pool: &sqlx::SqlitePool,
     files: Vec<FileEntry>,
 ) -> Result<Vec<FileListItem>, String> {
+    // Same boundary-resolve shape as file_list — load roots once, then
+    // rebuild absolute paths from the stored relative values per row.
+    let roots = crate::commands::settings::load_path_roots(pool).await?;
+
     let mut items = Vec::with_capacity(files.len());
     for file in files {
         let tags: Vec<Tag> = sqlx::query_as(
@@ -611,9 +632,21 @@ async fn hydrate_file_items(
         .await
         .map_err(|e| e.to_string())?;
 
+        let storage_kind_ref = file.storage_kind.as_deref().unwrap_or("local");
+        let abs_path = crate::path_resolve::to_absolute(
+            storage_kind_ref, &file.path, &roots.storage_path, &roots.app_root,
+        )
+        .to_string_lossy()
+        .to_string();
+        let abs_cache = file.local_cache_path.as_ref().map(|p| {
+            crate::path_resolve::cache_to_absolute(p, &roots.storage_path)
+                .to_string_lossy()
+                .to_string()
+        });
+
         items.push(FileListItem {
             id: file.id,
-            path: file.path,
+            path: abs_path,
             display_name: file.display_name,
             category_id: file.category_id,
             file_status: file.file_status,
@@ -622,7 +655,7 @@ async fn hydrate_file_items(
             progress: file.progress,
             storage_kind: file.storage_kind,
             remote_provider: file.remote_provider,
-            local_cache_path: file.local_cache_path,
+            local_cache_path: abs_cache,
             created_at: file.created_at,
             updated_at: file.updated_at,
             tags,
@@ -935,18 +968,30 @@ pub async fn file_reanalyze_missing_tags(
             .map_err(|e| e.to_string())?;
     let tag_names: Vec<String> = existing_tags.iter().map(|(_, n)| n.clone()).collect();
 
+    // Load roots once for path resolution. Candidates have storage_kind
+    // varying per row, so the helper chooses the right root per row.
+    let roots = super::settings::load_path_roots(&pool).await?;
+
     let mut succeeded = 0i64;
     let mut failed = 0i64;
     let mut errors: Vec<ReanalyzeError> = Vec::new();
 
     for c in &candidates {
-        // Read path: local rows use `path` directly; remote rows need a
-        // cached copy. Without one we skip the file rather than silently
-        // triggering a download (would amplify LLM cost without consent).
-        let read_path = match c.storage_kind.as_deref().unwrap_or("local") {
-            "local" => c.path.clone(),
+        // Read path: local rows use `path` directly (resolved against
+        // storage_path); remote rows need a cached copy. Without one we
+        // skip the file rather than silently triggering a download
+        // (would amplify LLM cost without consent).
+        let kind = c.storage_kind.as_deref().unwrap_or("local");
+        let read_path = match kind {
+            "local" => crate::path_resolve::to_absolute(
+                kind, &c.path, &roots.storage_path, &roots.app_root,
+            )
+            .to_string_lossy()
+            .to_string(),
             _ => match c.local_cache_path.as_deref().filter(|s| !s.is_empty()) {
-                Some(cache) => cache.to_string(),
+                Some(cache) => crate::path_resolve::cache_to_absolute(cache, &roots.storage_path)
+                    .to_string_lossy()
+                    .to_string(),
                 None => {
                     failed += 1;
                     errors.push(ReanalyzeError {
@@ -1257,16 +1302,26 @@ pub async fn file_reanalyze_for_category(
             .map_err(|e| e.to_string())?;
     let category_names: Vec<String> = categories.iter().map(|(_, n)| n.clone()).collect();
 
+    // Path roots for resolution — same shape as file_reanalyze_missing_tags.
+    let roots = super::settings::load_path_roots(&pool).await?;
+
     let mut moved = 0i64;
     let mut skipped = 0i64;
     let mut failed = 0i64;
     let mut errors: Vec<ReanalyzeError> = Vec::new();
 
     for c in &candidates {
-        let read_path = match c.storage_kind.as_deref().unwrap_or("local") {
-            "local" => c.path.clone(),
+        let kind = c.storage_kind.as_deref().unwrap_or("local");
+        let read_path = match kind {
+            "local" => crate::path_resolve::to_absolute(
+                kind, &c.path, &roots.storage_path, &roots.app_root,
+            )
+            .to_string_lossy()
+            .to_string(),
             _ => match c.local_cache_path.as_deref().filter(|s| !s.is_empty()) {
-                Some(cache) => cache.to_string(),
+                Some(cache) => crate::path_resolve::cache_to_absolute(cache, &roots.storage_path)
+                    .to_string_lossy()
+                    .to_string(),
                 None => {
                     failed += 1;
                     errors.push(ReanalyzeError {
@@ -1520,9 +1575,23 @@ pub async fn file_get(
     .await
     .map_err(|e| e.to_string())?;
 
+    // Resolve stored relative paths → absolute at the IPC boundary.
+    let roots = crate::commands::settings::load_path_roots(&pool).await?;
+    let storage_kind_ref = file.storage_kind.as_deref().unwrap_or("local");
+    let abs_path = crate::path_resolve::to_absolute(
+        storage_kind_ref, &file.path, &roots.storage_path, &roots.app_root,
+    )
+    .to_string_lossy()
+    .to_string();
+    let abs_cache = file.local_cache_path.as_ref().map(|p| {
+        crate::path_resolve::cache_to_absolute(p, &roots.storage_path)
+            .to_string_lossy()
+            .to_string()
+    });
+
     Ok(FileWithDetails {
         id: file.id,
-        path: file.path,
+        path: abs_path,
         display_name: file.display_name,
         category_id: file.category_id,
         file_status: file.file_status,
@@ -1531,7 +1600,7 @@ pub async fn file_get(
         progress: file.progress,
         storage_kind: file.storage_kind,
         remote_provider: file.remote_provider,
-        local_cache_path: file.local_cache_path,
+        local_cache_path: abs_cache,
         created_at: file.created_at,
         updated_at: file.updated_at,
         category,
@@ -1734,12 +1803,18 @@ pub async fn file_create(
         move_file(&source_canonical, &dest_path)?
     };
     let final_path_str = final_path.to_string_lossy().to_string();
+    // Store the destination path RELATIVE to storage_path so the user can
+    // rename / move the storage folder without rewriting every row. The
+    // resolver in `path_resolve::to_absolute` rebuilds the full path at
+    // read time using whatever `storage_path` is currently set to.
+    let storage_path_str = storage_path.to_string_lossy();
+    let stored_path = crate::path_resolve::to_relative_local(&final_path_str, &storage_path_str);
 
     // Insert into database with in_storage=true
     let result = sqlx::query(
         "INSERT INTO files (path, display_name, category_id, in_storage, original_path, file_status, progress) VALUES (?, ?, ?, 1, ?, 'available', ?)"
     )
-    .bind(&final_path_str)
+    .bind(&stored_path)
     .bind(&validated_name)
     .bind(category_id)
     .bind(&path)  // original_path is the source path
@@ -1818,18 +1893,28 @@ pub async fn rename_file_to_match_metadata(
     pool: &sqlx::SqlitePool,
     file_id: i64,
 ) -> Result<(), String> {
-    let file_info: Option<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT path, display_name, progress FROM files WHERE id = ?"
+    let file_info: Option<(String, String, Option<String>, String)> = sqlx::query_as(
+        "SELECT path, display_name, progress, COALESCE(storage_kind, 'local') FROM files WHERE id = ?"
     )
     .bind(file_id)
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;
 
-    let Some((current_path_str, display_name, progress)) = file_info else {
+    let Some((stored_path, display_name, progress, storage_kind)) = file_info else {
         return Ok(());
     };
-    let current_path = PathBuf::from(&current_path_str);
+
+    // The stored path is relative to storage_path (post-v11). Resolve to
+    // an absolute path for the on-disk rename, then strip the prefix
+    // again on the way back into the DB.
+    let roots = crate::commands::settings::load_path_roots(pool).await?;
+    let current_path = crate::path_resolve::to_absolute(
+        &storage_kind,
+        &stored_path,
+        &roots.storage_path,
+        &roots.app_root,
+    );
 
     let ext_lower = current_path.extension()
         .and_then(|e| e.to_str())
@@ -1870,11 +1955,12 @@ pub async fn rename_file_to_match_metadata(
         return Ok(());
     }
     let new_path_str = new_path.to_string_lossy().to_string();
+    let new_stored = crate::path_resolve::to_relative_local(&new_path_str, &roots.storage_path);
 
     // Transaction: update DB first, then rename file
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     sqlx::query("UPDATE files SET path = ? WHERE id = ?")
-        .bind(&new_path_str)
+        .bind(&new_stored)
         .bind(file_id)
         .execute(&mut *tx)
         .await
@@ -1905,7 +1991,7 @@ pub struct FileCreateResponse {
 async fn relocate_file_to_category_folder(
     pool: &sqlx::SqlitePool,
     file_id: i64,
-    current_path: &str,
+    stored_path: &str,
     target_category_id: i64,
 ) -> Result<bool, String> {
     let storage_row: Option<(String,)> = sqlx::query_as(
@@ -1922,6 +2008,7 @@ async fn relocate_file_to_category_folder(
     let storage_canonical = storage_path
         .canonicalize()
         .map_err(|e| format!("Failed to resolve storage path: {}", e))?;
+    let storage_canonical_str = storage_canonical.to_string_lossy().to_string();
 
     let cat_row: Option<(Option<String>, String)> = sqlx::query_as(
         "SELECT folder_name, name FROM categories WHERE id = ?",
@@ -1942,7 +2029,15 @@ async fn relocate_file_to_category_folder(
             .map_err(|e| format!("Failed to create folder: {}", e))?;
     }
 
-    let current_pb = PathBuf::from(current_path);
+    // Caller passes the stored (relative) path. Resolve to an absolute
+    // filesystem path for the on-disk operations; the relativizer at the
+    // bottom strips the prefix again before UPDATE.
+    let current_pb = crate::path_resolve::to_absolute(
+        "local",
+        stored_path,
+        &storage_canonical_str,
+        "",
+    );
     if let Some(parent) = current_pb.parent() {
         if parent == dest_folder {
             return Ok(false);
@@ -1957,9 +2052,10 @@ async fn relocate_file_to_category_folder(
     let dest_path = dest_folder.join(filename);
     let final_path = move_file(&current_pb, &dest_path)?;
     let final_path_str = final_path.to_string_lossy().to_string();
+    let new_stored = crate::path_resolve::to_relative_local(&final_path_str, &storage_canonical_str);
 
     sqlx::query("UPDATE files SET path = ? WHERE id = ?")
-        .bind(&final_path_str)
+        .bind(&new_stored)
         .bind(file_id)
         .execute(pool)
         .await
@@ -2428,10 +2524,19 @@ pub async fn file_delete(
     .await
     .map_err(|e| e.to_string())?;
 
-    let Some((path, in_storage, storage_kind)) = file_info else {
+    let Some((stored_path, in_storage, storage_kind)) = file_info else {
         // Already gone — treat as success so a double-click doesn't error.
         return Ok(FileDeleteResponse { success: true });
     };
+
+    // Resolve stored relative path → absolute for the external op.
+    // Baidu's API and fs::remove both want the full path.
+    let roots = super::settings::load_path_roots(&pool).await?;
+    let path = crate::path_resolve::to_absolute(
+        &storage_kind, &stored_path, &roots.storage_path, &roots.app_root,
+    )
+    .to_string_lossy()
+    .to_string();
 
     // Strict ordering: external resource first, DB row second. A failure
     // here aborts before the row is touched so the user can retry against
@@ -2536,8 +2641,15 @@ pub async fn file_move_category(
             .map_err(|e| format!("Failed to create folder: {}", e))?;
     }
 
-    // Get current file path and filename
-    let current_path_buf = PathBuf::from(&current_path);
+    // Resolve the stored relative path to an absolute filesystem path
+    // for the move operation; we strip the prefix again before UPDATE.
+    let storage_canonical_str = storage_canonical.to_string_lossy().to_string();
+    let current_path_buf = crate::path_resolve::to_absolute(
+        "local",
+        &current_path,
+        &storage_canonical_str,
+        "",
+    );
     let filename = current_path_buf.file_name()
         .and_then(|n| n.to_str())
         .ok_or("Invalid filename")?;
@@ -2554,23 +2666,30 @@ pub async fn file_move_category(
             .await
             .map_err(|e| e.to_string())?;
 
-        return Ok(FileMoveCategoryResponse { success: true, new_path: current_path });
+        return Ok(FileMoveCategoryResponse {
+            success: true,
+            new_path: current_path_buf.to_string_lossy().to_string(),
+        });
     }
 
     // Move the file
     let dest_path = dest_folder.join(filename);
     let final_path = move_file(&current_path_buf, &dest_path)?;
     let final_path_str = final_path.to_string_lossy().to_string();
+    let new_stored = crate::path_resolve::to_relative_local(&final_path_str, &storage_canonical_str);
 
     // Update database
     sqlx::query("UPDATE files SET path = ?, category_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(&final_path_str)
+        .bind(&new_stored)
         .bind(category_id)
         .bind(id)
         .execute(&pool)
         .await
         .map_err(|e| e.to_string())?;
 
+    // Return the absolute path — TS callers expect to use it directly
+    // for follow-up disk ops (open, etc.). Internal storage stays
+    // relative; this is just the IPC-boundary shape.
     Ok(FileMoveCategoryResponse { success: true, new_path: final_path_str })
 }
 
@@ -2784,9 +2903,39 @@ pub async fn file_check_status(
         }
     };
 
+    // Resolve stored relative path to absolute before stat-ing. Without
+    // the resolve, `Path::exists()` would test a non-existent relative
+    // path and mark every row as 'missing' after the v11 migration.
+    //
+    // Remote-row behavior CHANGED in the v11 refactor: previously this
+    // function stat'd every row's path verbatim, which for remote rows
+    // was a Baidu provider path (e.g. `/apps/biblio/<base64>.cbz`) that
+    // never exists locally → every remote was incorrectly marked
+    // 'missing' on every check. The branch below treats remote rows as
+    // 'available' unless a local cache exists AND that cache file is
+    // gone. Either case (no cache, or cache present and intact) leaves
+    // the row available; only a missing cache flips a remote to
+    // 'missing'. This matches "is the user's view of this row still
+    // usable?" — what the file_status column actually means.
+    let roots = super::settings::load_path_roots(&pool).await?;
+
     let mut updated = Vec::new();
     for file in files {
-        let exists = std::path::Path::new(&file.path).exists();
+        let kind = file.storage_kind.as_deref().unwrap_or("local");
+        let abs = crate::path_resolve::to_absolute(
+            kind, &file.path, &roots.storage_path, &roots.app_root,
+        );
+        let exists = if kind == "remote" {
+            file.local_cache_path
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .map(|p| {
+                    crate::path_resolve::cache_to_absolute(p, &roots.storage_path).exists()
+                })
+                .unwrap_or(true)
+        } else {
+            abs.exists()
+        };
         let new_status = if exists { "available" } else { "missing" };
 
         if file.file_status != new_status {
@@ -2844,7 +2993,16 @@ pub async fn file_replace(
     .await
     .map_err(|e| e.to_string())?;
 
-    if let Some((existing_path, in_storage, storage_kind)) = existing {
+    if let Some((existing_stored, in_storage, storage_kind)) = existing {
+        // Resolve relative → absolute before the external op. Same shape
+        // as file_delete; see comments there.
+        let roots = super::settings::load_path_roots(&pool).await?;
+        let existing_path = crate::path_resolve::to_absolute(
+            &storage_kind, &existing_stored, &roots.storage_path, &roots.app_root,
+        )
+        .to_string_lossy()
+        .to_string();
+
         // Strict ordering, same as `file_delete`: prove the prior copy is
         // gone before we drop the DB row. Without this, a remote duplicate
         // resolved via "Replace" used to leave the Baidu file orphaned
