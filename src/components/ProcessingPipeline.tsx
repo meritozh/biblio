@@ -784,24 +784,28 @@ export function ProcessingPipeline({
         onInteractOutside={(e) => e.preventDefault()}
         onEscapeKeyDown={(e) => e.preventDefault()}
       >
+        {/* Minimize sits absolutely to the left of the shadcn Dialog's
+            built-in close (the X at `right-4 top-4` in dialog.tsx) so
+            both share a baseline and don't overlap. `right-12` slots in
+            the gap reserved by the close's padding. Pulling it out of
+            the DialogHeader flex also stops the title row from being
+            squeezed by a sibling at narrow widths. */}
+        <button
+          type="button"
+          onClick={onMinimize}
+          className="absolute right-12 top-4 text-muted-foreground hover:text-foreground hover:bg-secondary p-1 rounded-xl opacity-60 hover:opacity-100 transition-opacity"
+          aria-label="Minimize import dialog"
+          title="Minimize — analysis keeps running"
+        >
+          <Minus className="h-4 w-4" />
+        </button>
         <DialogHeader>
-          <div className="flex items-center justify-between gap-3">
-            <DialogTitle className="flex items-baseline gap-3">
-              <span>Import</span>
-              <span className="font-serif-italic text-sm text-muted-foreground">
-                — {totalFiles} {totalFiles === 1 ? 'file' : 'files'}
-              </span>
-            </DialogTitle>
-            <button
-              type="button"
-              onClick={onMinimize}
-              className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors"
-              aria-label="Minimize import dialog"
-              title="Minimize — analysis keeps running"
-            >
-              <Minus className="h-4 w-4" />
-            </button>
-          </div>
+          <DialogTitle className="flex items-baseline gap-3">
+            <span>Import</span>
+            <span className="font-serif-italic text-sm text-muted-foreground">
+              — {totalFiles} {totalFiles === 1 ? 'file' : 'files'}
+            </span>
+          </DialogTitle>
         </DialogHeader>
 
         {/* Streaming progress strip: visible while any file is in flight */}
