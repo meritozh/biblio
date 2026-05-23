@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from 'react';
 import { BookOpen } from 'lucide-react';
 import { coverGet } from '@/lib/tauri';
+import { MiddleEllipsis } from '@/components/MiddleEllipsis';
 import type { ComicCollection } from '@/types';
 import { CARD_HEIGHT, CARD_WIDTH } from './constants';
 
@@ -58,12 +59,10 @@ export const CollectionCard = memo(function CollectionCard({
           </div>
         </div>
         <div className="space-y-0.5 min-w-0 px-0.5">
-          <p
-            className="text-sm font-medium leading-tight truncate"
-            title={collection.title}
-          >
-            {collection.title}
-          </p>
+          <MiddleEllipsis
+            text={collection.title}
+            className="text-sm font-medium leading-tight"
+          />
           <p className="text-xs text-muted-foreground">
             {count} {count === 1 ? 'volume' : 'volumes'}
           </p>

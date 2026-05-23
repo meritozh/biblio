@@ -4,6 +4,7 @@ import { NovelCover } from '@/components/NovelCover';
 import { schemaForCategoryId } from '@/lib/categorySchema';
 import { useAppState } from '@/stores/appStore';
 import { useFile } from '@/stores/fileStore';
+import { MiddleEllipsis } from '@/components/MiddleEllipsis';
 import { CARD_HEIGHT, CARD_WIDTH } from './constants';
 import { CardField } from './CardField';
 import { CardStatus } from './CardStatus';
@@ -79,12 +80,10 @@ export const NovelFileCard = memo(function NovelFileCard({
           </div>
         </div>
         <div className="space-y-0.5 min-w-0 px-0.5">
-          <p
-            className="text-sm font-medium leading-tight truncate"
-            title={file.display_name}
-          >
-            {file.display_name}
-          </p>
+          <MiddleEllipsis
+            text={file.display_name}
+            className="text-sm font-medium leading-tight"
+          />
           {schema.cardFields.map((field) => (
             <CardField key={field} field={field} file={file} />
           ))}
