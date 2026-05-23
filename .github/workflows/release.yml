@@ -1,0 +1,87 @@
+name: Release
+
+# Fires on a `v*` tag push or a manual run from the Actions tab.
+# Bump the three version fields first (package.json, src-tauri/tauri.conf.json,
+# src-tauri/Cargo.toml), commit, then `git tag v0.x.y && git push origin v0.x.y`.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write  # tauri-action needs this to create the GitHub Release
+
+jobs:
+  build:
+    # Single-arch (Apple Silicon) macOS build for v1. To add Intel macOS,
+    # Windows, or Linux, expand `matrix.platform` and the per-platform
+    # `args` mapping below. tauri-action picks the right bundler per OS.
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest]
+
+    runs-on: ${{ matrix.platform }}
+
+    # Apple signing + notarization secrets live in the `release` GitHub
+    # Environment, not at the repo level. The job has to opt into the
+    # environment for those `${{ secrets.* }}` lookups to resolve;
+    # without this line they'd silently evaluate to empty strings and
+    # tauri-action would produce an unsigned, un-notarized DMG.
+    environment: release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artefacts
+        uses: swatinem/rust-cache@v2
+        with:
+          # Keys the cache to src-tauri's Cargo.lock; cache key bumps when
+          # deps change. `workspaces` arg points at the right Cargo workspace.
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build, sign, notarize, and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing + notarization. All six secrets must be set in
+          # repo Settings → Secrets and variables → Actions before the
+          # first tag push. If any are missing the build still produces a
+          # DMG, but it'll be unsigned (Gatekeeper will block it for end
+          # users). See the README / commit message for how to obtain each.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Biblio ${{ github.ref_name }}'
+          releaseDraft: true       # land as a draft so you can review before publishing
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+          releaseBody: |
+            See the auto-generated commit log for changes.
+
+            ## Install (macOS)
+
+            Download `Biblio_${{ github.ref_name }}_aarch64.dmg`, open it, drag Biblio to Applications.
