@@ -1232,6 +1232,13 @@ function FileCardRow({
                 (item.preparedImport?.source_is_directory
                   ? REGISTRY.comic
                   : defaultSchema());
+          // Resolve the new-side author ids → names via the parent's
+          // `authors` snapshot so the dupe panel can render the row
+          // without a follow-up fetch. Ids that don't match anything
+          // in the snapshot (extremely rare race) fall through to
+          // `#<id>` so the panel still has something to display.
+          const resolvedNewAuthors = item.formValues.author_ids
+            .map((id) => authors.find((a) => a.id === id)?.name ?? `#${id}`);
           return (
           <div className="mt-4 pt-4 border-t border-border space-y-4">
             {item.preparedImport?.duplicate_of && (
@@ -1239,6 +1246,7 @@ function FileCardRow({
                 duplicateInfo={item.preparedImport.duplicate_of}
                 schema={resolvedSchema}
                 newDisplayName={item.formValues.display_name}
+                newAuthorNames={resolvedNewAuthors}
                 newProgress={item.formValues.progress ?? null}
                 newCoverData={item.formValues.cover_data}
                 newCoverMimeType={item.formValues.cover_mime_type}

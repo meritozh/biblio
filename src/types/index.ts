@@ -217,6 +217,10 @@ export interface DuplicateInfo {
   /** Byte length of the file being imported. `null` for folder-to-zip
    *  imports (no single file to measure) or unreadable paths. */
   new_size: number | null;
+  /** Author names attached to the existing row. Empty array when none.
+   *  Denormalized into this DTO so the dupe compare panel can render
+   *  side-by-side authors without an extra IPC round-trip. */
+  existing_author_names: string[];
   recommendation: DuplicateAction;
 }
 

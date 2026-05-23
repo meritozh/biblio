@@ -45,6 +45,11 @@ pub struct DuplicateInfo {
     /// directory (folder-to-zip imports have no single-file size yet) or
     /// the path is unreadable.
     pub new_size: Option<i64>,
+    /// Author names attached to the existing row. Denormalized into this
+    /// DTO so the dupe compare panel can render side-by-side authors
+    /// without a follow-up IPC round-trip. Empty vec when the existing
+    /// file has no authors.
+    pub existing_author_names: Vec<String>,
     pub recommendation: DuplicateAction,
 }
 

@@ -19,6 +19,11 @@ interface DuplicateWarningProps {
    *  `item.formValues.display_name` — the post-edit value, so what the
    *  user sees here matches what will actually land on Replace). */
   newDisplayName: string;
+  /** Author names attached to the new file, resolved from
+   *  `item.formValues.author_ids` against the parent's authors snapshot.
+   *  Empty array renders as "None" so an empty-vs-empty pair shows
+   *  muted matching values rather than blank cells. */
+  newAuthorNames: string[];
   /** Current progress value on the new file (form value, mirroring
    *  display_name's source). Only consulted on novel-schema rows. */
   newProgress: string | null;
@@ -122,10 +127,18 @@ function CoverCompareRow({
   );
 }
 
+/** Render an author list as a single comma-joined string. Returns
+ *  "None" for empty so an empty-vs-empty pair stays visually balanced
+ *  and the differs-bolding stays correct (both render the same text). */
+function formatAuthors(names: ReadonlyArray<string>): string {
+  return names.length === 0 ? 'None' : names.join(', ');
+}
+
 export function DuplicateWarning({
   duplicateInfo,
   schema,
   newDisplayName,
+  newAuthorNames,
   newProgress,
   newCoverData,
   newCoverMimeType,
@@ -134,6 +147,8 @@ export function DuplicateWarning({
   onActionChange,
 }: DuplicateWarningProps) {
   const existingName = duplicateInfo.existing_display_name;
+  const existingAuthors = formatAuthors(duplicateInfo.existing_author_names);
+  const nextAuthors = formatAuthors(newAuthorNames);
   const existingSize = formatBytes(duplicateInfo.existing_size);
   const nextSize = formatBytes(duplicateInfo.new_size);
 
@@ -178,6 +193,10 @@ export function DuplicateWarning({
         <div className="text-muted-foreground font-medium">Existing</div>
         <div className="text-muted-foreground font-medium">New</div>
         <CompareRow label="Name" existing={existingName} next={newDisplayName} />
+        {/* Authors row sits above the schema-specific row because both
+            schemas (novel + comic) have author in their formFields — it
+            applies to every dupe regardless of slug. */}
+        <CompareRow label="Authors" existing={existingAuthors} next={nextAuthors} />
         {middleRow}
         <CompareRow label="Size" existing={existingSize} next={nextSize} />
       </div>

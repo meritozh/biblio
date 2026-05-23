@@ -32,71 +32,88 @@ impl Phase2Node for DbDuplicateDetectNode {
             return Ok(());
         }
 
-        let dup = env
-            .existing_files
-            .iter()
-            .find(|f| {
-                // A same-named file in a different category is a different
-                // work (e.g. a novel and a comic that share a title). Only
-                // filter when both sides have a known category — comics
-                // currently leave `category_id` empty in the pipeline, so a
-                // None on either side falls through to the name check.
-                if let (Some(new_cat), Some(existing_cat)) =
-                    (ctx.category_id, f.category_id)
-                {
-                    if new_cat != existing_cat {
-                        return false;
-                    }
+        let existing_match = env.existing_files.iter().find(|f| {
+            // A same-named file in a different category is a different
+            // work (e.g. a novel and a comic that share a title). Only
+            // filter when both sides have a known category — comics
+            // currently leave `category_id` empty in the pipeline, so a
+            // None on either side falls through to the name check.
+            if let (Some(new_cat), Some(existing_cat)) =
+                (ctx.category_id, f.category_id)
+            {
+                if new_cat != existing_cat {
+                    return false;
                 }
-                let existing = f.display_name.trim().to_lowercase();
-                prefix_similarity(&display, &existing) > DUPLICATE_PREFIX_THRESHOLD
-            })
-            .map(|existing| {
-                let recommendation = match (&ctx.progress, &existing.progress) {
-                    (Some(new_p), Some(old_p)) if new_p >= old_p => DuplicateAction::Replace,
-                    (Some(_), None) => DuplicateAction::Replace,
-                    (None, Some(_)) => DuplicateAction::Delete,
-                    _ => DuplicateAction::Replace,
-                };
-                // On-disk size lookup. Best-effort: a missing file or an
-                // unreadable path renders as None in the UI ("—") so the
-                // user knows we couldn't resolve a size — distinct from a
-                // genuine zero-byte file.
-                //
-                // Existing rows store paths RELATIVE to either
-                // `storage_path` (local) or `app_root` (remote, though
-                // remote rows aren't on local disk so stat() will fail
-                // and return None — correct, we render "—").
-                let existing_kind = existing.storage_kind.as_deref().unwrap_or("local");
-                let existing_abs = crate::path_resolve::to_absolute(
-                    existing_kind,
-                    &existing.path,
-                    &env.storage_path,
-                    &env.app_root,
-                );
-                let existing_size = std::fs::metadata(&existing_abs)
-                    .ok()
-                    .map(|m| m.len() as i64);
-                let new_size = if ctx.file_path.is_dir() {
-                    // Folder-to-zip imports have no meaningful "file size"
-                    // until the archive is produced post-commit. Skip.
-                    None
-                } else {
-                    std::fs::metadata(&ctx.file_path)
-                        .ok()
-                        .map(|m| m.len() as i64)
-                };
-                DuplicateInfo {
-                    existing_file_id: existing.id,
-                    existing_display_name: existing.display_name.clone(),
-                    existing_progress: existing.progress.clone(),
-                    existing_size,
-                    new_size,
-                    recommendation,
-                }
-            });
+            }
+            let existing = f.display_name.trim().to_lowercase();
+            prefix_similarity(&display, &existing) > DUPLICATE_PREFIX_THRESHOLD
+        });
 
-        ctx.duplicate_of = dup;
+        let Some(existing) = existing_match else {
+            return Ok(());
+        };
+
+        let recommendation = match (&ctx.progress, &existing.progress) {
+            (Some(new_p), Some(old_p)) if new_p >= old_p => DuplicateAction::Replace,
+            (Some(_), None) => DuplicateAction::Replace,
+            (None, Some(_)) => DuplicateAction::Delete,
+            _ => DuplicateAction::Replace,
+        };
+        // On-disk size lookup. Best-effort: a missing file or an
+        // unreadable path renders as None in the UI ("—") so the
+        // user knows we couldn't resolve a size — distinct from a
+        // genuine zero-byte file.
+        //
+        // Existing rows store paths RELATIVE to either
+        // `storage_path` (local) or `app_root` (remote, though
+        // remote rows aren't on local disk so stat() will fail
+        // and return None — correct, we render "—").
+        let existing_kind = existing.storage_kind.as_deref().unwrap_or("local");
+        let existing_abs = crate::path_resolve::to_absolute(
+            existing_kind,
+            &existing.path,
+            &env.storage_path,
+            &env.app_root,
+        );
+        let existing_size = std::fs::metadata(&existing_abs)
+            .ok()
+            .map(|m| m.len() as i64);
+        let new_size = if ctx.file_path.is_dir() {
+            // Folder-to-zip imports have no meaningful "file size"
+            // until the archive is produced post-commit. Skip.
+            None
+        } else {
+            std::fs::metadata(&ctx.file_path)
+                .ok()
+                .map(|m| m.len() as i64)
+        };
+
+        // Author lookup happens only on a dupe hit — one query per match,
+        // not per row in `existing_files`. Dupes are rare per batch so
+        // the per-hit cost is negligible compared to pre-loading authors
+        // for every existing row at env-build time.
+        let author_rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT a.name FROM authors a
+             JOIN file_authors fa ON fa.author_id = a.id
+             WHERE fa.file_id = ?
+             ORDER BY a.name",
+        )
+        .bind(existing.id)
+        .fetch_all(&env.pool)
+        .await
+        .map_err(|e| NodeError(format!("dupe author lookup: {e}")))?;
+        let existing_author_names: Vec<String> =
+            author_rows.into_iter().map(|(n,)| n).collect();
+
+        ctx.duplicate_of = Some(DuplicateInfo {
+            existing_file_id: existing.id,
+            existing_display_name: existing.display_name.clone(),
+            existing_progress: existing.progress.clone(),
+            existing_size,
+            new_size,
+            existing_author_names,
+            recommendation,
+        });
         Ok(())
     }
 }
