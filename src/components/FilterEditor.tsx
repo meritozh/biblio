@@ -264,6 +264,24 @@ function ValueEditor({ condition: c, onChange, tags, authors }: ValueEditorProps
     );
   }
 
+  if (c.field === 'display_name' && (c.op === 'length_gte' || c.op === 'length_lt')) {
+    return (
+      <Input
+        type="number"
+        min={0}
+        value={c.n ?? ''}
+        onChange={(e) => {
+          const raw = e.target.value;
+          const num = Number(raw);
+          const next = raw === '' || Number.isNaN(num) ? undefined : Math.max(0, num);
+          onChange({ ...c, n: next });
+        }}
+        className="h-8 flex-1 text-xs"
+        placeholder="N"
+      />
+    );
+  }
+
   if (c.field === 'authors' && c.op === 'includes') {
     const name =
       c.authorId !== undefined

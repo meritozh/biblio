@@ -58,10 +58,28 @@ impl Phase2Node for DbDuplicateDetectNode {
                     (None, Some(_)) => DuplicateAction::Delete,
                     _ => DuplicateAction::Replace,
                 };
+                // On-disk size lookup. Best-effort: a missing file or an
+                // unreadable path renders as None in the UI ("—") so the
+                // user knows we couldn't resolve a size — distinct from a
+                // genuine zero-byte file.
+                let existing_size = std::fs::metadata(&existing.path)
+                    .ok()
+                    .map(|m| m.len() as i64);
+                let new_size = if ctx.file_path.is_dir() {
+                    // Folder-to-zip imports have no meaningful "file size"
+                    // until the archive is produced post-commit. Skip.
+                    None
+                } else {
+                    std::fs::metadata(&ctx.file_path)
+                        .ok()
+                        .map(|m| m.len() as i64)
+                };
                 DuplicateInfo {
                     existing_file_id: existing.id,
                     existing_display_name: existing.display_name.clone(),
                     existing_progress: existing.progress.clone(),
+                    existing_size,
+                    new_size,
                     recommendation,
                 }
             });

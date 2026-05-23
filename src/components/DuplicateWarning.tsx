@@ -3,6 +3,12 @@ import type { DuplicateInfo, DuplicateAction } from '@/types';
 
 interface DuplicateWarningProps {
   duplicateInfo: DuplicateInfo;
+  /** Current display name on the new file (typically
+   *  `item.formValues.display_name` — the post-edit value, so what the
+   *  user sees here matches what will actually land on Replace). */
+  newDisplayName: string;
+  /** Current progress value on the new file (form value, mirroring
+   *  display_name's source). */
   newProgress: string | null;
   selectedAction: DuplicateAction;
   onActionChange: (action: DuplicateAction) => void;
@@ -23,12 +29,58 @@ const ACTION_LABELS: Record<DuplicateAction, { label: string; description: strin
   },
 };
 
+/** Render a byte count as a human-readable string. KB/MB/GB use 1024,
+ *  one decimal past the unit transition (so 1.4 MB rather than
+ *  1.40234 MB). Returns "—" placeholder for null so the comparison rows
+ *  visually distinguish "couldn't resolve" from "0 B". */
+function formatBytes(bytes: number | null): string {
+  if (bytes == null) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let n = bytes / 1024;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i += 1;
+  }
+  return `${n.toFixed(1)} ${units[i]}`;
+}
+
+interface CompareRowProps {
+  label: string;
+  existing: string;
+  next: string;
+}
+
+/** One row of the side-by-side compare table. When the two strings
+ *  differ, both values get bolded so the eye lands on the deltas. The
+ *  unchanged baseline stays muted-weight so a panel of mostly-identical
+ *  fields doesn't shout. */
+function CompareRow({ label, existing, next }: CompareRowProps) {
+  const differs = existing !== next;
+  const valueClass = differs ? 'font-semibold text-foreground' : 'text-foreground/80';
+  return (
+    <>
+      <div className="text-muted-foreground">{label}</div>
+      <div className={`truncate ${valueClass}`} title={existing}>{existing}</div>
+      <div className={`truncate ${valueClass}`} title={next}>{next}</div>
+    </>
+  );
+}
+
 export function DuplicateWarning({
   duplicateInfo,
+  newDisplayName,
   newProgress,
   selectedAction,
   onActionChange,
 }: DuplicateWarningProps) {
+  const existingName = duplicateInfo.existing_display_name;
+  const existingProgress = duplicateInfo.existing_progress ?? 'None';
+  const nextProgress = newProgress ?? 'None';
+  const existingSize = formatBytes(duplicateInfo.existing_size);
+  const nextSize = formatBytes(duplicateInfo.new_size);
+
   return (
     <div
       className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 space-y-3"
@@ -37,20 +89,21 @@ export function DuplicateWarning({
       <div className="flex items-center gap-2 text-amber-700">
         <AlertTriangle className="h-4 w-4 shrink-0" />
         <span className="text-sm font-medium">
-          Duplicate of &ldquo;{duplicateInfo.existing_display_name}&rdquo;
+          Duplicate of &ldquo;{existingName}&rdquo;
         </span>
       </div>
 
-      {/* Progress comparison */}
-      <div className="grid grid-cols-2 gap-3 text-xs">
-        <div className="space-y-1">
-          <span className="text-muted-foreground">Existing progress</span>
-          <p className="font-medium">{duplicateInfo.existing_progress || 'None'}</p>
-        </div>
-        <div className="space-y-1">
-          <span className="text-muted-foreground">New file progress</span>
-          <p className="font-medium">{newProgress || 'None'}</p>
-        </div>
+      {/* Side-by-side comparison. CSS Grid with three columns: label /
+          existing value / new value. Field rows live as siblings inside
+          one grid so the column widths line up across rows without
+          per-row width plumbing. */}
+      <div className="grid grid-cols-[auto_1fr_1fr] gap-x-3 gap-y-1.5 text-xs">
+        <div />
+        <div className="text-muted-foreground font-medium">Existing</div>
+        <div className="text-muted-foreground font-medium">New</div>
+        <CompareRow label="Name" existing={existingName} next={newDisplayName} />
+        <CompareRow label="Progress" existing={existingProgress} next={nextProgress} />
+        <CompareRow label="Size" existing={existingSize} next={nextSize} />
       </div>
 
       {/* Action selection */}

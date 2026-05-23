@@ -31,6 +31,12 @@ function serializeConditions(conditions: ReadonlyArray<Condition>): unknown[] {
     if (c.field === 'progress' && c.op === 'contains') {
       return { ...base, text: c.text };
     }
+    if (
+      c.field === 'display_name' &&
+      (c.op === 'length_gte' || c.op === 'length_lt')
+    ) {
+      return { ...base, n: c.n };
+    }
     if (c.field === 'file_status' && c.op === 'is') {
       return { ...base, value: c.value };
     }

@@ -64,6 +64,7 @@ fn validate_slug_step(slug: &str, step: &str) -> Result<(), String> {
     match (canonical, step) {
         (SchemaSlug::Novel, "filename")
         | (SchemaSlug::Novel, "content")
+        | (SchemaSlug::Novel, "category_reanalyze")
         | (SchemaSlug::Comic, "filename")
         | (SchemaSlug::Comic, "cover_pick")
         | (SchemaSlug::Comic, "filename_folder") => Ok(()),
@@ -314,6 +315,7 @@ mod tests {
     fn validate_slug_step_accepts_known_pairs() {
         assert!(validate_slug_step("novel", "filename").is_ok());
         assert!(validate_slug_step("novel", "content").is_ok());
+        assert!(validate_slug_step("novel", "category_reanalyze").is_ok());
         assert!(validate_slug_step("comic", "filename").is_ok());
         assert!(validate_slug_step("comic", "cover_pick").is_ok());
         assert!(validate_slug_step("comic", "filename_folder").is_ok());

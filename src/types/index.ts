@@ -210,6 +210,13 @@ export interface DuplicateInfo {
   existing_file_id: number;
   existing_display_name: string;
   existing_progress: string | null;
+  /** Byte length of the existing file on disk. `null` when the file is
+   *  missing / unreadable / uncached remote — the comparison panel
+   *  renders that as "—". */
+  existing_size: number | null;
+  /** Byte length of the file being imported. `null` for folder-to-zip
+   *  imports (no single file to measure) or unreadable paths. */
+  new_size: number | null;
   recommendation: DuplicateAction;
 }
 
@@ -305,7 +312,12 @@ export type PromptMimeGroup = 'text' | 'archive' | 'image_folder';
  *    (image-folder source — different rules: folder name doesn't carry
  *    the author, the parent folder does). The `(schema_slug, step)`
  *    pair is the unique discriminator. */
-export type PromptStep = 'filename' | 'content' | 'cover_pick' | 'filename_folder';
+export type PromptStep =
+  | 'filename'
+  | 'content'
+  | 'category_reanalyze'
+  | 'cover_pick'
+  | 'filename_folder';
 
 /** Legacy free-text label kept on rows for back-compat readers. New code
  *  should switch on `schema_slug` + `step` instead. */

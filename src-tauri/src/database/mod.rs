@@ -204,5 +204,32 @@ pub fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 10,
+            description: "seed novel category_reanalyze prompt for cleanup actions",
+            // The cleanup action `file_reanalyze_for_category` only needs
+            // the category field — its current call to the combined
+            // `content` prompt wastes tokens on tags it discards, and the
+            // dual-field schema lets the LLM confuse "category" with
+            // "genre" (we've seen Gemma emit `奇幻` into the category slot).
+            // A dedicated, category-only prompt lets the user tune the
+            // selection rules in the Prompts page without touching the
+            // import-time content prompt.
+            sql: "
+                INSERT INTO prompts (name, content, category, mime_group, schema_slug, step, is_default) VALUES (
+                    'Category Re-analysis',
+                    'You are choosing the single best category for a novel from a fixed list. Rules:
+- Pick ONE name from the Available categories list, verbatim. Return null if none fit.
+- Do NOT invent new category names. Genre labels like 奇幻 / 科幻 / 恋愛 are TAGS, not categories — never put a genre in this field.
+- Lean on the file content samples to judge content nature (e.g. ''novel'' vs ''h-novel''); the title alone is a weak signal.',
+                    'category_reanalyze',
+                    'text',
+                    'novel',
+                    'category_reanalyze',
+                    1
+                );
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }

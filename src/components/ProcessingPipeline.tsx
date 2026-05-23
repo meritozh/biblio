@@ -1224,6 +1224,7 @@ function FileCardRow({
             {item.preparedImport?.duplicate_of && (
               <DuplicateWarning
                 duplicateInfo={item.preparedImport.duplicate_of}
+                newDisplayName={item.formValues.display_name}
                 newProgress={item.formValues.progress ?? null}
                 selectedAction={
                   item.duplicateAction ?? item.preparedImport.duplicate_of.recommendation

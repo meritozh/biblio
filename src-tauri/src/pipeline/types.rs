@@ -35,6 +35,16 @@ pub struct DuplicateInfo {
     pub existing_file_id: i64,
     pub existing_display_name: String,
     pub existing_progress: Option<String>,
+    /// On-disk byte length of the existing file. None when the file is
+    /// missing (file_status='missing'), the path is unreadable, or for
+    /// uncached remote rows where the local copy doesn't exist. The
+    /// comparison panel renders None as "—" so the user knows we couldn't
+    /// resolve a size, vs. "0 B" which is a real zero-byte file.
+    pub existing_size: Option<i64>,
+    /// Byte length of the file being imported. None when the source is a
+    /// directory (folder-to-zip imports have no single-file size yet) or
+    /// the path is unreadable.
+    pub new_size: Option<i64>,
     pub recommendation: DuplicateAction,
 }
 
