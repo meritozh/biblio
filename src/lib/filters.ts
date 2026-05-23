@@ -11,8 +11,10 @@ export type Field =
   | 'authors'
   | 'tags'
   | 'progress'
+  | 'display_name'
   | 'file_status'
-  | 'storage_kind';
+  | 'storage_kind'
+  | 'local_cache';
 
 export type Condition =
   | { id: string; field: 'authors'; op: 'empty' }
@@ -38,8 +40,21 @@ export type Condition =
   | { id: string; field: 'progress'; op: 'empty' }
   | { id: string; field: 'progress'; op: 'not_empty' }
   | { id: string; field: 'progress'; op: 'contains'; text?: string }
+  // `length_*` compares JS string length (UTF-16 code units). Coincides
+  // with grapheme count for the library's CJK + Latin reality; would
+  // over-count for surrogate-pair characters (emoji etc.) but that's a
+  // coarse-tool acceptable trade.
+  | { id: string; field: 'display_name'; op: 'length_gte'; n?: number }
+  | { id: string; field: 'display_name'; op: 'length_lt'; n?: number }
   | { id: string; field: 'file_status'; op: 'is'; value?: FileStatus }
-  | { id: string; field: 'storage_kind'; op: 'is'; value?: StorageKind };
+  | { id: string; field: 'storage_kind'; op: 'is'; value?: StorageKind }
+  // `local_cache` mirrors the `local_cache_path` column directly:
+  // `not_empty` matches remote files that have been pulled to the local
+  // cache; `empty` matches local-only rows AND remote rows not yet
+  // cached. Compose with `storage_kind is remote` to narrow to "remote
+  // and cached" / "remote and not cached".
+  | { id: string; field: 'local_cache'; op: 'empty' }
+  | { id: string; field: 'local_cache'; op: 'not_empty' };
 
 export type Op = Condition['op'];
 
@@ -49,8 +64,10 @@ export const FIELD_LABELS: Record<Field, string> = {
   authors: 'Authors',
   tags: 'Tags',
   progress: 'Progress',
+  display_name: 'Name',
   file_status: 'Status',
   storage_kind: 'Storage',
+  local_cache: 'Cached',
 };
 
 export const OP_LABELS: Record<Op, string> = {
@@ -58,6 +75,8 @@ export const OP_LABELS: Record<Op, string> = {
   not_empty: 'is not empty',
   count_gte: 'has at least',
   count_lt: 'has fewer than',
+  length_gte: 'length ≥',
+  length_lt: 'length <',
   includes: 'includes',
   excludes: 'excludes',
   includes_any: 'any of',
@@ -79,8 +98,10 @@ export const OPS_BY_FIELD: Record<Field, ReadonlyArray<Op>> = {
     'excludes_any',
   ],
   progress: ['empty', 'not_empty', 'contains'],
+  display_name: ['length_gte', 'length_lt'],
   file_status: ['is'],
   storage_kind: ['is'],
+  local_cache: ['empty', 'not_empty'],
 };
 
 export const FILE_STATUS_OPTIONS: ReadonlyArray<{ value: FileStatus; label: string }> = [
@@ -111,10 +132,14 @@ export function newCondition(field: Field): Condition {
       return { id, field, op: 'not_empty' };
     case 'progress':
       return { id, field, op: 'not_empty' };
+    case 'display_name':
+      return { id, field, op: 'length_gte' };
     case 'file_status':
       return { id, field, op: 'is' };
     case 'storage_kind':
       return { id, field, op: 'is' };
+    case 'local_cache':
+      return { id, field, op: 'not_empty' };
   }
 }
 
@@ -199,10 +224,23 @@ export function withOp(c: Condition, op: Op): Condition {
         default:
           return c;
       }
+    case 'display_name':
+      switch (op) {
+        case 'length_gte':
+        case 'length_lt':
+          return { id: c.id, field: 'display_name', op, n: 'n' in c ? c.n : undefined };
+        default:
+          return c;
+      }
     case 'file_status':
       return { id: c.id, field: 'file_status', op: 'is', value: c.value };
     case 'storage_kind':
       return { id: c.id, field: 'storage_kind', op: 'is', value: c.value };
+    case 'local_cache':
+      // Only `empty` and `not_empty` exist for this field; both are
+      // value-less, so we can swap them freely without preserving any
+      // value field.
+      return { id: c.id, field: 'local_cache', op: op as 'empty' | 'not_empty' };
   }
 }
 
@@ -280,6 +318,35 @@ function matchProgress(
   }
 }
 
+function matchDisplayName(
+  c: Extract<Condition, { field: 'display_name' }>,
+  file: FileEntry
+): boolean {
+  const len = (file.display_name ?? '').length;
+  switch (c.op) {
+    case 'length_gte':
+      return c.n === undefined ? true : len >= c.n;
+    case 'length_lt':
+      return c.n === undefined ? true : len < c.n;
+  }
+}
+
+function matchLocalCache(
+  c: Extract<Condition, { field: 'local_cache' }>,
+  file: FileEntry
+): boolean {
+  const cached =
+    file.local_cache_path !== undefined &&
+    file.local_cache_path !== null &&
+    file.local_cache_path !== '';
+  switch (c.op) {
+    case 'empty':
+      return !cached;
+    case 'not_empty':
+      return cached;
+  }
+}
+
 function matches(c: Condition, file: FileEntry): boolean {
   switch (c.field) {
     case 'authors':
@@ -288,10 +355,14 @@ function matches(c: Condition, file: FileEntry): boolean {
       return matchTags(c, file);
     case 'progress':
       return matchProgress(c, file);
+    case 'display_name':
+      return matchDisplayName(c, file);
     case 'file_status':
       return c.value === undefined ? true : file.file_status === c.value;
     case 'storage_kind':
       return c.value === undefined ? true : (file.storage_kind ?? 'local') === c.value;
+    case 'local_cache':
+      return matchLocalCache(c, file);
   }
 }
 
@@ -378,6 +449,29 @@ function describeProgress(c: Extract<Condition, { field: 'progress' }>): string 
   }
 }
 
+function describeDisplayName(
+  c: Extract<Condition, { field: 'display_name' }>
+): string {
+  const f = FIELD_LABELS.display_name;
+  switch (c.op) {
+    case 'length_gte':
+      return `${f} length ≥ ${c.n ?? '…'}`;
+    case 'length_lt':
+      return `${f} length < ${c.n ?? '…'}`;
+  }
+}
+
+function describeLocalCache(
+  c: Extract<Condition, { field: 'local_cache' }>
+): string {
+  switch (c.op) {
+    case 'empty':
+      return 'Not cached locally';
+    case 'not_empty':
+      return 'Cached locally';
+  }
+}
+
 /** One-line summary used in chips and aria-labels. The `authorsById`
  *  map is optional — chip text falls back to "…" when an author lookup
  *  table isn't available (e.g. test fixtures), matching how the tag
@@ -394,9 +488,13 @@ export function describeCondition(
       return describeTags(c, tagsById);
     case 'progress':
       return describeProgress(c);
+    case 'display_name':
+      return describeDisplayName(c);
     case 'file_status':
       return `${FIELD_LABELS.file_status}: ${c.value ?? '…'}`;
     case 'storage_kind':
       return `${FIELD_LABELS.storage_kind}: ${c.value ?? '…'}`;
+    case 'local_cache':
+      return describeLocalCache(c);
   }
 }

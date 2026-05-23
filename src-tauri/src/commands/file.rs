@@ -281,6 +281,21 @@ fn build_filter_sql(
                     }
                 }
             }
+            // Direct nullness test on `local_cache_path`. `not_empty` is the
+            // "files I've pulled to the local cache" pill (remote rows with a
+            // path); `empty` covers local-only rows AND uncached remotes —
+            // compose with `storage_kind = remote` to narrow to either side.
+            "local_cache" => match c.op.as_str() {
+                "empty" => sql.push_str(&format!(
+                    " AND ({p}local_cache_path IS NULL OR {p}local_cache_path = '')",
+                    p = prefix
+                )),
+                "not_empty" => sql.push_str(&format!(
+                    " AND {p}local_cache_path IS NOT NULL AND {p}local_cache_path <> ''",
+                    p = prefix
+                )),
+                _ => {}
+            },
             _ => {}
         }
     }
