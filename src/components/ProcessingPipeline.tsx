@@ -1219,13 +1219,30 @@ function FileCardRow({
         </div>
 
         {/* Expandable form */}
-        {expanded && canExpand && (
+        {expanded && canExpand && (() => {
+          // Resolve the schema once per render so the dupe panel and the
+          // form below it always agree on which slug is in play (novel
+          // vs comic decides which compare rows render in the panel).
+          // Same resolution logic that drove the form's `schema` prop
+          // pre-refactor — lifted up so both consumers share one source.
+          const resolvedSchema =
+            item.formValues.category_id != null
+              ? schemaForCategoryId(item.formValues.category_id, categories)
+              : schemaForPath(item.path) ??
+                (item.preparedImport?.source_is_directory
+                  ? REGISTRY.comic
+                  : defaultSchema());
+          return (
           <div className="mt-4 pt-4 border-t border-border space-y-4">
             {item.preparedImport?.duplicate_of && (
               <DuplicateWarning
                 duplicateInfo={item.preparedImport.duplicate_of}
+                schema={resolvedSchema}
                 newDisplayName={item.formValues.display_name}
                 newProgress={item.formValues.progress ?? null}
+                newCoverData={item.formValues.cover_data}
+                newCoverMimeType={item.formValues.cover_mime_type}
+                newStagedCoverPath={item.formValues.staged_cover_path}
                 selectedAction={
                   item.duplicateAction ?? item.preparedImport.duplicate_of.recommendation
                 }
@@ -1269,20 +1286,11 @@ function FileCardRow({
             <DynamicMetadataForm
               values={item.formValues}
               onChange={(values) => onFormChange(item.path, values)}
-              schema={
-                // Prefer the schema picked by the user's selected
-                // category, since that's what the file will end up
-                // tagged with. Fall back to the path-based schema for
-                // the moment between drop and category resolution; for
-                // folder imports (which auto-zip into comics) use the
-                // comic schema directly.
-                item.formValues.category_id != null
-                  ? schemaForCategoryId(item.formValues.category_id, categories)
-                  : schemaForPath(item.path) ??
-                    (item.preparedImport?.source_is_directory
-                      ? REGISTRY.comic
-                      : defaultSchema())
-              }
+              // Reuse the resolved schema lifted to the IIFE top so the
+              // form and the dupe panel agree on the slug. Resolution
+              // rule unchanged: user-picked category wins; fallback to
+              // path-based schema; folder imports default to comic.
+              schema={resolvedSchema}
               categories={categories}
               tags={tags}
               authors={authors}
@@ -1290,7 +1298,8 @@ function FileCardRow({
               onAuthorCreate={onAuthorCreate}
             />
           </div>
-        )}
+          );
+        })()}
 
         {/* Error message */}
         {item.status === 'error' && item.error && (

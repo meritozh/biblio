@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { CategorySelect } from '@/components/CategorySelect';
@@ -15,7 +15,10 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
-import { coverGet, preparedCoverGet } from '@/lib/tauri';
+import {
+  ExistingCoverPreview,
+  StagedCoverPreview,
+} from '@/components/CoverPreview';
 import type { CategorySchema, FormFieldKey } from '@/lib/categorySchema';
 import { schemaForCategoryId } from '@/lib/categorySchema';
 import type { Category, Tag, Author, MetadataType } from '@/types';
@@ -39,75 +42,6 @@ export interface DynamicMetadataFormValues {
    *  how many rows are open in the review dialog. */
   staged_cover_path?: string;
   progress?: string;
-}
-
-/** Self-fetches the existing cover from the DB by file id, mirroring the
- *  grid card's CardCover so we don't relay bytes through formValues state.
- *  Renders nothing on rejection (no cover row) or while loading. */
-function ExistingCoverPreview({ fileId }: { fileId: number }) {
-  const [src, setSrc] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    coverGet(fileId)
-      .then(({ data, mime_type }) => {
-        if (!cancelled) setSrc(`data:${mime_type};base64,${data}`);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [fileId]);
-  return src ? (
-    <img
-      src={src}
-      alt="Cover preview"
-      className="h-24 w-16 object-cover rounded-md border"
-    />
-  ) : (
-    <div className="h-24 w-16 rounded-md border border-dashed flex items-center justify-center text-xs text-muted-foreground">
-      …
-    </div>
-  );
-}
-
-/** Self-fetches a staged cover (Phase-2 pipeline output not yet committed)
- *  from the Rust-side cache and renders it via a Blob URL. The base64 string
- *  from the IPC is converted to bytes and then dropped — the only retained
- *  reference is the blob URL, whose underlying bytes live in the browser's
- *  blob store off the JS heap. Revokes on unmount so memory releases
- *  promptly when the dialog scrolls the row out of view. */
-function StagedCoverPreview({ stagedPath }: { stagedPath: string }) {
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    let createdUrl: string | null = null;
-    preparedCoverGet(stagedPath)
-      .then(({ data, mime_type }) => {
-        if (cancelled) return;
-        const binary = atob(data);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const blob = new Blob([bytes], { type: mime_type });
-        createdUrl = URL.createObjectURL(blob);
-        setUrl(createdUrl);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-      if (createdUrl) URL.revokeObjectURL(createdUrl);
-    };
-  }, [stagedPath]);
-  return url ? (
-    <img
-      src={url}
-      alt="Cover preview"
-      className="h-24 w-16 object-cover rounded-md border"
-    />
-  ) : (
-    <div className="h-24 w-16 rounded-md border border-dashed flex items-center justify-center text-xs text-muted-foreground">
-      …
-    </div>
-  );
 }
 
 interface DynamicMetadataFormProps {

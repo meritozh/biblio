@@ -1,15 +1,34 @@
 import { AlertTriangle } from 'lucide-react';
+import {
+  CoverPlaceholder,
+  ExistingCoverPreview,
+  InlineCoverPreview,
+  StagedCoverPreview,
+} from '@/components/CoverPreview';
+import type { CategorySchema } from '@/lib/categorySchema';
 import type { DuplicateInfo, DuplicateAction } from '@/types';
 
 interface DuplicateWarningProps {
   duplicateInfo: DuplicateInfo;
+  /** Schema of the file being imported. Drives which compare rows
+   *  render — novel keeps Name/Progress/Size, comic swaps Progress for
+   *  a side-by-side Cover row. The dedup matcher only fires within the
+   *  same category, so both sides share this schema. */
+  schema: CategorySchema;
   /** Current display name on the new file (typically
    *  `item.formValues.display_name` — the post-edit value, so what the
    *  user sees here matches what will actually land on Replace). */
   newDisplayName: string;
   /** Current progress value on the new file (form value, mirroring
-   *  display_name's source). */
+   *  display_name's source). Only consulted on novel-schema rows. */
   newProgress: string | null;
+  /** New-side cover sources, mirroring the form's tri-state. Priority:
+   *  inline `newCoverData` (user just uploaded) → `newStagedCoverPath`
+   *  (pipeline staged into PreparedCoverCache) → empty placeholder.
+   *  Only consulted on comic-schema rows. */
+  newCoverData?: string;
+  newCoverMimeType?: string;
+  newStagedCoverPath?: string;
   selectedAction: DuplicateAction;
   onActionChange: (action: DuplicateAction) => void;
 }
@@ -68,18 +87,75 @@ function CompareRow({ label, existing, next }: CompareRowProps) {
   );
 }
 
+/** Visual cover row — two thumbnails side by side instead of text values.
+ *  Sits inside the same 3-column grid as `CompareRow` so the label
+ *  column aligns with the text rows above/below it. */
+function CoverCompareRow({
+  existingFileId,
+  newCoverData,
+  newCoverMimeType,
+  newStagedCoverPath,
+}: {
+  existingFileId: number;
+  newCoverData?: string;
+  newCoverMimeType?: string;
+  newStagedCoverPath?: string;
+}) {
+  // New-side priority: inline blob → staged path → placeholder. Mirrors
+  // the form's cover-field rendering exactly so the dupe panel and the
+  // form below it never disagree about what the new cover looks like.
+  const newCell = newCoverData ? (
+    <InlineCoverPreview coverData={newCoverData} coverMimeType={newCoverMimeType} />
+  ) : newStagedCoverPath ? (
+    <StagedCoverPreview stagedPath={newStagedCoverPath} />
+  ) : (
+    <CoverPlaceholder />
+  );
+  return (
+    <>
+      <div className="text-muted-foreground self-start pt-1">Cover</div>
+      <div className="self-start">
+        <ExistingCoverPreview fileId={existingFileId} />
+      </div>
+      <div className="self-start">{newCell}</div>
+    </>
+  );
+}
+
 export function DuplicateWarning({
   duplicateInfo,
+  schema,
   newDisplayName,
   newProgress,
+  newCoverData,
+  newCoverMimeType,
+  newStagedCoverPath,
   selectedAction,
   onActionChange,
 }: DuplicateWarningProps) {
   const existingName = duplicateInfo.existing_display_name;
-  const existingProgress = duplicateInfo.existing_progress ?? 'None';
-  const nextProgress = newProgress ?? 'None';
   const existingSize = formatBytes(duplicateInfo.existing_size);
   const nextSize = formatBytes(duplicateInfo.new_size);
+
+  // Schema-routed middle row. Novel schema (which covers both `novel`
+  // and `h-novel` categories per the v9 backfill) keeps the Progress
+  // text row; comic schema renders the Cover visual row instead.
+  // Anything else falls through to no middle row — safer than guessing.
+  const middleRow =
+    schema.slug === 'novel' ? (
+      <CompareRow
+        label="Progress"
+        existing={duplicateInfo.existing_progress ?? 'None'}
+        next={newProgress ?? 'None'}
+      />
+    ) : schema.slug === 'comic' ? (
+      <CoverCompareRow
+        existingFileId={duplicateInfo.existing_file_id}
+        newCoverData={newCoverData}
+        newCoverMimeType={newCoverMimeType}
+        newStagedCoverPath={newStagedCoverPath}
+      />
+    ) : null;
 
   return (
     <div
@@ -102,7 +178,7 @@ export function DuplicateWarning({
         <div className="text-muted-foreground font-medium">Existing</div>
         <div className="text-muted-foreground font-medium">New</div>
         <CompareRow label="Name" existing={existingName} next={newDisplayName} />
-        <CompareRow label="Progress" existing={existingProgress} next={nextProgress} />
+        {middleRow}
         <CompareRow label="Size" existing={existingSize} next={nextSize} />
       </div>
 
