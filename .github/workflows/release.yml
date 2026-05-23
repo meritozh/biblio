@@ -33,17 +33,22 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        with:
+          # Full history + tags needed by the Changelog step's
+          # `git describe --tags HEAD^` lookup — default shallow clone
+          # would make the previous-tag query fail.
+          fetch-depth: 0
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v6
         with:
           version: 9
 
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - name: Install Rust
@@ -58,6 +63,32 @@ jobs:
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build changelog
+        id: changelog
+        # Resolves the previous tag and emits `- <subject> (<short hash>)`
+        # per commit between it and HEAD. On the very first release (no
+        # prior tag) it falls back to the most recent 50 commits so the
+        # bootstrap release still has a useful body. Multi-line output
+        # uses the GITHUB_OUTPUT EOF heredoc form — required because
+        # commit messages contain newlines.
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+          if [ -n "$PREV_TAG" ]; then
+            echo "Changelog range: $PREV_TAG..HEAD"
+            LOG=$(git log "$PREV_TAG"..HEAD --pretty=format:'- %s (%h)' --no-merges)
+          else
+            echo "No previous tag; using the last 50 commits."
+            LOG=$(git log HEAD --pretty=format:'- %s (%h)' --no-merges -n 50)
+          fi
+          if [ -z "$LOG" ]; then
+            LOG="- (no commits since previous tag)"
+          fi
+          {
+            echo "log<<__CHANGELOG_EOF__"
+            echo "$LOG"
+            echo "__CHANGELOG_EOF__"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build, sign, notarize, and release
         uses: tauri-apps/tauri-action@v0
@@ -80,7 +111,9 @@ jobs:
           releaseDraft: true       # land as a draft so you can review before publishing
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
           releaseBody: |
-            See the auto-generated commit log for changes.
+            ## Changes
+
+            ${{ steps.changelog.outputs.log }}
 
             ## Install (macOS)
 
