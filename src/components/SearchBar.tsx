@@ -65,7 +65,12 @@ export function SearchBar({
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
-        className="pl-9 pr-9"
+        // Hide WebKit's native ::-webkit-search-cancel-button and the
+        // related search decoration. `type="search"` is retained for the
+        // semantic role + keyboard affordances (Escape clears in Safari),
+        // but the visible clear button is the custom <X> below — the
+        // browser-native glyph would render alongside it as a duplicate.
+        className="pl-9 pr-9 [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
         aria-label="Search files"
       />
       {value && (
