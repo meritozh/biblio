@@ -38,6 +38,7 @@ import {
 import { RemoteDownloadProgressPanel } from '@/components/RemoteDownloadProgress';
 import { RemoteDeleteProgressPanel } from '@/components/RemoteDeleteProgress';
 import {
+  cacheClear,
   fileCreate,
   coverSet,
   storageGetPath,
@@ -48,7 +49,7 @@ import {
   comicCollectionList,
   fileListByIds,
 } from '@/lib/tauri';
-import { hydrateFiles } from '@/stores/fileStore';
+import { hydrateFiles, patchFile } from '@/stores/fileStore';
 import type { ComicCollection, ComicViewMode } from '@/types';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
@@ -544,6 +545,25 @@ function HomePage() {
     [namesFor]
   );
 
+  // Clear-cache: per-file IPC is cheap (disk unlink + UPDATE). Parallel
+  // via Promise.allSettled and patch each row's `local_cache_path` to
+  // null on success so the grid badges flip without a full reload.
+  const handleBulkClearCache = useCallback(
+    async (fileIds: number[]) => {
+      await Promise.allSettled(
+        fileIds.map(async (id) => {
+          try {
+            await cacheClear(id);
+            patchFile(id, { local_cache_path: null });
+          } catch (err) {
+            console.error(`Failed to clear cache for file ${id}:`, err);
+          }
+        })
+      );
+    },
+    []
+  );
+
   return (
     <>
       {isDraggingFiles && (
@@ -650,6 +670,7 @@ function HomePage() {
             onBulkUpload={handleBulkUpload}
             onBulkDownload={handleBulkDownload}
             onBulkDelete={handleBulkDelete}
+            onBulkClearCache={handleBulkClearCache}
             remoteEnabled={remoteEnabled}
             availableTags={tags}
             availableAuthors={authors}

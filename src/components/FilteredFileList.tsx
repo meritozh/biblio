@@ -12,8 +12,9 @@ import {
 } from '@/stores/remoteUploadStore';
 import { enqueueDownload } from '@/stores/remoteDownloadStore';
 import { enqueueDelete } from '@/stores/remoteDeleteStore';
-import { fileStore } from '@/stores/fileStore';
+import { fileStore, patchFile } from '@/stores/fileStore';
 import { fetchFiles, type SortKey } from '@/stores';
+import { cacheClear } from '@/lib/tauri';
 import { type Condition } from '@/lib/filters';
 import type { FileEntry } from '@/types';
 
@@ -203,6 +204,26 @@ export function FilteredFileList({
     },
     [namesFor]
   );
+  // Clear-cache: the per-file `cacheClear` IPC is cheap (disk unlink + one
+  // UPDATE). Fire them in parallel via Promise.allSettled and patch each
+  // row's `local_cache_path` to null on success so the grid badges flip
+  // without a full reload. Failures are logged but don't stop sibling
+  // clears — the backend is already idempotent on already-cleared rows.
+  const handleBulkClearCache = useCallback(
+    async (fileIds: number[]) => {
+      await Promise.allSettled(
+        fileIds.map(async (id) => {
+          try {
+            await cacheClear(id);
+            patchFile(id, { local_cache_path: null });
+          } catch (err) {
+            console.error(`Failed to clear cache for file ${id}:`, err);
+          }
+        })
+      );
+    },
+    []
+  );
 
   // Name resolution maps for the header title. `useFileActions` already
   // fetched these — no second IPC call needed.
@@ -265,6 +286,7 @@ export function FilteredFileList({
             onBulkUpload={handleBulkUpload}
             onBulkDownload={handleBulkDownload}
             onBulkDelete={handleBulkDelete}
+            onBulkClearCache={handleBulkClearCache}
             availableTags={tags}
             availableAuthors={authors}
             sortBy={sortBy}

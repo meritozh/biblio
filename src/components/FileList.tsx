@@ -40,6 +40,10 @@ interface FileListProps {
   onBulkDownload?: (fileIds: number[]) => void;
   /** Delete selected files (any mix of local + remote) via the worker. */
   onBulkDelete?: (fileIds: number[]) => void;
+  /** Clear the local cache copy for selected rows that currently carry a
+   *  `local_cache_path` (the remote copy stays). Rows without a cache are
+   *  silently skipped — the button is disabled when none qualify. */
+  onBulkClearCache?: (fileIds: number[]) => void;
   remoteEnabled?: boolean;
   availableTags?: ReadonlyArray<Tag>;
   availableAuthors?: ReadonlyArray<Author>;
@@ -89,6 +93,7 @@ export function FileList({
   onBulkUpload,
   onBulkDownload,
   onBulkDelete,
+  onBulkClearCache,
   remoteEnabled = false,
   availableTags = [],
   availableAuthors = [],
@@ -354,6 +359,26 @@ export function FileList({
     exitSelectionMode();
   }, [selectedIds, inFlightDeleteIds, onBulkDelete, exitSelectionMode]);
 
+  // Clear-cache eligibility: row must have a non-empty `local_cache_path`.
+  // Pure-local rows have a null cache column and stay out (their `path` IS
+  // the canonical disk location; "clearing" would be deleting the file
+  // itself, which is what Delete is for).
+  const cacheableSelectedIds = useMemo(() => {
+    const out: number[] = [];
+    for (const id of selectedIds) {
+      const f = byId.get(id);
+      if (f && f.local_cache_path != null && f.local_cache_path !== '') {
+        out.push(id);
+      }
+    }
+    return out;
+  }, [selectedIds, byId]);
+
+  const handleBulkClearCacheClick = useCallback(() => {
+    if (cacheableSelectedIds.length > 0) onBulkClearCache?.(cacheableSelectedIds);
+    exitSelectionMode();
+  }, [cacheableSelectedIds, onBulkClearCache, exitSelectionMode]);
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <FileListHeader
@@ -388,9 +413,12 @@ export function FileList({
           remoteEnabled,
           canDownload: !!onBulkDownload,
           canDelete: !!onBulkDelete,
+          canClearCache: !!onBulkClearCache,
+          hasCacheableSelection: cacheableSelectedIds.length > 0,
           onUpload: handleBulkUploadClick,
           onDownload: handleBulkDownloadClick,
           onDelete: handleBulkDeleteClick,
+          onClearCache: handleBulkClearCacheClick,
         }}
       />
 

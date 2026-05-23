@@ -22,6 +22,7 @@ import {
   ArrowDown,
   ArrowUp,
   ChevronDown,
+  Eraser,
   Filter as FilterIcon,
   Layers,
   Trash2,
@@ -85,9 +86,18 @@ interface BulkActions {
   remoteEnabled: boolean;
   canDownload: boolean;
   canDelete: boolean;
+  /** Capability flag — clearing local cache is available when the handler
+   *  is wired. The button is shown disabled when no selected file
+   *  currently has a cache (so it doesn't look interactive on a no-op). */
+  canClearCache: boolean;
+  /** True iff at least one selected file has a non-empty `local_cache_path`.
+   *  Driven by the parent's row-by-row inspection so the button accurately
+   *  reflects whether the click would do anything. */
+  hasCacheableSelection: boolean;
   onUpload: () => void;
   onDownload: () => void;
   onDelete: () => void;
+  onClearCache: () => void;
 }
 
 interface FileListHeaderProps {
@@ -178,6 +188,16 @@ export function FileListHeader({
               onClick={bulk.onDownload}
             >
               ⬇ Download
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs"
+              disabled={!bulk.canClearCache || !bulk.hasCacheableSelection}
+              onClick={bulk.onClearCache}
+            >
+              <Eraser className="h-3.5 w-3.5 mr-1" />
+              Clear cache
             </Button>
             <Button
               size="sm"
