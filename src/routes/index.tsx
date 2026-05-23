@@ -46,11 +46,11 @@ import {
   remoteConfigGet,
   enqueueImport,
   expandDropPaths,
-  comicCollectionList,
+  collectionList,
   fileListByIds,
 } from '@/lib/tauri';
 import { hydrateFiles, patchFile } from '@/stores/fileStore';
-import type { ComicCollection, ComicViewMode } from '@/types';
+import type { Collection, ViewMode } from '@/types';
 import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
 import { EditFileDialog } from '@/components/EditFileDialog';
@@ -212,27 +212,17 @@ function HomePage() {
   // The view-mode toggle in the FileList header swaps the per-file grid for
   // grouped collection cards (one per author or per derived series prefix).
   // Only meaningful when the active category uses the comic schema; for
-  // novels we hide the toggle entirely. The block lives after
-  // `useFileActions()` so `categories` is in scope when we resolve the
-  // active category's schema.
-  const [viewMode, setViewMode] = useState<ComicViewMode>('flat');
-  const [collections, setCollections] = useState<ComicCollection[] | null>(null);
-  const [expandedCollection, setExpandedCollection] = useState<ComicCollection | null>(null);
+  // The view-mode toggle is available for every category whose schema
+  // supports collections (currently both novel and comic). Schema is
+  // resolved from the active category id; the toggle's options come
+  // from VIEW_MODE_OPTIONS.
+  const [viewMode, setViewMode] = useState<ViewMode>('flat');
+  const [collections, setCollections] = useState<Collection[] | null>(null);
+  const [expandedCollection, setExpandedCollection] = useState<Collection | null>(null);
   const selectedCategorySchema = useMemo(
     () => schemaForCategoryId(selectedCategoryId, categories),
     [selectedCategoryId, categories]
   );
-  const isComicCategory = selectedCategorySchema.slug === 'comic';
-
-  // Snap the view-mode toggle back to flat whenever the user switches to a
-  // non-comic category. Without this, walking out of a comic category while
-  // in 'author' mode would briefly try to render collection cards for a
-  // category that has no collections endpoint shape.
-  useEffect(() => {
-    if (!isComicCategory && viewMode !== 'flat') {
-      setViewMode('flat');
-    }
-  }, [isComicCategory, viewMode]);
 
   // Reset drill-down whenever the grouping axis or category changes — the
   // previous expandedCollection's `file_ids` would otherwise dangle into the
@@ -241,32 +231,61 @@ function HomePage() {
     setExpandedCollection(null);
   }, [viewMode, selectedCategoryId]);
 
-  // Fetch collections when the user picks a non-flat view. Empty array is a
-  // valid result ("no multi-member groups in scope"); `null` means we have
-  // not yet fetched, so the body can show a quick loading hint instead of
-  // the "no series detected" empty state.
+  // Fetch collections when the user picks a non-flat view. Empty array
+  // is a valid result ("no multi-member groups in scope"); `null` means
+  // we have not yet fetched, so the body can show a quick loading hint
+  // instead of the "no series detected" empty state. After the list
+  // arrives, batch-hydrate the cover file rows into `byId` so the novel
+  // collection card's NovelCover renderer has tags + display_name +
+  // progress available without a per-card IPC.
   useEffect(() => {
-    if (viewMode === 'flat' || !isComicCategory || selectedCategoryId == null) {
+    if (viewMode === 'flat' || selectedCategoryId == null) {
       setCollections(null);
       return;
     }
     let cancelled = false;
     setCollections(null);
-    comicCollectionList({
+    collectionList({
       mode: viewMode,
+      schemaSlug: selectedCategorySchema.slug,
       category_id: selectedCategoryId,
     })
-      .then((result) => {
-        if (!cancelled) setCollections(result);
+      .then(async (result) => {
+        if (cancelled) return;
+        setCollections(result);
+        const coverIds = result
+          .map((c) => c.cover_file_id)
+          .filter((id): id is number => id != null);
+        if (coverIds.length > 0) {
+          try {
+            const files = await fileListByIds(coverIds);
+            if (!cancelled) hydrateFiles(files);
+          } catch (err) {
+            console.error('cover hydration failed:', err);
+          }
+        }
       })
       .catch((err) => {
-        console.error('comic_collection_list failed:', err);
+        console.error('collection_list failed:', err);
         if (!cancelled) setCollections([]);
       });
     return () => {
       cancelled = true;
     };
-  }, [viewMode, isComicCategory, selectedCategoryId]);
+  }, [viewMode, selectedCategoryId, selectedCategorySchema.slug]);
+
+  // Search filter for collections view. Flat view continues to search
+  // via the FTS-backed `file_search` (driven by `debouncedQuery` →
+  // `viewKey` → `useView` → `fetchFiles`); but in 'author' / 'name_prefix'
+  // mode the grid renders collection cards, not files, so the user's
+  // query has to filter that array client-side instead. Match is a
+  // case-insensitive substring on the collection title — matches the
+  // user's mental model of "find the collection by name".
+  const visibleCollections = useMemo(() => {
+    if (!collections || !debouncedQuery) return collections;
+    const q = debouncedQuery.toLowerCase();
+    return collections.filter((c) => c.title.toLowerCase().includes(q));
+  }, [collections, debouncedQuery]);
 
   // FileList ids: pass the drill-down's `file_ids` when one is expanded,
   // otherwise the normal page of ids from `useView`. `byId` is hydrated by
@@ -317,16 +336,10 @@ function HomePage() {
     setSortBy(resolved.sortBy);
     setSortDesc(resolved.sortDesc);
     setConditions(resolved.conditions);
-    // Only apply a non-flat view mode for comic categories — author /
-    // name_prefix collapse the grid into collection cards and rely on
-    // the comic-only `comicCollectionList` endpoint. For novels the
-    // toggle is hidden, so a stored 'author' default would silently
-    // never activate; force 'flat' to keep the rendered state honest.
-    setViewMode(
-      resolved.viewMode !== 'flat' && currentCategory?.schema_slug === 'comic'
-        ? resolved.viewMode
-        : 'flat'
-    );
+    // Stored view-mode applies for any schema that supports collections.
+    // The `collectionList` backend now serves both novel and comic, so a
+    // stored 'author' default activates for either family.
+    setViewMode(resolved.viewMode);
   }, [seedKey, currentCategory, categories.length]);
 
   const checkStoragePath = useCallback(async () => {
@@ -683,8 +696,12 @@ function HomePage() {
             applyConditionsClientSide={!!expandedCollection}
             viewMode={viewMode}
             onViewModeChange={setViewMode}
-            viewModeAvailable={isComicCategory}
-            collections={collections ?? undefined}
+            // Both novel-schema and comic-schema categories support the
+            // collection view. The collection_list backend filters by
+            // schema_slug; an unknown future schema would simply produce
+            // an empty result, so gating is unnecessary.
+            viewModeAvailable
+            collections={visibleCollections ?? undefined}
             onOpenCollection={(c) => setExpandedCollection(c)}
             breadcrumb={
               expandedCollection

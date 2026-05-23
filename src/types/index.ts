@@ -119,22 +119,25 @@ export interface FileListResponse {
 
 export type StorageKind = 'local' | 'remote';
 
-/** Comic-only grouping axis surfaced by the FileList view-mode toggle.
- *  `'flat'` keeps the existing per-file grid; `'author'` and `'name_prefix'`
+/** Grouping axis surfaced by the FileList view-mode toggle. `'flat'`
+ *  keeps the existing per-file grid; `'author'` and `'name_prefix'`
  *  collapse the grid into collection cards (one card per author or per
- *  derived series name). */
-export type ComicViewMode = 'flat' | 'author' | 'name_prefix';
+ *  derived series name). Available for both novel and comic schemas. */
+export type ViewMode = 'flat' | 'author' | 'name_prefix';
 
 /** One collection card. `mode` matches the request that produced it;
  *  `key` is unique within the mode (stringified author id, or the
  *  series-name root). `cover_file_id` is the member rendered as the
- *  card's preview cover. */
-export interface ComicCollection {
+ *  card's preview cover. `schema_slug` tells the card which renderer
+ *  to use — comic → stored cover bytes via `coverGet`; novel → procedural
+ *  NovelCover from the cover file's tags + display_name. */
+export interface Collection {
   mode: 'author' | 'name_prefix';
   key: string;
   title: string;
   file_ids: number[];
   cover_file_id: number | null;
+  schema_slug: SchemaSlug;
 }
 
 export interface FileCreateRequest extends Record<string, unknown> {

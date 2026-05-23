@@ -666,11 +666,13 @@ async fn hydrate_file_items(
 }
 
 /// Fetch a set of files by id, hydrated with tags/authors so the
-/// frontend's `fileStore.byId` can be populated directly. Used by the comic
-/// collection drill-down: `comic_collection_list` returns ids only; the
-/// route hydrates the drilled-into collection's rows on click so the
-/// FileList grid finds them in `byId` regardless of which page they sit on
-/// in the main paginated view.
+/// frontend's `fileStore.byId` can be populated directly. Used by the
+/// collection drill-down: `collection_list` returns ids only; the route
+/// hydrates the drilled-into collection's rows on click so the FileList
+/// grid finds them in `byId` regardless of which page they sit on in
+/// the main paginated view. Also used for the post-fetch cover-row
+/// hydration so novel collection cards can render `<NovelCover>` with
+/// the picked member's tags + display_name.
 #[tauri::command]
 pub async fn file_list_by_ids(
     app: AppHandle,
@@ -3055,17 +3057,20 @@ pub async fn file_replace(
     .await
 }
 
-/// One grouping of comic-schema files that share an author or a series-name
-/// prefix. Frontend renders these as stacked cards; clicking one drills down
-/// to a flat FileList filtered to `file_ids`. `cover_file_id` is whichever
+/// One grouping of files that share an author or a series-name prefix.
+/// Frontend renders these as stacked cards; clicking one drills down to
+/// a flat FileList filtered to `file_ids`. `cover_file_id` is whichever
 /// member sorts first by display_name — gives the card a stable preview.
+/// `schema_slug` tells the frontend which renderer to use for the cover
+/// preview (comic → stored cover bytes; novel → procedural NovelCover).
 #[derive(Debug, Serialize)]
-pub struct ComicCollection {
+pub struct Collection {
     pub mode: String,
     pub key: String,
     pub title: String,
     pub file_ids: Vec<i64>,
     pub cover_file_id: Option<i64>,
+    pub schema_slug: String,
 }
 
 /// Strip a trailing volume / chapter / issue marker from a display name so
@@ -3097,22 +3102,26 @@ fn series_key(name: &str) -> String {
     head.to_string()
 }
 
-/// Build comic-schema collections grouped by `mode`:
-/// - `"author"`: one collection per author that has ≥ 2 comics.
-/// - `"name_prefix"`: one collection per `series_key`-derived prefix shared
-///   by ≥ 2 comics.
+/// Build collections grouped by `mode` for files of the given schema:
+/// - `"author"`: one collection per author that has ≥ 2 matching files.
+/// - `"name_prefix"`: one collection per `series_key`-derived prefix
+///   shared by ≥ 2 matching files.
 ///
-/// Singletons are filtered out so the UI doesn't show a wall of one-item
-/// "collections". When `category_id` is `Some`, only that category's files
-/// participate; when `None`, every category with `schema_slug = 'comic'` is
-/// included. Results are sorted by member count descending, then title
-/// ascending, so the densest series surface first.
+/// `schema_slug` filters to one schema family ('novel' covers both the
+/// `novel` and `h-novel` categories via the schema-slug column; 'comic'
+/// covers the comic category). Singletons are filtered out so the UI
+/// doesn't show a wall of one-item "collections". When `category_id` is
+/// `Some`, only that category's files participate; when `None`, every
+/// category with the matching schema slug is included. Results are
+/// sorted by member count descending, then title ascending, so the
+/// densest series surface first.
 #[tauri::command]
-pub async fn comic_collection_list(
+pub async fn collection_list(
     app: AppHandle,
     mode: String,
+    schema_slug: String,
     category_id: Option<i64>,
-) -> Result<Vec<ComicCollection>, String> {
+) -> Result<Vec<Collection>, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
@@ -3120,23 +3129,24 @@ pub async fn comic_collection_list(
         "SELECT f.id, f.display_name
          FROM files f
          INNER JOIN categories c ON c.id = f.category_id
-         WHERE c.schema_slug = 'comic'",
+         WHERE c.schema_slug = ?",
     );
     if category_id.is_some() {
         query.push_str(" AND f.category_id = ?");
     }
     let mut q = sqlx::query_as::<_, (i64, String)>(&query);
+    q = q.bind(&schema_slug);
     if let Some(id) = category_id {
         q = q.bind(id);
     }
     let files: Vec<(i64, String)> = q
         .fetch_all(&pool)
         .await
-        .map_err(|e| format!("Failed to load comic files: {e}"))?;
+        .map_err(|e| format!("Failed to load files for collections: {e}"))?;
 
     match mode.as_str() {
-        "author" => build_author_collections(&pool, &files, category_id).await,
-        "name_prefix" => Ok(build_name_prefix_collections(&files)),
+        "author" => build_author_collections(&pool, &files, &schema_slug, category_id).await,
+        "name_prefix" => Ok(build_name_prefix_collections(&files, &schema_slug)),
         other => Err(format!("Unknown collection mode: {other}")),
     }
 }
@@ -3144,14 +3154,15 @@ pub async fn comic_collection_list(
 async fn build_author_collections(
     pool: &sqlx::SqlitePool,
     files: &[(i64, String)],
+    schema_slug: &str,
     category_id: Option<i64>,
-) -> Result<Vec<ComicCollection>, String> {
+) -> Result<Vec<Collection>, String> {
     if files.is_empty() {
         return Ok(Vec::new());
     }
 
-    // Fetch (file_id, author_id, author_name) rows for every comic file in
-    // scope. A single query is cheaper than N per-file lookups and keeps
+    // Fetch (file_id, author_id, author_name) rows for every in-scope
+    // file. A single query is cheaper than N per-file lookups and keeps
     // the function O(rows) instead of O(files × authors).
     let mut query = String::from(
         "SELECT fa.file_id, a.id, a.name
@@ -3159,12 +3170,13 @@ async fn build_author_collections(
          INNER JOIN authors a ON a.id = fa.author_id
          INNER JOIN files f ON f.id = fa.file_id
          INNER JOIN categories c ON c.id = f.category_id
-         WHERE c.schema_slug = 'comic'",
+         WHERE c.schema_slug = ?",
     );
     if category_id.is_some() {
         query.push_str(" AND f.category_id = ?");
     }
     let mut q = sqlx::query_as::<_, (i64, i64, String)>(&query);
+    q = q.bind(schema_slug);
     if let Some(id) = category_id {
         q = q.bind(id);
     }
@@ -3191,10 +3203,14 @@ async fn build_author_collections(
             .push((file_id, display_name.clone()));
     }
 
-    Ok(finalize_collections("author", groups.into_iter().map(|(k, v)| (k.to_string(), v))))
+    Ok(finalize_collections(
+        "author",
+        schema_slug,
+        groups.into_iter().map(|(k, v)| (k.to_string(), v)),
+    ))
 }
 
-fn build_name_prefix_collections(files: &[(i64, String)]) -> Vec<ComicCollection> {
+fn build_name_prefix_collections(files: &[(i64, String)], schema_slug: &str) -> Vec<Collection> {
     let mut groups: std::collections::HashMap<String, (String, Vec<(i64, String)>)> =
         std::collections::HashMap::new();
     for (id, name) in files {
@@ -3205,14 +3221,18 @@ fn build_name_prefix_collections(files: &[(i64, String)]) -> Vec<ComicCollection
             .1
             .push((*id, name.clone()));
     }
-    finalize_collections("name_prefix", groups.into_iter())
+    finalize_collections("name_prefix", schema_slug, groups.into_iter())
 }
 
-fn finalize_collections<I>(mode: &'static str, groups: I) -> Vec<ComicCollection>
+fn finalize_collections<I>(
+    mode: &'static str,
+    schema_slug: &str,
+    groups: I,
+) -> Vec<Collection>
 where
     I: Iterator<Item = (String, (String, Vec<(i64, String)>))>,
 {
-    let mut out: Vec<ComicCollection> = groups
+    let mut out: Vec<Collection> = groups
         .filter_map(|(key, (title, mut members))| {
             if members.len() < 2 {
                 return None;
@@ -3221,12 +3241,13 @@ where
             members.sort_by(|a, b| a.1.cmp(&b.1));
             let cover_file_id = members.first().map(|(id, _)| *id);
             let file_ids: Vec<i64> = members.iter().map(|(id, _)| *id).collect();
-            Some(ComicCollection {
+            Some(Collection {
                 mode: mode.to_string(),
                 key,
                 title,
                 file_ids,
                 cover_file_id,
+                schema_slug: schema_slug.to_string(),
             })
         })
         .collect();

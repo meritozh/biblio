@@ -66,8 +66,9 @@ const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
   { value: 'updated', label: 'Date updated' },
 ];
 
-// Comic-only. Novels keep the flat grid because the collection endpoint
-// (`comic_collection_list`) only knows how to group comic-schema files.
+// Shared across all schemas: `collection_list` now serves novel + comic.
+// The category-settings page surfaces this as the default view mode for
+// files in this category; the main route also drives the live toggle.
 const VIEW_MODE_OPTIONS: ReadonlyArray<{ value: CategoryViewMode; label: string }> = [
   { value: 'flat', label: 'All files' },
   { value: 'author', label: 'By author' },

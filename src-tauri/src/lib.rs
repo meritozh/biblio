@@ -66,7 +66,7 @@ pub fn run() {
             commands::file::file_reanalyze_for_category,
             commands::file::file_count_authorless_in_category,
             commands::file::file_assign_author_to_authorless,
-            commands::file::comic_collection_list,
+            commands::file::collection_list,
             commands::category::category_list,
             commands::category::category_get,
             commands::category::category_update,

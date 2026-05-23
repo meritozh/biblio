@@ -2,36 +2,71 @@ import { memo, useEffect, useState } from 'react';
 import { BookOpen } from 'lucide-react';
 import { coverGet } from '@/lib/tauri';
 import { MiddleEllipsis } from '@/components/MiddleEllipsis';
-import type { ComicCollection } from '@/types';
+import { NovelCover } from '@/components/NovelCover';
+import { useFile } from '@/stores/fileStore';
+import type { Collection } from '@/types';
 import { CARD_HEIGHT, CARD_WIDTH } from './constants';
 
 interface CollectionCardProps {
-  collection: ComicCollection;
-  onOpen: (c: ComicCollection) => void;
+  collection: Collection;
+  onOpen: (c: Collection) => void;
 }
 
-/** Stacked-card visual for a comic collection. The preview cover comes from
- *  `cover_file_id`; the two offset rectangles behind the cover hint at the
- *  multi-file grouping without committing to a real cover stack (which would
- *  triple the IPC roundtrips per card). */
+/** Lazy-fetches the stored cover bytes for a comic collection's preview
+ *  file. Comics have real images in the `covers` table; the inline `<img>`
+ *  + BookOpen fallback mirrors how ComicFileCard renders the same data. */
+function ComicCollectionCover({ fileId }: { fileId: number | null }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (fileId == null) return;
+    let cancelled = false;
+    coverGet(fileId)
+      .then(({ data, mime_type }) => {
+        if (!cancelled) setSrc(`data:${mime_type};base64,${data}`);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId]);
+  return src ? (
+    <img src={src} alt="" className="h-full w-full object-cover" />
+  ) : (
+    <BookOpen className="h-8 w-8 text-muted-foreground/40" />
+  );
+}
+
+/** Procedural cover for a novel collection's preview file. Pulls tags +
+ *  display_name from the `fileStore` (hydrated by the parent route after
+ *  the collection list arrives, so by the time the card mounts the row
+ *  is in `byId`). Falls back to the BookOpen icon when the row hasn't
+ *  landed yet — preserves the visual cadence during hydration without a
+ *  loading spinner. */
+function NovelCollectionCover({ fileId }: { fileId: number | null }) {
+  const file = useFile(fileId ?? -1);
+  if (fileId == null || !file) {
+    return <BookOpen className="h-8 w-8 text-muted-foreground/40" />;
+  }
+  return (
+    <NovelCover
+      tags={file.tags}
+      fileId={file.id}
+      displayName={file.display_name}
+      progress={file.progress}
+    />
+  );
+}
+
+/** Stacked-card visual for a collection. The preview cover comes from
+ *  `cover_file_id`; the two offset rectangles behind the cover hint at
+ *  the multi-file grouping without committing to a real cover stack
+ *  (which would triple the IPC roundtrips per card). The cover renderer
+ *  switches on `schema_slug` — comics have stored covers, novels use
+ *  the procedural gradient that the file grid also uses. */
 export const CollectionCard = memo(function CollectionCard({
   collection,
   onOpen,
 }: CollectionCardProps) {
-  const [src, setSrc] = useState<string | null>(null);
-  useEffect(() => {
-    if (collection.cover_file_id == null) return;
-    let cancelled = false;
-    coverGet(collection.cover_file_id)
-      .then(({ data, mime_type }) => {
-        if (!cancelled) setSrc(`data:${mime_type};base64,${data}`);
-      })
-      .catch(() => { });
-    return () => {
-      cancelled = true;
-    };
-  }, [collection.cover_file_id]);
-
   const count = collection.file_ids.length;
   return (
     <div
@@ -51,10 +86,10 @@ export const CollectionCard = memo(function CollectionCard({
           <div className="absolute inset-0 translate-x-1.5 translate-y-1.5 rounded-md bg-secondary/40 border border-border/60" />
           <div className="absolute inset-0 translate-x-0.5 translate-y-0.5 rounded-md bg-secondary/60 border border-border/60" />
           <div className="absolute inset-0 rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
-            {src ? (
-              <img src={src} alt="" className="h-full w-full object-cover" />
+            {collection.schema_slug === 'novel' ? (
+              <NovelCollectionCover fileId={collection.cover_file_id} />
             ) : (
-              <BookOpen className="h-8 w-8 text-muted-foreground/40" />
+              <ComicCollectionCover fileId={collection.cover_file_id} />
             )}
           </div>
         </div>

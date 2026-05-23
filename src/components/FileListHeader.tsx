@@ -31,7 +31,7 @@ import {
 import { FilterEditor } from '@/components/FilterEditor';
 import { describeCondition, type Condition } from '@/lib/filters';
 import type { SortKey } from '@/stores';
-import type { Author, ComicViewMode, Tag } from '@/types';
+import type { Author, ViewMode, Tag } from '@/types';
 
 export type { SortKey };
 
@@ -41,15 +41,18 @@ export const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
   { value: 'updated', label: 'Last updated' },
 ];
 
-export const VIEW_MODE_OPTIONS: ReadonlyArray<{ value: ComicViewMode; label: string }> = [
-  { value: 'flat', label: 'All comics' },
+// Schema-agnostic labels — the same toggle drives novel + comic now.
+// 'All' avoids leaking the file-kind into the chip; the surrounding
+// breadcrumb / category name already establishes context.
+export const VIEW_MODE_OPTIONS: ReadonlyArray<{ value: ViewMode; label: string }> = [
+  { value: 'flat', label: 'All' },
   { value: 'author', label: 'By author' },
   { value: 'name_prefix', label: 'By series' },
 ];
 
 interface ViewModeControls {
-  viewMode: ComicViewMode;
-  onViewModeChange?: (mode: ComicViewMode) => void;
+  viewMode: ViewMode;
+  onViewModeChange?: (mode: ViewMode) => void;
   available: boolean;
 }
 
@@ -102,7 +105,7 @@ interface BulkActions {
 
 interface FileListHeaderProps {
   /** When true, sort / filter / select controls are hidden because the
-   *  body is rendering ComicCollection cards. They reappear after
+   *  body is rendering Collection cards. They reappear after
    *  drill-down. */
   showCollections: boolean;
   view: ViewModeControls;
@@ -231,7 +234,7 @@ export function FileListHeader({
         <>
           <Select
             value={view.viewMode}
-            onValueChange={(v) => view.onViewModeChange!(v as ComicViewMode)}
+            onValueChange={(v) => view.onViewModeChange!(v as ViewMode)}
           >
             <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
               <Layers
@@ -253,7 +256,7 @@ export function FileListHeader({
         </>
       )}
       {/* Sort + Filter operate on file rows; the collections grid renders
-       *  ComicCollection cards directly, so these controls have no effect
+       *  Collection cards directly, so these controls have no effect
        *  there. Hide them when grouped — they reappear after drill-down. */}
       {!showCollections && (
         <>

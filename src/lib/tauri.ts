@@ -188,15 +188,20 @@ export async function listFilesInFolder(path: string): Promise<string[]> {
   return invoke('list_files_in_folder', { path });
 }
 
-/** Group comic-schema files by author or by series-name prefix. Singletons
- *  are filtered out backend-side, so an empty result means there are no
- *  multi-member collections in scope — not that the call failed. */
-export async function comicCollectionList(params: {
+/** Group files by author or by series-name prefix within one schema
+ *  family. `schemaSlug` filters to that family — 'novel' covers both
+ *  the `novel` and `h-novel` categories via the schema-slug column;
+ *  'comic' covers the comic category. Singletons are filtered out
+ *  backend-side, so an empty result means there are no multi-member
+ *  collections in scope — not that the call failed. */
+export async function collectionList(params: {
   mode: 'author' | 'name_prefix';
+  schemaSlug: import('@/types').SchemaSlug;
   category_id: number | null;
-}): Promise<import('@/types').ComicCollection[]> {
-  return invoke('comic_collection_list', {
+}): Promise<import('@/types').Collection[]> {
+  return invoke('collection_list', {
     mode: params.mode,
+    schemaSlug: params.schemaSlug,
     categoryId: params.category_id,
   });
 }

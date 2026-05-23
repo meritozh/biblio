@@ -2,7 +2,7 @@ import { Loader2 } from 'lucide-react';
 import { type RefObject } from 'react';
 import { schemaForCategoryId } from '@/lib/categorySchema';
 import { useAppState } from '@/stores/appStore';
-import type { ComicCollection, ComicViewMode, FileEntry } from '@/types';
+import type { Collection, ViewMode, FileEntry } from '@/types';
 import { CARD_HEIGHT, CARD_WIDTH } from './cards/constants';
 import { CollectionCard } from './cards/CollectionCard';
 import { ComicFileCard } from './cards/ComicFileCard';
@@ -23,8 +23,8 @@ interface FileListContentProps {
    *  "filters hid everything". */
   hasImportableEntries: boolean;
   showCollections: boolean;
-  collections?: ComicCollection[];
-  viewMode: ComicViewMode;
+  collections?: Collection[];
+  viewMode: ViewMode;
   // Pagination
   total?: number;
   loadingMore: boolean;
@@ -41,7 +41,7 @@ interface FileListContentProps {
   onToggleSelect: (id: number) => void;
   onFileEdit?: (file: FileEntry) => void;
   onFileDelete?: (file: FileEntry) => void;
-  onOpenCollection?: (c: ComicCollection) => void;
+  onOpenCollection?: (c: Collection) => void;
 }
 
 /** Virtualized grid container. Renders either file cards (ComicFileCard /
@@ -105,7 +105,7 @@ export function FileListContent({
   // scrollTop when the user filters into and back out of an empty view.
   if (showCollections) {
     return (
-      <VirtualGrid<ComicCollection>
+      <VirtualGrid<Collection>
         items={collections ?? []}
         getKey={(c) => `${c.mode}:${c.key}`}
         cardWidth={CARD_WIDTH}

@@ -14,8 +14,8 @@ import { useRemoteDownloadStore } from '@/stores/remoteDownloadStore';
 import { useRemoteUploadStore } from '@/stores/remoteUploadStore';
 import type {
   Author,
-  ComicCollection,
-  ComicViewMode,
+  Collection,
+  ViewMode,
   FileEntry,
   Tag,
 } from '@/types';
@@ -64,13 +64,13 @@ interface FileListProps {
   applyConditionsClientSide?: boolean;
   /** Controlled view-mode toggle. When `viewModeAvailable` is true the
    *  header surfaces a "View" select with Flat / By author / By series. */
-  viewMode?: ComicViewMode;
-  onViewModeChange?: (mode: ComicViewMode) => void;
+  viewMode?: ViewMode;
+  onViewModeChange?: (mode: ViewMode) => void;
   viewModeAvailable?: boolean;
   /** Required when rendering the collection grid. Empty array is a valid
    *  state (no multi-member collections in scope). */
-  collections?: ComicCollection[];
-  onOpenCollection?: (c: ComicCollection) => void;
+  collections?: Collection[];
+  onOpenCollection?: (c: Collection) => void;
   /** Rendered above the grid as a back chip — used during the drill-down
    *  from a collection card into its constituent files. */
   breadcrumb?: { label: string; onBack: () => void } | null;
