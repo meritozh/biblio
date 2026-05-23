@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -36,6 +36,16 @@ interface FilterEditorProps {
   onConditionsChange: (next: Condition[]) => void;
   tags: ReadonlyArray<Tag>;
   authors?: ReadonlyArray<{ id: number; name: string }>;
+  /** Opt into buffered mode: every edit stages a local draft, and the
+   *  parent's `onConditionsChange` is only called when the user clicks
+   *  Apply. Cancel discards the draft. Both buttons fire `onClose` so
+   *  the caller can close the surrounding popover. Default `false`
+   *  preserves the live-propagate behavior used by the inline editor
+   *  on the categories settings page. */
+  bufferUntilApply?: boolean;
+  /** Fired on Apply or Cancel in buffered mode. Used by popover callers
+   *  to close the floating panel after the user commits. */
+  onClose?: () => void;
 }
 
 const FIELD_KEYS = Object.keys(FIELD_LABELS) as Field[];
@@ -45,15 +55,53 @@ export function FilterEditor({
   onConditionsChange,
   tags,
   authors = [],
+  bufferUntilApply = false,
+  onClose,
 }: FilterEditorProps) {
+  // Buffered mode stages edits locally; the parent only sees the final
+  // set on Apply. Live mode (the default) treats the prop array as the
+  // single source of truth and writes through on every edit.
+  const [draft, setDraft] = useState<Condition[]>(() => conditions.slice());
+
+  // Re-sync the draft when the parent's `conditions` change while the
+  // editor is mounted — typically only fires when the popover re-opens
+  // after a prior commit. Cheap to compute; safe to overwrite a stale
+  // draft because the parent only mutates `conditions` via our own
+  // Apply path in buffered mode.
+  useEffect(() => {
+    if (bufferUntilApply) setDraft(conditions.slice());
+  }, [bufferUntilApply, conditions]);
+
+  const working = bufferUntilApply ? draft : conditions;
+
+  const commit = (next: Condition[]) => {
+    if (bufferUntilApply) {
+      setDraft(next);
+    } else {
+      onConditionsChange(next);
+    }
+  };
+
   const updateAt = (idx: number, next: Condition) => {
-    onConditionsChange(conditions.map((c, i) => (i === idx ? next : c)));
+    commit(working.map((c, i) => (i === idx ? next : c)));
   };
   const removeAt = (idx: number) => {
-    onConditionsChange(conditions.filter((_, i) => i !== idx));
+    commit(working.filter((_, i) => i !== idx));
   };
   const addCondition = () => {
-    onConditionsChange([...conditions, newCondition('tags')]);
+    commit([...working, newCondition('tags')]);
+  };
+  const clearAll = () => {
+    commit([]);
+  };
+
+  const handleApply = () => {
+    onConditionsChange(draft);
+    onClose?.();
+  };
+  const handleCancel = () => {
+    setDraft(conditions.slice());
+    onClose?.();
   };
 
   return (
@@ -62,23 +110,23 @@ export function FilterEditor({
         <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Filter conditions
         </span>
-        {conditions.length > 0 && (
+        {working.length > 0 && (
           <button
             type="button"
-            onClick={() => onConditionsChange([])}
+            onClick={clearAll}
             className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
           >
             Clear all
           </button>
         )}
       </div>
-      {conditions.length === 0 ? (
+      {working.length === 0 ? (
         <p className="text-xs text-muted-foreground py-2">
           No filters yet. Add a condition to narrow the library.
         </p>
       ) : (
         <ul className="space-y-2">
-          {conditions.map((c, i) => (
+          {working.map((c, i) => (
             <li key={c.id}>
               <ConditionRow
                 condition={c}
@@ -103,6 +151,27 @@ export function FilterEditor({
           Add condition
         </Button>
       </div>
+      {bufferUntilApply && (
+        <div className="flex items-center justify-end gap-2 pt-2 border-t">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={handleCancel}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={handleApply}
+          >
+            Apply
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

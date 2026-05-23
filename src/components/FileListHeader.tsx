@@ -309,6 +309,8 @@ export function FileListHeader({
                 onConditionsChange={filter.setConditions}
                 tags={filter.availableTags}
                 authors={filter.availableAuthors}
+                bufferUntilApply
+                onClose={() => filter.setFilterOpen(false)}
               />
             </PopoverContent>
           </Popover>
