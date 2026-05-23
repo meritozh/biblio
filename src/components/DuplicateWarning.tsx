@@ -45,7 +45,7 @@ const ACTION_LABELS: Record<DuplicateAction, { label: string; description: strin
   },
   Delete: {
     label: 'Delete',
-    description: 'Do not import — permanently delete this file from disk',
+    description: 'Do not import — move this file to the system Trash',
   },
   ImportAnyway: {
     label: 'Import anyway',

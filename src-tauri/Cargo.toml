@@ -39,6 +39,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 md-5 = "0.10"
 urlencoding = "2"
 unicode-normalization = "0.1"
+trash = "5"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

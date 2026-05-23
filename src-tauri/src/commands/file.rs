@@ -2484,9 +2484,23 @@ pub async fn import_finalize(
     }
 }
 
-/// Delete a file at an arbitrary path on disk — used for the "Delete" choice
-/// on the import duplicate dialog, where the file is NOT yet in the DB
-/// (so `file_delete`, which keys off id, doesn't apply).
+/// Move a file at an arbitrary path on disk to the system Trash — used
+/// for the "Delete" choice on the import duplicate dialog, where the
+/// file is NOT yet in the DB (so `file_delete`, which keys off id,
+/// doesn't apply).
+///
+/// Uses the `trash` crate (which delegates to macOS NSWorkspace's
+/// recycle / Linux XDG trash / Windows IFileOperation) instead of
+/// `std::fs::remove_file`. Two reasons:
+///   1. **TCC**: on macOS, user-picked source files often sit in
+///      `~/Downloads` / `~/Desktop` / `~/Documents` — directories where
+///      the file picker grants read scope only. `fs::remove_file` needs
+///      directory write permission and fails with `PermissionDenied`.
+///      The Trash API is treated as a user-intent operation by the OS
+///      and works without that directory write entitlement.
+///   2. **Reversibility**: the user can recover the file from Trash if
+///      they change their mind. Better than a permanent delete on an
+///      import-dialog click.
 #[tauri::command]
 pub async fn file_delete_source(path: String) -> Result<(), String> {
     let p = std::path::Path::new(&path);
@@ -2494,14 +2508,14 @@ pub async fn file_delete_source(path: String) -> Result<(), String> {
         // Nothing to remove — treat as success so the UI flow doesn't error.
         return Ok(());
     }
-    fs::remove_file(p).map_err(|e| {
+    trash::delete(p).map_err(|e| {
         let err_str = e.to_string().to_lowercase();
-        if err_str.contains("permission denied") {
+        if err_str.contains("permission") {
             "PERMISSION_DENIED".to_string()
         } else if err_str.contains("being used") || err_str.contains("locked") {
             "FILE_LOCKED".to_string()
         } else {
-            format!("Failed to delete source file: {e}")
+            format!("Failed to move source file to Trash: {e}")
         }
     })
 }
