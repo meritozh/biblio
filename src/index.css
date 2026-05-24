@@ -1,3 +1,22 @@
+/* Self-hosted web fonts via @fontsource. Each import pulls one weight's
+ * @font-face declaration + the matching WOFF2 binary into Vite's asset
+ * graph; the production bundle ships them under /assets/ so the app
+ * works offline and the CSP can stay 'self'-only (no Google Fonts CDN
+ * round-trip). Weights mirror what was previously requested from
+ * fonts.googleapis.com in index.html. Add a new weight here when you
+ * reach for one in CSS that isn't yet declared. */
+@import '@fontsource/cormorant-garamond/400.css';
+@import '@fontsource/cormorant-garamond/500.css';
+@import '@fontsource/cormorant-garamond/600.css';
+@import '@fontsource/cormorant-garamond/700.css';
+@import '@fontsource/cormorant-garamond/400-italic.css';
+@import '@fontsource/cormorant-garamond/500-italic.css';
+@import '@fontsource/cormorant-garamond/600-italic.css';
+@import '@fontsource/nunito-sans/400.css';
+@import '@fontsource/nunito-sans/500.css';
+@import '@fontsource/nunito-sans/600.css';
+@import '@fontsource/nunito-sans/700.css';
+
 @import 'tailwindcss';
 
 @plugin 'tailwindcss-animate';
