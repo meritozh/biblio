@@ -56,9 +56,12 @@ pub struct FilePreparedImport {
 /// consumed at commit time by `file_create` / `file_replace`. Keyed by
 /// the source path the frontend already carries in `item.path`.
 ///
-/// Cleared by `cancel_processing` (also fired when the review dialog
-/// closes) and by `prepared_cover_clear`. Individual entries drop as
-/// commits consume them, so the cache stays lean even mid-batch.
+/// Cleared explicitly via `prepared_cover_clear` (the import dialog calls
+/// it when the user closes the dialog without committing). Individual
+/// entries drop as commits consume them via `take`, so the cache stays
+/// lean even mid-batch. Crucially, `cancel_processing` does NOT clear
+/// the cache — the commit button calls cancel right before reading these
+/// bytes, so clearing there would silently lose every auto-staged cover.
 pub struct PreparedCoverCache(Arc<RwLock<HashMap<String, StagedCover>>>);
 
 struct StagedCover {
@@ -149,10 +152,15 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
 pub async fn cancel_processing(app: tauri::AppHandle) {
     let cancelled = app.state::<ProcessingCancelled>();
     cancelled.0.store(true, Ordering::Relaxed);
-    // Drop any staged cover bytes — the review dialog is closing or the
-    // user explicitly cancelled, so nothing downstream will consume them.
-    let cache = app.state::<PreparedCoverCache>();
-    cache.clear();
+    // Intentionally do NOT clear `PreparedCoverCache` here. One caller of
+    // this command is the import dialog's commit button, which fires it to
+    // halt still-queued analysis work right BEFORE running the commit loop
+    // that reads staged cover bytes via `cache.take(...)`. Clearing the
+    // cache here would silently drop covers for every file the user is
+    // about to commit (the manually-uploaded ones survive only because
+    // `file_create` short-circuits on inline `cover_data`). Callers that
+    // genuinely want to discard staged bytes — like the dialog-close path
+    // — invoke `prepared_cover_clear` explicitly.
 }
 
 /// Push a batch of paths into the import worker queue and return immediately.

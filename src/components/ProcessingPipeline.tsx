@@ -31,6 +31,7 @@ import {
   fileReplace,
   fileDeleteSource,
   cancelProcessing,
+  preparedCoverClear,
   listenProcessingProgress,
   listenFilePrepared,
   importFinalize,
@@ -266,7 +267,12 @@ export function ProcessingPipeline({
       // Cancel any queued analysis so the worker doesn't burn LLM tokens
       // on files the user is no longer reviewing. Mirrors the original
       // pre-queue behavior where closing the dialog ended the batch.
+      // Also drop any staged cover bytes — nothing downstream will read
+      // them now. (The commit-button caller of `cancelProcessing` at the
+      // bottom of this file deliberately skips the cache-clear: it's
+      // about to read those bytes.)
       void cancelProcessing();
+      void preparedCoverClear();
       setFileItems([]);
       setExpandedIds(new Set());
       return;
