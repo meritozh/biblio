@@ -70,6 +70,7 @@ pub fn run() {
             commands::category::category_list,
             commands::category::category_get,
             commands::category::category_update,
+            commands::category::category_merge,
             commands::tag::tag_list,
             commands::tag::tag_count,
             commands::tag::tag_create,

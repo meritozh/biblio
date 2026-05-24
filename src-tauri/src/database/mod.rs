@@ -278,5 +278,41 @@ pub fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 12,
+            description: "scrub h-novel example from seeded prompts",
+            // `h-novel` was only ever an example category name in the seeded
+            // prompts — not a schema, not a built-in. Now that the codebase
+            // no longer treats it as a known concept, strip it from the two
+            // prompts that mention it. `REPLACE` + `LIKE` guards keep this
+            // idempotent: rows the user customized (no longer contain the
+            // exact phrase) are skipped, so a prompt the user edited keeps
+            // their wording.
+            sql: "
+                -- Content Analysis (seeded by schema.sql on fresh installs).
+                -- Drops the trailing 'Example:' clause; the strip-parens rule
+                -- earlier in the same sentence still stands on its own.
+                UPDATE prompts
+                   SET content = REPLACE(
+                       content,
+                       ' Example: for \"h-novel (novel with sexual content)\", return \"h-novel\".',
+                       ''
+                   )
+                 WHERE content LIKE '% Example: for \"h-novel (novel with sexual content)\", return \"h-novel\".%';
+
+                -- Category Re-analysis (seeded by migration v10). Replace
+                -- the h-novel example with a generic genre pair so the
+                -- heuristic 'judge by content samples, not title' still
+                -- reads cleanly.
+                UPDATE prompts
+                   SET content = REPLACE(
+                       content,
+                       '(e.g. ''novel'' vs ''h-novel'')',
+                       '(e.g. romance vs sci-fi)'
+                   )
+                 WHERE content LIKE '%(e.g. ''novel'' vs ''h-novel'')%';
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }

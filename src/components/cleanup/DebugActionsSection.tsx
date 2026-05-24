@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
+  FolderInput,
   Loader2,
   Sparkles,
   Tag as TagIcon,
@@ -36,17 +37,20 @@ import {
 } from '@/components/PaginatedPicker';
 import {
   authorList,
+  categoryMerge,
   fileAssignAuthorToAuthorless,
   fileCountAuthorlessInCategory,
   fileCountForCategoryReanalyze,
   fileCountNovelsMissingTags,
   fileReanalyzeForCategory,
   fileReanalyzeMissingTags,
+  type CategoryMergeResponse,
   type ReanalyzeError,
   type ReanalyzeResponse,
   type ReclassifyResponse,
 } from '@/lib/tauri';
-import { useAppState } from '@/stores/appStore';
+import { coerceSchemaSlug } from '@/lib/categorySchema';
+import { loadCategories, useAppState } from '@/stores/appStore';
 
 interface DebugActionsSectionProps {
   /** Called after a successful run so the parent can refresh its own
@@ -188,6 +192,8 @@ export function DebugActionsSection({ onAfterRun }: DebugActionsSectionProps) {
       <AssignAuthorCard onAfterRun={onAfterRun} />
 
       <ReclassifyToCategoryCard onAfterRun={onAfterRun} />
+
+      <MergeCategoryCard onAfterRun={onAfterRun} />
     </section>
   );
 }
@@ -489,10 +495,8 @@ interface ReclassifyToCategoryCardProps {
 /** Re-runs the import-time content LLM on every novel-schema file that
  *  isn't already in the chosen target category, optionally narrowed to a
  *  single source category. Files whose LLM-picked category equals the
- *  target's name get moved into the target (disk + DB). The intended use
- *  is "find novels that should actually be h-novel", but the card is
- *  generic — the user picks the target from their novel-schema
- *  categories. */
+ *  target's name get moved into the target (disk + DB). The user picks
+ *  the target from their novel-schema categories. */
 function ReclassifyToCategoryCard({ onAfterRun }: ReclassifyToCategoryCardProps) {
   const categories = useAppState((s) => s.categories);
 
@@ -595,8 +599,8 @@ function ReclassifyToCategoryCard({ onAfterRun }: ReclassifyToCategoryCardProps)
             Runs the import-time LLM content extraction on every novel-schema
             file that&apos;s not already in the target category. Files whose
             LLM-picked category matches the target are moved into it (disk +
-            DB). Useful for catching novels that should actually be h-novel.
-            Tags returned by the LLM are ignored on this path. Remote files
+            DB). Useful for re-classifying novels across categories. Tags
+            returned by the LLM are ignored on this path. Remote files
             without a local cache are skipped.
           </p>
         </div>
@@ -744,6 +748,239 @@ function ReclassifyResultPanel({
               ))}
             </ul>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface MergeCategoryCardProps {
+  onAfterRun?: () => void;
+}
+
+/** Merges every file in a source category into a target category — on
+ *  disk (folder rename + file moves) and in the DB (path + category_id
+ *  rewrites). Source and target must share a `schema_slug` so the
+ *  metadata layout stays compatible. When the merge is clean the source
+ *  category row is deleted; when duplicates collide the source is left
+ *  in place so the user can resolve them and re-run. Irreversible — the
+ *  confirm dialog says so. */
+function MergeCategoryCard({ onAfterRun }: MergeCategoryCardProps) {
+  const categories = useAppState((s) => s.categories);
+
+  const [sourceId, setSourceId] = useState<number | null>(null);
+  const [targetId, setTargetId] = useState<number | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<CategoryMergeResponse | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const sourceCategory = useMemo(
+    () => (sourceId == null ? null : categories.find((c) => c.id === sourceId) ?? null),
+    [sourceId, categories]
+  );
+
+  // Target options are limited to categories that share the source's
+  // schema_slug — the backend rejects INCOMPATIBLE_SCHEMAS, so filtering
+  // here avoids a dead-end confirm dialog.
+  const targetOptions = useMemo(() => {
+    if (!sourceCategory) return [] as typeof categories;
+    const slug = coerceSchemaSlug(sourceCategory.schema_slug);
+    return categories.filter(
+      (c) => c.id !== sourceCategory.id && coerceSchemaSlug(c.schema_slug) === slug
+    );
+  }, [sourceCategory, categories]);
+
+  const sourceLabel = sourceCategory?.name ?? null;
+  const targetLabel = useMemo(() => {
+    if (targetId == null) return null;
+    return categories.find((c) => c.id === targetId)?.name ?? null;
+  }, [targetId, categories]);
+
+  // Clear target whenever source changes — the previous pick may not be
+  // schema-compatible with the new source.
+  useEffect(() => {
+    if (
+      targetId != null &&
+      !targetOptions.some((c) => c.id === targetId)
+    ) {
+      setTargetId(null);
+    }
+  }, [targetId, targetOptions]);
+
+  const canRun =
+    !running && sourceId != null && targetId != null && sourceId !== targetId;
+
+  const handleRun = useCallback(async () => {
+    if (sourceId == null || targetId == null) return;
+    setRunning(true);
+    setResult(null);
+    setErrorMessage(null);
+    try {
+      const res = await categoryMerge(sourceId, targetId);
+      setResult(res);
+      onAfterRun?.();
+      // Refresh the global category list — the source row may have been
+      // deleted, and the sidebar / category-derived UIs read from this
+      // store. `loadCategories` also reconciles the active selection.
+      void loadCategories();
+      // When the source category was deleted, drop the now-stale id from
+      // local state so the picker doesn't keep it selected.
+      if (res.deleted_source) {
+        setSourceId(null);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setErrorMessage(message);
+    } finally {
+      setRunning(false);
+      setConfirmOpen(false);
+    }
+  }, [sourceId, targetId, onAfterRun]);
+
+  return (
+    <div className="rounded-lg border bg-background p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-1 min-w-0">
+          <h3 className="text-sm font-medium flex items-center gap-1.5">
+            <FolderInput
+              className="h-3.5 w-3.5 text-muted-foreground"
+              aria-hidden="true"
+            />
+            Merge category
+          </h3>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Moves every file from the source category into the target
+            category — on disk (folder + files) and in the DB. Source and
+            target must use the same schema. When every file moves cleanly,
+            the source category is deleted. Files that collide with a same-
+            named file at the target are skipped and reported; the source
+            category stays put so you can resolve those by hand.
+            Irreversible.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 text-xs shrink-0"
+          onClick={() => setConfirmOpen(true)}
+          disabled={!canRun}
+        >
+          {running ? (
+            <>
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+              Merging…
+            </>
+          ) : (
+            'Merge'
+          )}
+        </Button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          value={sourceId == null ? '' : String(sourceId)}
+          onValueChange={(v) => setSourceId(v === '' ? null : Number(v))}
+        >
+          <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
+            <span className="text-muted-foreground">Source</span>
+            <SelectValue placeholder="pick a category…" />
+          </SelectTrigger>
+          <SelectContent>
+            {categories.map((c) => (
+              <SelectItem key={c.id} value={String(c.id)} className="text-xs">
+                {c.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select
+          value={targetId == null ? '' : String(targetId)}
+          onValueChange={(v) => setTargetId(v === '' ? null : Number(v))}
+          disabled={sourceId == null}
+        >
+          <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
+            <span className="text-muted-foreground">Target</span>
+            <SelectValue
+              placeholder={
+                sourceId == null ? 'pick a source first' : 'pick a category…'
+              }
+            />
+          </SelectTrigger>
+          <SelectContent>
+            {targetOptions.map((c) => (
+              <SelectItem key={c.id} value={String(c.id)} className="text-xs">
+                {c.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {errorMessage != null && !running && (
+        <div className="border-t pt-3">
+          <p className="text-xs text-destructive">{errorMessage}</p>
+        </div>
+      )}
+
+      {result != null && !running && <MergeResultPanel result={result} />}
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Merge &ldquo;{sourceLabel}&rdquo; into &ldquo;{targetLabel}&rdquo;?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Every file under &ldquo;{sourceLabel}&rdquo; will be moved into
+              &ldquo;{targetLabel}&rdquo; on disk and in the database. When the
+              move is clean, the &ldquo;{sourceLabel}&rdquo; category is
+              deleted along with its folder. Files whose basename already
+              exists at the target are skipped and reported for manual
+              resolution. This cannot be undone — files are physically moved.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={running}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void handleRun();
+              }}
+              disabled={running}
+            >
+              {running ? 'Merging…' : 'Merge'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+function MergeResultPanel({ result }: { result: CategoryMergeResponse }) {
+  const summary =
+    result.moved === 0 && result.skipped_duplicates.length === 0
+      ? 'Nothing to merge — source category was empty.'
+      : `${result.moved} moved · ${result.skipped_duplicates.length} skipped · source ${
+          result.deleted_source ? 'deleted' : 'kept'
+        }.`;
+  return (
+    <div className="border-t pt-3 space-y-2">
+      <p className="text-xs text-foreground">{summary}</p>
+      {result.skipped_duplicates.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-[11px] text-muted-foreground">
+            Skipped (same filename already at target):
+          </p>
+          <ul className="space-y-0.5 pl-4 border-l text-[11px] text-muted-foreground">
+            {result.skipped_duplicates.map((name, i) => (
+              <li key={`${name}-${i}`} className="break-all">
+                {name}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>

@@ -1410,8 +1410,7 @@ pub async fn file_reanalyze_for_category(
         // Only act when the LLM picks the target category. Compare under
         // NFC + lowercase to defend against the LLM returning a casing or
         // Unicode variant of the catalog name. Strip parenthetical tails
-        // (e.g. "h-novel (novel with sexual content)") — the import-time
-        // ContentLlmNode does the same.
+        // — the import-time ContentLlmNode does the same.
         let llm_key = meta
             .category
             .as_deref()
@@ -3107,9 +3106,9 @@ fn series_key(name: &str) -> String {
 /// - `"name_prefix"`: one collection per `series_key`-derived prefix
 ///   shared by ≥ 2 matching files.
 ///
-/// `schema_slug` filters to one schema family ('novel' covers both the
-/// `novel` and `h-novel` categories via the schema-slug column; 'comic'
-/// covers the comic category). Singletons are filtered out so the UI
+/// `schema_slug` filters to one schema family ('novel' covers every
+/// novel-schema category; 'comic' covers every comic-schema category —
+/// the schema-slug column does the routing). Singletons are filtered out so the UI
 /// doesn't show a wall of one-item "collections". When `category_id` is
 /// `Some`, only that category's files participate; when `None`, every
 /// category with the matching schema slug is included. Results are

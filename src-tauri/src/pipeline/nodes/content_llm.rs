@@ -58,7 +58,7 @@ impl Phase2Node for ContentLlmNode {
 
         if let Some(cat) = meta.category {
             // LLM output sometimes includes the parenthesized hint we passed
-            // in (e.g. "h-novel (novel with sexual content)"); strip it.
+            // in alongside the category name; strip it before lookup.
             let cat_clean = cat.split('(').next().unwrap_or(&cat).trim().to_lowercase();
             ctx.category_id = env.category_map.get(&cat_clean).copied();
         }

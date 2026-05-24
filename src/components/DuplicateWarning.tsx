@@ -152,10 +152,10 @@ export function DuplicateWarning({
   const existingSize = formatBytes(duplicateInfo.existing_size);
   const nextSize = formatBytes(duplicateInfo.new_size);
 
-  // Schema-routed middle row. Novel schema (which covers both `novel`
-  // and `h-novel` categories per the v9 backfill) keeps the Progress
-  // text row; comic schema renders the Cover visual row instead.
-  // Anything else falls through to no middle row — safer than guessing.
+  // Schema-routed middle row. Novel schema (covering every novel-schema
+  // category) keeps the Progress text row; comic schema renders the
+  // Cover visual row instead. Anything else falls through to no middle
+  // row — safer than guessing.
   const middleRow =
     schema.slug === 'novel' ? (
       <CompareRow

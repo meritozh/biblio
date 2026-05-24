@@ -62,7 +62,6 @@ mod tests {
 
     #[test]
     fn from_str_falls_back_to_novel_for_unknown() {
-        assert_eq!(SchemaSlug::from_str("h-novel"), SchemaSlug::Novel);
         assert_eq!(SchemaSlug::from_str(""), SchemaSlug::Novel);
         assert_eq!(SchemaSlug::from_str("manga"), SchemaSlug::Novel);
     }
@@ -71,7 +70,7 @@ mod tests {
     fn is_known_excludes_fallback_targets() {
         assert!(SchemaSlug::is_known("novel"));
         assert!(SchemaSlug::is_known("Comic"));
-        assert!(!SchemaSlug::is_known("h-novel"));
+        assert!(!SchemaSlug::is_known("manga"));
         assert!(!SchemaSlug::is_known(""));
     }
 }

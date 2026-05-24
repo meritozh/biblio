@@ -105,7 +105,7 @@ INSERT INTO prompts (name, content, category, is_default) VALUES (
 -- Content-analysis default prompt
 INSERT INTO prompts (name, content, category, is_default) VALUES (
     'Content Analysis',
-    '- category: return ONLY the category name. If a category is shown as "name (description)", the parenthesized text is just a hint — return "name" without the parentheses or description. Example: for "h-novel (novel with sexual content)", return "h-novel".
+    '- category: return ONLY the category name. If a category is shown as "name (description)", the parenthesized text is just a hint — return "name" without the parentheses or description.
 - tags: at most 6 total; prefer existing tags; only propose new ones when you''re confident they clearly apply — be confident, not eager
 - description: 1-2 sentence plot summary based on content
 - Use null for unknown fields',
