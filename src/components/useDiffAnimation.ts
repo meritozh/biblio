@@ -22,15 +22,26 @@ export function useDiffAnimation<T>(
 ): boolean {
   const prevKeysRef = useRef<Set<string | number>>(new Set());
 
+  // Intentional read-ref-during-render: this is the documented
+  // previous-render-value pattern. The ref is updated in the useEffect
+  // below, so the comparison always runs against the just-rendered
+  // (committed) state — never the in-flight state. React 19's
+  // react-hooks/refs rule is over-cautious for this case (it taint-
+  // tracks any value derived from `.current` as a ref read); the safe
+  // semantics are guaranteed by the post-render write.
+  const prevKeys = prevKeysRef.current;
+
   const currentKeys = new Set<string | number>();
   let addedCount = 0;
   for (const item of items) {
     const k = getKey(item);
     currentKeys.add(k);
-    if (!prevKeysRef.current.has(k)) addedCount += 1;
+    // eslint-disable-next-line react-hooks/refs
+    if (!prevKeys.has(k)) addedCount += 1;
   }
   let removedCount = 0;
-  for (const k of prevKeysRef.current) {
+  // eslint-disable-next-line react-hooks/refs
+  for (const k of prevKeys) {
     if (!currentKeys.has(k)) removedCount += 1;
   }
   const skipAnim = addedCount + removedCount > threshold;

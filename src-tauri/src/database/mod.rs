@@ -1,4 +1,3 @@
-pub mod seed;
 pub mod recovery;
 
 use tauri_plugin_sql::{Migration, MigrationKind};

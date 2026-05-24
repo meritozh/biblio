@@ -14,6 +14,11 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
 
 pub struct DatabaseRecovery;
 
+// `Recovered` and `RecoveryFailed` are reached by the restore flow
+// (DatabaseRecovery::restore_from_backup); they're not yet wired into
+// a user-facing command but the implementation is ready to expose
+// once a "Manage backups" UI surface lands.
+#[allow(dead_code)]
 #[derive(Debug, serde::Serialize)]
 pub enum RecoveryStatus {
     Healthy,
@@ -61,6 +66,8 @@ impl DatabaseRecovery {
         Ok(backup_path)
     }
 
+    // Not wired into a command yet — see the comment on RecoveryStatus.
+    #[allow(dead_code)]
     pub fn restore_from_backup(app: &AppHandle) -> Result<(), String> {
         let db_path = Self::get_database_path(app).ok_or("Could not find database path")?;
         let backup_path = Self::get_backup_path(app).ok_or("Could not determine backup path")?;
@@ -108,6 +115,7 @@ impl DatabaseRecovery {
         Ok(metadata.len())
     }
 
+    #[allow(dead_code)]
     pub fn list_backups(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
         let data_dir = app.path().app_data_dir()
             .map_err(|e| format!("Could not get app data directory: {}", e))?;
@@ -130,6 +138,7 @@ impl DatabaseRecovery {
         Ok(backups)
     }
 
+    #[allow(dead_code)]
     pub fn cleanup_old_backups(app: &AppHandle, keep_count: usize) -> Result<usize, String> {
         let backups = Self::list_backups(app)?;
         let mut removed = 0;

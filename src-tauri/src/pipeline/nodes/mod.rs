@@ -30,9 +30,7 @@ pub use archive_cover::ArchiveFirstImageCoverNode;
 pub use archive_list::ArchiveListImagesNode;
 pub use author_resolve::AuthorResolveNode;
 pub use content_llm::ContentLlmNode;
-pub use content_sample::{
-    decode_to_utf8, sample_from_text, sample_text_content, ContentSampleNode,
-};
+pub use content_sample::{decode_to_utf8, sample_from_text, ContentSampleNode};
 pub use cover_candidates_llm::LlmCoverCandidatesNode;
 pub use cover_compress::CoverCompressNode;
 pub use duplicate_detect::DbDuplicateDetectNode;

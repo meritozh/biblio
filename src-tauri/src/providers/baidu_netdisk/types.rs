@@ -55,6 +55,10 @@ pub(super) struct PrecreateResponse {
     pub path: Option<String>,
     pub uploadid: Option<String>,
     pub return_type: Option<i32>,
+    // Echoed back by Baidu's precreate but biblio doesn't consume it
+    // (we already track the block layout client-side). Keep for wire-
+    // format fidelity in case a future caller needs it.
+    #[allow(dead_code)]
     #[serde(default)]
     pub block_list: Vec<u32>,
 }
