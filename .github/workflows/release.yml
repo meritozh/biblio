@@ -43,7 +43,12 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 9
+          # Must be pnpm 11+ to parse pnpm-workspace.yaml's `allowBuilds`
+          # setting (added in pnpm 10/11). Pnpm 9 sees the YAML file as a
+          # workspace declaration, demands a `packages:` field, and fails
+          # `pnpm store path --silent` (which setup-node runs for cache
+          # path resolution). Matches the local dev pnpm version.
+          version: 11
 
       - name: Install Node
         uses: actions/setup-node@v6
