@@ -1523,6 +1523,262 @@ pub async fn file_assign_author_to_authorless(
     Ok(AssignAuthorResponse { assigned })
 }
 
+#[derive(Serialize)]
+pub struct RegenerateCoversResponse {
+    pub processed: i64,
+    pub regenerated: i64,
+    /// File on disk missing, or remote without a local cache. The user
+    /// fixes by restoring the source or downloading the remote copy and
+    /// re-running.
+    pub skipped: i64,
+    /// Archive unreadable, image decode failure — won't be fixed by a
+    /// re-run.
+    pub failed: i64,
+    pub errors: Vec<ReanalyzeError>,
+}
+
+/// Count comic-schema files with no row in `covers`. Feeds the affected-
+/// count badge on `/cleanup`'s "Regenerate missing comic covers" Debug
+/// card so the user sees the scale before triggering the run.
+#[tauri::command]
+pub async fn file_count_comics_missing_covers(app: AppHandle) -> Result<i64, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM files f
+         JOIN categories c ON c.id = f.category_id
+         WHERE c.schema_slug = 'comic'
+           AND f.file_status = 'available'
+           AND NOT EXISTS (SELECT 1 FROM covers WHERE file_id = f.id)",
+    )
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+/// Re-extract the cover image for every comic archive whose `covers` row
+/// is missing and INSERT OR REPLACE the result. Runs the cover-focused
+/// subset of the normal comic import pipeline against each in-storage
+/// archive, so the picking quality matches a fresh import:
+///
+/// - `ArchiveFirstImageCoverNode` (Phase 1) — baseline pick from the
+///   archive entries, used as fallback if LLM is off or fails.
+/// - `ArchiveListImagesNode` (Phase 1) — records every image entry's
+///   basename + archive index so the LLM has a candidate list.
+/// - `LlmCoverCandidatesNode` (Phase 2) — basenames → LLM-ranked picks.
+/// - `LlmVisionCoverCheckNode` (Phase 2) — vision model verifies the
+///   ranked candidates' bytes and picks the best.
+/// - `CoverCompressNode` (Phase 2) — re-encodes to ≤ ~200 KB JPEG.
+///
+/// Each node self-gates via `applies()`: when LLM is disabled or no
+/// candidates survive ranking, the baseline pick stands. So this works
+/// gracefully whether the user has LLM configured or not — the floor
+/// is always the basename heuristic.
+///
+/// Pre-filters candidates by existence on disk so an unreadable / moved
+/// archive is reported as `skipped` rather than churning through the
+/// pipeline. Pipeline-side failures (archive open errors, decode errors)
+/// surface as `failed` rows with the node's error message.
+#[tauri::command]
+pub async fn file_regenerate_missing_covers(
+    app: AppHandle,
+) -> Result<RegenerateCoversResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    #[derive(sqlx::FromRow)]
+    struct Candidate {
+        id: i64,
+        display_name: String,
+        path: String,
+        local_cache_path: Option<String>,
+        storage_kind: Option<String>,
+    }
+
+    let candidates: Vec<Candidate> = sqlx::query_as(
+        "SELECT f.id, f.display_name, f.path, f.local_cache_path, f.storage_kind
+         FROM files f
+         JOIN categories c ON c.id = f.category_id
+         WHERE c.schema_slug = 'comic'
+           AND f.file_status = 'available'
+           AND NOT EXISTS (SELECT 1 FROM covers WHERE file_id = f.id)
+         ORDER BY f.id",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if candidates.is_empty() {
+        return Ok(RegenerateCoversResponse {
+            processed: 0,
+            regenerated: 0,
+            skipped: 0,
+            failed: 0,
+            errors: Vec::new(),
+        });
+    }
+
+    let roots = super::settings::load_path_roots(&pool).await?;
+
+    let mut skipped = 0i64;
+    let mut errors: Vec<ReanalyzeError> = Vec::new();
+
+    // Resolve each candidate to an on-disk archive path. Rows whose
+    // source is missing (remote without cache, file moved/deleted) get
+    // reported as `skipped` and never reach the pipeline.
+    let mut runnable: Vec<(PathBuf, i64, String)> = Vec::new();
+    for c in &candidates {
+        let kind = c.storage_kind.as_deref().unwrap_or("local");
+        let abs = match kind {
+            "local" => crate::path_resolve::to_absolute(
+                kind,
+                &c.path,
+                &roots.storage_path,
+                &roots.app_root,
+            ),
+            _ => match c.local_cache_path.as_deref().filter(|s| !s.is_empty()) {
+                Some(cache) => {
+                    crate::path_resolve::cache_to_absolute(cache, &roots.storage_path)
+                }
+                None => {
+                    skipped += 1;
+                    errors.push(ReanalyzeError {
+                        file_id: c.id,
+                        display_name: c.display_name.clone(),
+                        message: "skipped: remote file not cached locally".to_string(),
+                    });
+                    continue;
+                }
+            },
+        };
+
+        if !abs.exists() {
+            skipped += 1;
+            errors.push(ReanalyzeError {
+                file_id: c.id,
+                display_name: c.display_name.clone(),
+                message: "skipped: source file not on disk".to_string(),
+            });
+            continue;
+        }
+
+        runnable.push((abs, c.id, c.display_name.clone()));
+    }
+
+    if runnable.is_empty() {
+        return Ok(RegenerateCoversResponse {
+            processed: candidates.len() as i64,
+            regenerated: 0,
+            skipped,
+            failed: 0,
+            errors,
+        });
+    }
+
+    // Reset the global cancel flag before launching the pipeline.
+    // `cancel_processing` flips it true whenever the import dialog
+    // closes; without a reset here, a recovery run after any prior
+    // import session bails immediately with `cancelled=true` and zero
+    // files processed. `enqueue_import` does the same reset for the
+    // normal import path.
+    app.state::<crate::ProcessingCancelled>()
+        .0
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    // Build the cover-only subset of the comic pipeline. Re-using the
+    // node implementations directly guarantees byte-for-byte parity with
+    // what a fresh import would have produced.
+    let pipeline = crate::pipeline::runner::Pipeline::builder()
+        .add_phase1(crate::pipeline::nodes::ArchiveFirstImageCoverNode)
+        .add_phase1(crate::pipeline::nodes::ArchiveListImagesNode)
+        .add_phase2(crate::pipeline::nodes::LlmCoverCandidatesNode)
+        .add_phase2(crate::pipeline::nodes::LlmVisionCoverCheckNode)
+        .add_phase2(crate::pipeline::nodes::CoverCompressNode)
+        .build();
+
+    let env = crate::commands::processing::build_pipeline_env(&app).await?;
+    let paths: Vec<PathBuf> = runnable.iter().map(|(p, _, _)| p.clone()).collect();
+
+    // run_batch caps Phase-1 fan-out internally (PHASE1_CONCURRENCY=8)
+    // and drains Phase-2 sequentially, so concurrent LLM calls stay
+    // bounded by the pipeline's existing limits.
+    let results = pipeline
+        .run_batch(paths, env, std::collections::HashMap::new())
+        .await;
+
+    // Map results back to (file_id, display_name) by source path. The
+    // pipeline preserves input order but we key on path to be defensive
+    // against future scheduling changes.
+    use std::collections::HashMap;
+    let id_by_path: HashMap<PathBuf, (i64, String)> = runnable
+        .into_iter()
+        .map(|(p, id, name)| (p, (id, name)))
+        .collect();
+
+    let mut regenerated = 0i64;
+    let mut failed = 0i64;
+
+    for ctx in results {
+        let Some((file_id, display_name)) = id_by_path.get(&ctx.file_path).cloned() else {
+            continue;
+        };
+
+        // Pull the error message off the most-relevant failed node, if any.
+        // Pipeline-side errors are recorded as NodeStatus::Err and don't
+        // halt later nodes — but if all cover-producing nodes failed we
+        // won't have ctx.cover to store.
+        let node_error: Option<String> = ctx
+            .outcomes
+            .iter()
+            .find_map(|o| match &o.status {
+                crate::pipeline::NodeStatus::Err(msg) => {
+                    Some(format!("{}: {}", o.name, msg))
+                }
+                _ => None,
+            });
+
+        let Some(cover) = ctx.cover else {
+            failed += 1;
+            errors.push(ReanalyzeError {
+                file_id,
+                display_name,
+                message: node_error
+                    .unwrap_or_else(|| "no cover extracted from archive".to_string()),
+            });
+            continue;
+        };
+
+        if let Err(e) = sqlx::query(
+            "INSERT OR REPLACE INTO covers (file_id, data, mime_type) VALUES (?, ?, ?)",
+        )
+        .bind(file_id)
+        .bind(&cover.data)
+        .bind(&cover.mime_type)
+        .execute(&pool)
+        .await
+        {
+            failed += 1;
+            errors.push(ReanalyzeError {
+                file_id,
+                display_name,
+                message: format!("DB write failed: {e}"),
+            });
+            continue;
+        }
+
+        regenerated += 1;
+    }
+
+    Ok(RegenerateCoversResponse {
+        processed: candidates.len() as i64,
+        regenerated,
+        skipped,
+        failed,
+        errors,
+    })
+}
+
 #[tauri::command]
 pub async fn file_get(
     app: AppHandle,

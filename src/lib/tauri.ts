@@ -288,6 +288,35 @@ export async function fileCountAuthorlessInCategory(
   return invoke('file_count_authorless_in_category', { categoryId });
 }
 
+/** Result of `file_regenerate_missing_covers`. `regenerated` is the
+ *  success count; `skipped` covers the recoverable cases (file missing
+ *  on disk, remote without local cache) that the user can address and
+ *  retry; `failed` covers the structural cases (archive unreadable,
+ *  decode failure) that a re-run won't fix. */
+export interface RegenerateCoversResponse {
+  processed: number;
+  regenerated: number;
+  skipped: number;
+  failed: number;
+  errors: ReanalyzeError[];
+}
+
+/** Count comic-schema files with no row in the `covers` table —
+ *  victims of the pre-2936908 cancel/clear race or genuine new
+ *  imports that haven't been analyzed. Feeds the count badge on
+ *  /cleanup's "Regenerate missing comic covers" card. */
+export async function fileCountComicsMissingCovers(): Promise<number> {
+  return invoke('file_count_comics_missing_covers');
+}
+
+/** Re-extract the first cover image (basename heuristic — no LLM) from
+ *  every comic archive whose `covers` row is missing, compress, and
+ *  store. Idempotent — running twice just replaces the freshly-stored
+ *  bytes with another extraction of the same archive. */
+export async function fileRegenerateMissingCovers(): Promise<RegenerateCoversResponse> {
+  return invoke('file_regenerate_missing_covers');
+}
+
 /** Bulk-assign `authorId` to every file with no current author, optionally
  *  scoped to one category. Single-transaction `INSERT OR IGNORE`. Emits
  *  one bulk `author-updated` event (sentinel id 0). Returns the number

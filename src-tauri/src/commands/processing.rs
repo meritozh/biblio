@@ -255,7 +255,7 @@ pub(crate) async fn process_import_path(
     Ok(())
 }
 
-async fn build_pipeline_env(app: &tauri::AppHandle) -> Result<Arc<PipelineEnv>, String> {
+pub(crate) async fn build_pipeline_env(app: &tauri::AppHandle) -> Result<Arc<PipelineEnv>, String> {
     use super::{Author, Category, FileEntry, Tag};
 
     let cancelled: Arc<std::sync::atomic::AtomicBool> =
