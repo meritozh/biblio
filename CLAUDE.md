@@ -47,6 +47,8 @@ TypeScript 5.x (frontend), Rust 1.75+ (Tauri backend): Follow standard conventio
 
 - **Storage System**: Files are moved to `{storage_path}/{category}/` folders. Check storage path state when dialogs close.
 
+- **Remote Encryption**: Every file uploaded to remote storage is encrypted client-side via `services::container` — go through `upload_worker::wrap_and_upload`, never call `upload_to_remote` with a raw file. Remote objects use opaque, extension-less names; the real filename lives only in the DB. The `files.remote_container` column (`'bbx1'` vs `NULL`) is the authority for whether a downloaded object must be unwrapped — legacy `NULL` rows are raw. Back-filling legacy raw files goes through `reencrypt_worker`. The encryption key lives in `app_settings`; losing it makes remote files unrecoverable.
+
 - **React useEffect**: Avoid circular dependencies between effects. Don't sync internal state with props in one effect and call `onChange` in another - this causes infinite loops. Derive values from props directly.
 
 - **New Tauri Commands**: Must be (1) created in `src-tauri/src/commands/`, (2) exported in `mod.rs`, (3) registered in `lib.rs` invoke_handler.

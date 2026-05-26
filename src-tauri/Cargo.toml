@@ -40,6 +40,8 @@ md-5 = "0.10"
 urlencoding = "2"
 unicode-normalization = "0.1"
 trash = "5"
+chacha20poly1305 = { version = "0.10", features = ["stream"] }
+rand = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

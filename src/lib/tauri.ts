@@ -19,6 +19,7 @@ import type {
   RemoteUploadProgress,
   RemoteDownloadProgress,
   RemoteDeleteProgress,
+  RemoteReencryptProgress,
 } from '@/types';
 
 export async function fileList(
@@ -162,6 +163,40 @@ export function onRemoteDeleteProgress(
   return listen<RemoteDeleteProgress>('remote-delete-progress', (event) =>
     callback(event.payload)
   );
+}
+
+/** Count remote files still stored raw (uploaded before client-side
+ *  encryption existed). Drives the "encrypt existing cloud files" affordance. */
+export async function remoteLegacyCount(): Promise<number> {
+  return invoke('remote_legacy_count');
+}
+
+/** Enqueue every raw legacy remote file for re-encryption (download → wrap →
+ *  re-upload → delete raw). Returns the number queued. Subscribe via
+ *  {@link onRemoteReencryptProgress}. */
+export async function reencryptLegacy(): Promise<number> {
+  return invoke('file_reencrypt_legacy');
+}
+
+/** Enqueue specific file IDs for re-encryption. Ineligible rows are skipped
+ *  by the worker, so a mixed list is safe. */
+export async function reencryptRemote(fileIds: number[]): Promise<void> {
+  return invoke('file_reencrypt_remote', { fileIds });
+}
+
+export function onRemoteReencryptProgress(
+  callback: (progress: RemoteReencryptProgress) => void
+): Promise<UnlistenFn> {
+  return listen<RemoteReencryptProgress>('remote-reencrypt-progress', (event) =>
+    callback(event.payload)
+  );
+}
+
+/** Fetch the device's encryption recovery key (base64), generating it on
+ *  first call. Show read-only so the user can back it up — losing it makes
+ *  encrypted cloud files unrecoverable. */
+export async function remoteRecoveryKey(): Promise<string> {
+  return invoke('remote_recovery_key');
 }
 
 export async function fileUpdate(

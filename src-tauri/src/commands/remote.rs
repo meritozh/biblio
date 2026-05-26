@@ -261,3 +261,78 @@ pub async fn file_delete_via_worker(
     }
     Ok(())
 }
+
+/// Return the device's container encryption key (base64), generating it on
+/// first call. Surfaced read-only in Settings so the user can back it up:
+/// losing it without a backup makes every encrypted remote file
+/// unrecoverable. Baidu never receives this key.
+#[tauri::command]
+pub async fn remote_recovery_key(app: tauri::AppHandle) -> Result<String, String> {
+    use base64::Engine;
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    let key = crate::services::container::get_or_create_key(&pool).await?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(key))
+}
+
+/// Count remote files still stored raw (uploaded before the container
+/// feature). Drives the "encrypt N existing cloud files" UI affordance.
+#[tauri::command]
+pub async fn remote_legacy_count(app: tauri::AppHandle) -> Result<i64, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM files WHERE storage_kind = 'remote' AND remote_container IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.0)
+}
+
+/// Enqueue specific file IDs for re-encryption (download → wrap → re-upload →
+/// delete raw). Ineligible rows are skipped by the worker, so passing a mixed
+/// list is safe. Progress arrives as `remote-reencrypt-progress` events.
+#[tauri::command]
+pub async fn file_reencrypt_remote(
+    app: tauri::AppHandle,
+    file_ids: Vec<i64>,
+) -> Result<(), String> {
+    use crate::services::reencrypt_worker::{ReencryptJob, ReencryptQueueSender};
+
+    let sender = app.state::<ReencryptQueueSender>();
+    for file_id in file_ids {
+        sender
+            .0
+            .send(ReencryptJob { file_id })
+            .map_err(|e| format!("Re-encrypt queue is closed: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Enqueue every raw legacy remote file for re-encryption and return how many
+/// were queued. The selection runs server-side so the frontend only needs a
+/// single call to back-fill the whole library.
+#[tauri::command]
+pub async fn file_reencrypt_legacy(app: tauri::AppHandle) -> Result<i64, String> {
+    use crate::services::reencrypt_worker::{ReencryptJob, ReencryptQueueSender};
+
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        "SELECT id FROM files WHERE storage_kind = 'remote' AND remote_container IS NULL",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let sender = app.state::<ReencryptQueueSender>();
+    let count = rows.len() as i64;
+    for (file_id,) in rows {
+        sender
+            .0
+            .send(ReencryptJob { file_id })
+            .map_err(|e| format!("Re-encrypt queue is closed: {e}"))?;
+    }
+    Ok(count)
+}

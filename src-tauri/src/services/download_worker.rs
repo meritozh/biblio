@@ -69,10 +69,10 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
     // the file is actually remote. `path` for a remote row is the Baidu
     // path (e.g. `/apps/biblio/<base64>.cbz`); `original_path` is the
     // pre-upload local path, used to recover a friendly basename.
-    let row: Option<(String, String, Option<String>, Option<String>, String)> =
+    let row: Option<(String, String, Option<String>, Option<String>, String, Option<String>)> =
         match sqlx::query_as(
             "SELECT path, display_name, original_path, remote_fs_id, \
-                    COALESCE(storage_kind, 'local') \
+                    COALESCE(storage_kind, 'local'), remote_container \
              FROM files WHERE id = ?",
         )
         .bind(file_id)
@@ -86,7 +86,9 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
             }
         };
 
-    let Some((remote_path, display_name, original_path, remote_fs_id, storage_kind)) = row else {
+    let Some((remote_path, display_name, original_path, remote_fs_id, storage_kind, remote_container)) =
+        row
+    else {
         emit(app, file_id, "", "error", Some("File not found".into()));
         return;
     };
@@ -151,9 +153,42 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
         }
     };
 
-    if let Err(e) = download_to(&access_token, &dlink, &cache_path).await {
+    // Wrapped objects ('bbx1') download to a temp, then unwrap into the real
+    // cache path. Legacy rows (remote_container IS NULL) download straight
+    // through unchanged.
+    let is_wrapped = remote_container.as_deref() == Some("bbx1");
+    let download_target = if is_wrapped {
+        cache_dir.join(format!(".{file_id}.bbxdl"))
+    } else {
+        cache_path.clone()
+    };
+
+    if let Err(e) = download_to(&access_token, &dlink, &download_target).await {
         emit(app, file_id, &display_name, "error", Some(e.0));
         return;
+    }
+
+    if is_wrapped {
+        let key = match crate::services::container::get_or_create_key(&pool).await {
+            Ok(k) => k,
+            Err(e) => {
+                let _ = std::fs::remove_file(&download_target);
+                emit(app, file_id, &display_name, "error", Some(e));
+                return;
+            }
+        };
+        if let Err(e) = crate::services::container::unwrap(&download_target, &cache_path, &key) {
+            let _ = std::fs::remove_file(&download_target);
+            emit(
+                app,
+                file_id,
+                &display_name,
+                "error",
+                Some(format!("container unwrap failed: {e}")),
+            );
+            return;
+        }
+        let _ = std::fs::remove_file(&download_target);
     }
 
     // Store the cache path RELATIVE to storage_root so the user can

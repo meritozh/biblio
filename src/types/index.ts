@@ -309,6 +309,17 @@ export interface RemoteDeleteProgress {
   error?: string;
 }
 
+/** Re-encrypt progress, emitted by the reencrypt_worker as it back-fills
+ *  legacy raw remote files into the encrypted container. The two-stage
+ *  pipeline emits `downloading` (download leg) then `uploading` (encrypt +
+ *  upload leg) before a terminal `success` | `error`. */
+export interface RemoteReencryptProgress {
+  file_id: number;
+  file_name: string;
+  status: 'downloading' | 'uploading' | 'success' | 'error';
+  error?: string;
+}
+
 /** @deprecated kept for migration / one-release back-compat. New code
  *  must read `schema_slug` from prompts and categories instead. */
 export type PromptMimeGroup = 'text' | 'archive' | 'image_folder';

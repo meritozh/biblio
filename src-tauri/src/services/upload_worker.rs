@@ -9,13 +9,14 @@
 //! saturate user bandwidth and risk Baidu Pan rate limits. If parallelism
 //! is ever wanted, swap the `while let` recv loop for a bounded JoinSet.
 
-use base64::Engine;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_sql::{DbInstances, DbPool};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::commands::remote::{load_config, upload_to_remote};
+use crate::providers::baidu_netdisk::UploadResult;
+use crate::services::container;
 
 /// One queued upload. Carries only what the worker needs to identify the
 /// file; everything else is fetched from the DB at processing time so the
@@ -143,104 +144,97 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
         return;
     }
 
-    let stem = source_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("file");
-    let ext = source_path.extension().and_then(|e| e.to_str());
-    let encoded_stem = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(stem.as_bytes());
-    let encoded_filename = match ext {
-        Some(e) if !e.is_empty() => format!("{encoded_stem}.{e}"),
-        _ => encoded_stem.clone(),
-    };
-
-    let app_root = remote_cfg.app_root.trim_end_matches('/');
-    // Two views of the remote path: the absolute form Baidu's API needs,
-    // and the relative form we store in the DB (so `app_root` can be
-    // changed later without rewriting every row). `relative_path` is
-    // everything after the `app_root/` prefix.
-    let mut relative_path = encoded_filename.clone();
-    let mut remote_path = format!("{app_root}/{relative_path}");
-
-    let mut counter = 1u32;
-    loop {
-        // De-dup check against stored RELATIVE paths — the column holds
-        // paths relative to the storage root.
-        let existing: Result<Option<(i64,)>, _> =
-            sqlx::query_as("SELECT id FROM files WHERE path = ? AND id != ?")
-                .bind(&relative_path)
-                .bind(file_id)
-                .fetch_optional(&pool)
-                .await;
-
-        match existing {
-            Ok(None) => break,
-            Ok(Some(_)) => {
-                relative_path = match ext {
-                    Some(e) if !e.is_empty() => {
-                        format!("{encoded_stem}_{counter}.{e}")
-                    }
-                    _ => format!("{encoded_stem}_{counter}"),
-                };
-                remote_path = format!("{app_root}/{relative_path}");
-                counter += 1;
-            }
-            Err(e) => {
-                emit(
-                    app,
-                    file_id,
-                    &display_name,
-                    "error",
-                    Some(e.to_string()),
-                );
-                return;
-            }
-        }
-    }
-
     emit(app, file_id, &display_name, "uploading", None);
 
-    match upload_to_remote(&pool, &source_path, &remote_path).await {
-        Ok(upload) => {
-            if let Err(e) = sqlx::query(
-                "UPDATE files SET \
-                 path = ?, storage_kind = 'remote', remote_provider = 'baidu_netdisk', \
-                 remote_fs_id = ?, remote_md5 = ?, remote_size = ?, \
-                 in_storage = 0, original_path = ?, file_status = 'available' \
-                 WHERE id = ?",
-            )
-            .bind(&relative_path)
-            .bind(&upload.fs_id)
-            .bind(&upload.md5)
-            .bind(upload.size)
-            .bind(&local_path)
-            .bind(file_id)
-            .execute(&pool)
-            .await
-            {
-                emit(
-                    app,
-                    file_id,
-                    &display_name,
-                    "error",
-                    Some(format!("DB update failed: {e}")),
-                );
+    // Wrap the file in the opaque encrypted container and upload it under an
+    // extension-less random name, then record the 'bbx1' marker so the
+    // download path knows to unwrap it. Plaintext never leaves the device;
+    // only ciphertext is hashed for Baidu's block_list.
+    let (relative_path, upload) =
+        match wrap_and_upload(&pool, &remote_cfg.app_root, &source_path, file_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                emit(app, file_id, &display_name, "error", Some(e));
                 return;
             }
+        };
 
-            if let Err(e) = std::fs::remove_file(&source_path) {
-                eprintln!(
-                    "Remote upload succeeded but local delete failed ({}): {e}",
-                    source_path.display()
-                );
-            }
-
-            emit(app, file_id, &display_name, "success", None);
-        }
-        Err(e) => {
-            emit(app, file_id, &display_name, "error", Some(e));
-        }
+    if let Err(e) = sqlx::query(
+        "UPDATE files SET \
+         path = ?, storage_kind = 'remote', remote_provider = 'baidu_netdisk', \
+         remote_fs_id = ?, remote_md5 = ?, remote_size = ?, remote_container = 'bbx1', \
+         in_storage = 0, original_path = ?, file_status = 'available' \
+         WHERE id = ?",
+    )
+    .bind(&relative_path)
+    .bind(&upload.fs_id)
+    .bind(&upload.md5)
+    .bind(upload.size)
+    .bind(&local_path)
+    .bind(file_id)
+    .execute(&pool)
+    .await
+    {
+        emit(
+            app,
+            file_id,
+            &display_name,
+            "error",
+            Some(format!("DB update failed: {e}")),
+        );
+        return;
     }
+
+    if let Err(e) = std::fs::remove_file(&source_path) {
+        eprintln!(
+            "Remote upload succeeded but local delete failed ({}): {e}",
+            source_path.display()
+        );
+    }
+
+    emit(app, file_id, &display_name, "success", None);
+}
+
+/// Wrap `source_path` in the encrypted container and upload it under an
+/// opaque, extension-less name. Shared by this worker and the re-encrypt
+/// worker so both produce byte-identical container objects.
+///
+/// Returns the stored relative path (a random token) and Baidu's upload
+/// result. Because only the ciphertext is hashed, 秒传 never matches and the
+/// remote object carries no recognizable name, extension, or format.
+pub(crate) async fn wrap_and_upload(
+    pool: &sqlx::SqlitePool,
+    app_root: &str,
+    source_path: &std::path::Path,
+    exclude_file_id: i64,
+) -> Result<(String, UploadResult), String> {
+    let key = container::get_or_create_key(pool).await?;
+    let app_root = app_root.trim_end_matches('/');
+
+    // Opaque, extension-less remote name. A 128-bit token collision is
+    // astronomically unlikely, but the existing de-dup invariant is cheap.
+    let mut relative_path = container::random_token();
+    loop {
+        let existing: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM files WHERE path = ? AND id != ?")
+                .bind(&relative_path)
+                .bind(exclude_file_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        if existing.is_none() {
+            break;
+        }
+        relative_path = container::random_token();
+    }
+    let remote_path = format!("{app_root}/{relative_path}");
+
+    let tmp = std::env::temp_dir().join(format!("biblio-wrap-{}.bbx", container::random_token()));
+    container::wrap(source_path, &tmp, &key).map_err(|e| format!("container wrap failed: {e}"))?;
+    let result = upload_to_remote(pool, &tmp, &remote_path).await;
+    let _ = std::fs::remove_file(&tmp);
+    let upload = result?;
+    Ok((relative_path, upload))
 }
 
 fn emit(app: &AppHandle, file_id: i64, file_name: &str, status: &str, error: Option<String>) {

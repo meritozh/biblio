@@ -29,10 +29,12 @@ pub fn run() {
             let upload_tx = services::upload_worker::spawn(app_handle.clone());
             let download_tx = services::download_worker::spawn(app_handle.clone());
             let delete_tx = services::delete_worker::spawn(app_handle.clone());
+            let reencrypt_tx = services::reencrypt_worker::spawn(app_handle.clone());
             let import_tx = services::import_worker::spawn(app_handle);
             app.manage(services::upload_worker::UploadQueueSender(upload_tx));
             app.manage(services::download_worker::DownloadQueueSender(download_tx));
             app.manage(services::delete_worker::DeleteQueueSender(delete_tx));
+            app.manage(services::reencrypt_worker::ReencryptQueueSender(reencrypt_tx));
             app.manage(services::import_worker::ImportQueueSender(import_tx));
             Ok(())
         })
@@ -122,6 +124,10 @@ pub fn run() {
             commands::remote::file_upload_to_remote,
             commands::remote::file_download_from_remote,
             commands::remote::file_delete_via_worker,
+            commands::remote::remote_legacy_count,
+            commands::remote::file_reencrypt_remote,
+            commands::remote::file_reencrypt_legacy,
+            commands::remote::remote_recovery_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

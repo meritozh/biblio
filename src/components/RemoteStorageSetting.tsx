@@ -1,11 +1,33 @@
-import { useEffect, useState } from 'react';
-import { AlertCircle, Check, ChevronRight, Eye, EyeOff, Loader2, LogOut, X } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  AlertCircle,
+  Check,
+  ChevronRight,
+  Copy,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Loader2,
+  Lock,
+  LogOut,
+  ShieldCheck,
+  X,
+} from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
-import { remoteConfigGet, remoteLogin, remoteLogout, remoteGetAuthorizeUrl } from '@/lib/tauri';
+import {
+  remoteConfigGet,
+  remoteLogin,
+  remoteLogout,
+  remoteGetAuthorizeUrl,
+  remoteLegacyCount,
+  reencryptLegacy,
+  remoteRecoveryKey,
+  onRemoteReencryptProgress,
+} from '@/lib/tauri';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { parseTokenInput } from '@/lib/baidu_oauth';
 import type { RemoteConfig } from '@/types';
@@ -117,12 +139,14 @@ export function RemoteStorageSetting() {
       <div>
         <h3 className="text-sm font-semibold">Remote Storage (Baidu Pan)</h3>
         <p className="text-xs text-muted-foreground">
-          Upload comic archives to Baidu Netdisk. Biblio keeps metadata + cover locally;
-          the archive file lives on Baidu under an obfuscated filename.
+          Upload comic archives to Baidu Netdisk. Biblio keeps metadata + cover locally and
+          encrypts each archive on this device before upload — Baidu only ever stores opaque,
+          unreadable bytes under a random filename.
         </p>
       </div>
 
       {isConnected && config ? (
+        <>
         <div className="space-y-3 rounded-xl border border-success/30 bg-success-muted dark:bg-success/10 p-3">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-2">
@@ -150,6 +174,8 @@ export function RemoteStorageSetting() {
             <div>Access token: {expiresHumanReadable}</div>
           </div>
         </div>
+        <EncryptionTools />
+        </>
       ) : (
         <div className="space-y-3">
           <CollapsibleHelp title="How to get your AppKey and Access Token">
@@ -251,6 +277,176 @@ export function RemoteStorageSetting() {
         <div className="flex items-center gap-2 text-xs text-success">
           <Check className="h-3 w-3" />
           {success}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Recovery-key backup and "encrypt existing cloud files" backfill. Rendered
+ *  only while connected. Self-contained: owns its own count/progress/key
+ *  state and a long-lived re-encrypt progress listener. */
+function EncryptionTools() {
+  const [legacyCount, setLegacyCount] = useState<number | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number; failed: number } | null>(
+    null
+  );
+  const [running, setRunning] = useState(false);
+  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
+  const [showKey, setShowKey] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const refreshCount = useCallback(() => {
+    remoteLegacyCount()
+      .then(setLegacyCount)
+      .catch(() => setLegacyCount(null));
+  }, []);
+
+  useEffect(() => {
+    refreshCount();
+  }, [refreshCount]);
+
+  // One long-lived listener: the worker emits per-file events, we just count
+  // terminal states against the total we queued.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onRemoteReencryptProgress((p) => {
+      if (p.status === 'success' || p.status === 'error') {
+        setProgress((prev) =>
+          prev
+            ? {
+                ...prev,
+                done: prev.done + 1,
+                failed: prev.failed + (p.status === 'error' ? 1 : 0),
+              }
+            : prev
+        );
+      }
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // When every queued file has reached a terminal state, stop and refresh the
+  // remaining-raw count from the DB.
+  useEffect(() => {
+    if (running && progress && progress.done >= progress.total) {
+      setRunning(false);
+      refreshCount();
+    }
+  }, [running, progress, refreshCount]);
+
+  const handleEncryptAll = async () => {
+    setErr(null);
+    try {
+      const total = await reencryptLegacy();
+      if (total === 0) {
+        refreshCount();
+        return;
+      }
+      setProgress({ done: 0, total, failed: 0 });
+      setRunning(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleToggleKey = async () => {
+    setErr(null);
+    try {
+      if (!recoveryKey) setRecoveryKey(await remoteRecoveryKey());
+      setShowKey((s) => !s);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleCopyKey = async () => {
+    setErr(null);
+    try {
+      const key = recoveryKey ?? (await remoteRecoveryKey());
+      setRecoveryKey(key);
+      await navigator.clipboard.writeText(key);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  return (
+    <div className="space-y-3 rounded-xl border border-border p-3">
+      <div className="flex items-center gap-2">
+        <Lock className="h-3.5 w-3.5 text-primary" />
+        <h4 className="text-xs font-semibold">Encryption</h4>
+      </div>
+
+      {/* Recovery key backup */}
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleToggleKey}>
+            <KeyRound className="h-3 w-3 mr-1" />
+            {showKey ? 'Hide recovery key' : 'Show recovery key'}
+          </Button>
+          {recoveryKey && (
+            <Button variant="ghost" size="sm" onClick={handleCopyKey}>
+              {copied ? <Check className="h-3 w-3 mr-1" /> : <Copy className="h-3 w-3 mr-1" />}
+              {copied ? 'Copied' : 'Copy'}
+            </Button>
+          )}
+        </div>
+        {showKey && recoveryKey && (
+          <code className="block break-all rounded-lg bg-secondary px-2 py-1.5 font-mono text-[11px]">
+            {recoveryKey}
+          </code>
+        )}
+        <p className="flex items-start gap-1 text-xs text-amber-600 dark:text-amber-500">
+          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>
+            Copy this key and back it up somewhere safe and offline. Without it, encrypted cloud
+            files cannot be recovered if this device's database is lost.
+          </span>
+        </p>
+      </div>
+
+      {/* Legacy backfill */}
+      <div className="border-t border-border pt-3">
+        {legacyCount === null ? null : legacyCount === 0 && !running ? (
+          <p className="flex items-center gap-1.5 text-xs text-success">
+            <ShieldCheck className="h-3.5 w-3.5" />
+            All cloud files are encrypted.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              {running && progress
+                ? `Encrypting ${progress.done} / ${progress.total}${
+                    progress.failed > 0 ? ` (${progress.failed} failed)` : ''
+                  }…`
+                : `${legacyCount} file${legacyCount === 1 ? '' : 's'} uploaded before encryption ${
+                    legacyCount === 1 ? 'is' : 'are'
+                  } still stored raw on Baidu.`}
+            </p>
+            <Button size="sm" onClick={handleEncryptAll} disabled={running}>
+              {running ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-1" />
+              ) : (
+                <Lock className="h-3 w-3 mr-1" />
+              )}
+              {running ? 'Encrypting…' : 'Encrypt existing files'}
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {err && (
+        <div className="flex items-start gap-2 rounded-lg bg-destructive/5 p-2 text-xs text-destructive">
+          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+          <span className="flex-1 break-words">{err}</span>
         </div>
       )}
     </div>
