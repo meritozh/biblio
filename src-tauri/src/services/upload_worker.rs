@@ -115,7 +115,23 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
         return;
     }
 
-    let source_path = std::path::PathBuf::from(&local_path);
+    // `files.path` is stored relative to `storage_path`, so resolve to
+    // absolute before any filesystem op — otherwise every row fails the
+    // existence check below. `storage_kind` is always "local" here
+    // (gated above), but pass it through for correctness.
+    let roots = match crate::commands::settings::load_path_roots(&pool).await {
+        Ok(r) => r,
+        Err(e) => {
+            emit(app, file_id, &display_name, "error", Some(e));
+            return;
+        }
+    };
+    let source_path = crate::path_resolve::to_absolute(
+        &storage_kind,
+        &local_path,
+        &roots.storage_path,
+        &roots.app_root,
+    );
     if !source_path.exists() {
         emit(
             app,
@@ -148,8 +164,8 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
 
     let mut counter = 1u32;
     loop {
-        // De-dup check against stored RELATIVE paths — the column is
-        // root-relative after migration v11.
+        // De-dup check against stored RELATIVE paths — the column holds
+        // paths relative to the storage root.
         let existing: Result<Option<(i64,)>, _> =
             sqlx::query_as("SELECT id FROM files WHERE path = ? AND id != ?")
                 .bind(&relative_path)
