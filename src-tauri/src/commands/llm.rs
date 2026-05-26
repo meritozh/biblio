@@ -60,17 +60,6 @@ pub struct LlmContentMetadata {
     pub tags: Vec<String>,
 }
 
-/// Schema for the cleanup-time category-only re-analysis. No `tags` field
-/// so the LLM has no "genre" slot competing with the category pick — and
-/// the prompt that loads alongside this struct can drill in on category
-/// selection without splitting attention.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct LlmCategoryOnly {
-    /// Category from the available list; null when nothing fits.
-    #[serde(default, deserialize_with = "lenient_opt_string")]
-    pub category: Option<String>,
-}
-
 /// Comic-path Call 1: LLM ranks up to 5 filenames most likely to be the
 /// cover image of an archive based on their names (no image data).
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -322,61 +311,6 @@ pub async fn extract_content_metadata(
         Ok(result) => result.map_err(|e| format!("LLM content analysis failed: {e}")),
         Err(_) => Err(format!(
             "LLM content analysis timed out after {}s",
-            LLM_REQUEST_TIMEOUT.as_secs()
-        )),
-    }
-}
-
-/// Cleanup-time category-only re-analysis. Loads the dedicated
-/// `(novel, category_reanalyze)` prompt so the rules can drill in on
-/// category selection without the dual-field schema's "genre" pull.
-/// Returns just the picked category name (or None if the LLM declined).
-pub async fn extract_category_only(
-    config: &LlmConfig,
-    pool: &sqlx::SqlitePool,
-    content: &str,
-    display_name_hint: Option<&str>,
-    categories: &[String],
-) -> Result<LlmCategoryOnly, String> {
-    let client = build_client(config)?;
-    let rules = crate::commands::prompts::prompt_get_active(
-        pool,
-        crate::schema::SchemaSlug::Novel,
-        "category_reanalyze",
-    )
-    .await?;
-
-    let categories_str = if categories.is_empty() {
-        "None defined yet".to_string()
-    } else {
-        categories.join(", ")
-    };
-
-    let preamble = format!(
-        "{}\n\n\
-        Pick the best-fit category for this novel based on the content samples.\n\
-        Available categories: {}\n\n\
-        Rules:\n{}",
-        LANGUAGE_INSTRUCTION, categories_str, rules
-    );
-
-    let mut input = String::new();
-    if let Some(name) = display_name_hint {
-        input.push_str(&format!("Title: {}\n\n", name));
-    }
-    input.push_str("File content samples:\n");
-    input.push_str(content);
-
-    let extractor = client
-        .extractor::<LlmCategoryOnly>(&config.model)
-        .preamble(&preamble)
-        .max_tokens(256)
-        .build();
-
-    match tokio::time::timeout(LLM_REQUEST_TIMEOUT, extractor.extract(&input)).await {
-        Ok(result) => result.map_err(|e| format!("LLM category analysis failed: {e}")),
-        Err(_) => Err(format!(
-            "LLM category analysis timed out after {}s",
             LLM_REQUEST_TIMEOUT.as_secs()
         )),
     }

@@ -147,7 +147,6 @@ export const PROMPT_STEPS_BY_SCHEMA: Readonly<
   novel: [
     { step: 'filename', label: 'Filename extraction' },
     { step: 'content', label: 'Content analysis' },
-    { step: 'category_reanalyze', label: 'Category re-analysis (cleanup)' },
   ],
   comic: [
     { step: 'filename', label: 'Filename extraction' },

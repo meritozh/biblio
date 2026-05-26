@@ -43,7 +43,6 @@ interface PromptFormState {
 const STEP_LABEL: Record<PromptStep, string> = {
   filename: 'filename',
   content: 'content',
-  category_reanalyze: 'category re-analysis',
   cover_pick: 'cover',
   filename_folder: 'folder filename',
 };
@@ -58,9 +57,6 @@ function promptHelpText(slug: SchemaSlug, step: PromptStep): string {
   }
   if (slug === 'novel' && step === 'filename') {
     return 'Filename extraction has no runtime context — this prompt is used verbatim.';
-  }
-  if (slug === 'novel' && step === 'category_reanalyze') {
-    return 'Used by the /cleanup "Re-classify novels for category" action. The available categories list is automatically appended at runtime.';
   }
   if (slug === 'comic' && step === 'filename') {
     return 'Used for comic archive filenames (.zip / .cbz / .rar / .cbr). No runtime context appended.';

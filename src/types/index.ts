@@ -322,7 +322,6 @@ export type PromptMimeGroup = 'text' | 'archive' | 'image_folder';
 export type PromptStep =
   | 'filename'
   | 'content'
-  | 'category_reanalyze'
   | 'cover_pick'
   | 'filename_folder';
 
