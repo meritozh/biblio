@@ -2912,9 +2912,10 @@ pub async fn file_check_status(
 
     // Resolve stored relative path to absolute before stat-ing. Without
     // the resolve, `Path::exists()` would test a non-existent relative
-    // path and mark every row as 'missing' after the v11 migration.
+    // path and mark every row as 'missing' once paths went root-relative.
     //
-    // Remote-row behavior CHANGED in the v11 refactor: previously this
+    // Remote-row behavior CHANGED with the path-relativization refactor:
+    // previously this
     // function stat'd every row's path verbatim, which for remote rows
     // was a Baidu provider path (e.g. `/apps/biblio/<base64>.cbz`) that
     // never exists locally → every remote was incorrectly marked

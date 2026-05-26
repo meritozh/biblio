@@ -12,8 +12,8 @@
 //!
 //! Resolution is defensive: if a stored value is already absolute
 //! (starts with `/`), it passes through unchanged. This survives:
-//!   1. Rows the v11 migration couldn't relativize (they didn't start
-//!      with the configured root prefix).
+//!   1. Rows the path-relativization migration couldn't relativize (they
+//!      didn't start with the configured root prefix).
 //!   2. Manual DB edits.
 //!   3. Future schema evolution where some columns might remain absolute.
 

@@ -264,7 +264,7 @@ pub async fn set_default_impl(
     .map_err(|e| e.to_string())?;
 
     let (slug_opt, step) = target.ok_or_else(|| "PROMPT_NOT_FOUND".to_string())?;
-    // Rows written before migration v7 may have schema_slug=NULL. Refuse
+    // Legacy rows written before schema_slug existed may have it NULL. Refuse
     // to flip the active prompt for those — they need to be edited (the
     // update path will populate the column) before they can be activated.
     let slug = slug_opt.ok_or_else(|| "PROMPT_MISSING_SCHEMA_SLUG".to_string())?;
