@@ -214,14 +214,21 @@ export function FileList({
     return s;
   }, [inFlightUploadIds, inFlightDownloadIds, inFlightDeleteIds]);
 
-  // Resolve incoming ids to entries, dropping rows whose extension is no
-  // longer in the supported set. Missing ids (briefly possible during
-  // the ms between `removeFile` and the parent re-render) are skipped.
+  // Resolve incoming ids to entries. Importability is judged by the real
+  // filename's extension — but remote objects use an opaque, extension-less
+  // storage path (the real name lives in `original_path`), so judge those by
+  // `original_path` and never drop a remote library row: it's already in the
+  // catalog and its type can't be reconstructed from the opaque path. Local
+  // rows keep the gate; their `path` IS the real file on disk. Missing ids
+  // (briefly possible between `removeFile` and the parent re-render) skip.
   const importableEntries = useMemo(() => {
     const out: FileEntry[] = [];
     for (const id of ids) {
       const f = byId.get(id);
-      if (f && isImportable(f.path)) out.push(f);
+      if (!f) continue;
+      if (f.storage_kind === 'remote' || isImportable(f.original_path ?? f.path)) {
+        out.push(f);
+      }
     }
     return out;
   }, [ids, byId]);
