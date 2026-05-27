@@ -3385,7 +3385,6 @@ mod filename_tests {
 
 #[cfg(test)]
 mod reverse_index_tests {
-    use super::*;
     use crate::commands::test_helpers::setup_db;
 
     // Note: tests for `list_files_by_tag_impl` and `list_files_by_author_impl`
