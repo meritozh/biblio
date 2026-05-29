@@ -298,6 +298,11 @@ export interface RemoteDownloadProgress {
   file_name: string;
   status: 'pending' | 'downloading' | 'success' | 'error';
   error?: string;
+  /** Absolute path of the freshly-written cache file. Carried on the
+   *  terminal `success` event so the file-store can be patched with the
+   *  real path (not a sentinel) — "Show in Finder" calls
+   *  `revealItemInDir(local_cache_path)` and needs a real fs path. */
+  local_cache_path?: string | null;
 }
 
 /** Bulk-delete progress, emitted by the delete_worker. Single-row deletes
