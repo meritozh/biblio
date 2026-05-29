@@ -30,7 +30,19 @@ pub struct RemoteDownloadProgressEvent {
     pub file_id: i64,
     pub file_name: String,
     pub status: String,
+    /// Present only on `error` events. `skip_serializing_if` keeps the JSON
+    /// shape honest: success/downloading events omit the field entirely
+    /// instead of sending `null`, so the TS type's `error?: string` (no
+    /// `null`) holds, and store readers don't silently overwrite to `null`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Absolute path of the newly-written cache file. Present only on the
+    /// terminal `success` event — every other status omits it from the JSON.
+    /// The frontend patches `files.local_cache_path` with this value so
+    /// "Show in Finder" / Open / etc. can resolve to a real fs path without
+    /// a refetch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_cache_path: Option<String>,
 }
 
 fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
@@ -60,7 +72,7 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
     let pool = match get_sqlite_pool(&instances, "sqlite:biblio.db") {
         Ok(p) => p,
         Err(e) => {
-            emit(app, file_id, "", "error", Some(e));
+            emit(app, file_id, "", "error", Some(e), None);
             return;
         }
     };
@@ -81,7 +93,7 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
         {
             Ok(r) => r,
             Err(e) => {
-                emit(app, file_id, "", "error", Some(e.to_string()));
+                emit(app, file_id, "", "error", Some(e.to_string()), None);
                 return;
             }
         };
@@ -89,7 +101,7 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
     let Some((remote_path, display_name, original_path, remote_fs_id, storage_kind, remote_container)) =
         row
     else {
-        emit(app, file_id, "", "error", Some("File not found".into()));
+        emit(app, file_id, "", "error", Some("File not found".into()), None);
         return;
     };
 
@@ -100,6 +112,7 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
             &display_name,
             "error",
             Some("File is not in remote storage".into()),
+            None,
         );
         return;
     }
@@ -111,6 +124,7 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
             &display_name,
             "error",
             Some("Row missing remote_fs_id; cannot resolve dlink".into()),
+            None,
         );
         return;
     };
@@ -121,7 +135,7 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
     let storage_root = match read_storage_root(&pool).await {
         Ok(p) => p,
         Err(e) => {
-            emit(app, file_id, &display_name, "error", Some(e));
+            emit(app, file_id, &display_name, "error", Some(e), None);
             return;
         }
     };
@@ -135,12 +149,12 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
     let basename = derive_basename(&remote_path, original_path.as_deref(), &display_name);
     let cache_path = cache_dir.join(format!("{file_id}_{basename}"));
 
-    emit(app, file_id, &display_name, "downloading", None);
+    emit(app, file_id, &display_name, "downloading", None, None);
 
     let access_token = match ensure_access_token(&pool).await {
         Ok(t) => t,
         Err(e) => {
-            emit(app, file_id, &display_name, "error", Some(e));
+            emit(app, file_id, &display_name, "error", Some(e), None);
             return;
         }
     };
@@ -148,7 +162,7 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
     let dlink = match get_download_dlink(&access_token, &fs_id).await {
         Ok(d) => d,
         Err(e) => {
-            emit(app, file_id, &display_name, "error", Some(e.0));
+            emit(app, file_id, &display_name, "error", Some(e.0), None);
             return;
         }
     };
@@ -164,7 +178,7 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
     };
 
     if let Err(e) = download_to(&access_token, &dlink, &download_target).await {
-        emit(app, file_id, &display_name, "error", Some(e.0));
+        emit(app, file_id, &display_name, "error", Some(e.0), None);
         return;
     }
 
@@ -173,7 +187,7 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
             Ok(k) => k,
             Err(e) => {
                 let _ = std::fs::remove_file(&download_target);
-                emit(app, file_id, &display_name, "error", Some(e));
+                emit(app, file_id, &display_name, "error", Some(e), None);
                 return;
             }
         };
@@ -185,6 +199,7 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
                 &display_name,
                 "error",
                 Some(format!("container unwrap failed: {e}")),
+                None,
             );
             return;
         }
@@ -211,11 +226,23 @@ async fn process_one(app: &AppHandle, job: DownloadJob) {
             &display_name,
             "error",
             Some(format!("DB update failed: {e}")),
+            None,
         );
         return;
     }
 
-    emit(app, file_id, &display_name, "success", None);
+    // Single source of truth for the event shape: route success through the
+    // same emit() helper, with the absolute cache path moved (not cloned)
+    // into the Option. A future field on RemoteDownloadProgressEvent only
+    // needs the helper updated, not a second inline struct literal.
+    emit(
+        app,
+        file_id,
+        &display_name,
+        "success",
+        None,
+        Some(cache_path_str),
+    );
 }
 
 async fn read_storage_root(pool: &sqlx::SqlitePool) -> Result<PathBuf, String> {
@@ -264,7 +291,22 @@ fn derive_basename(remote_path: &str, original_path: Option<&str>, display_name:
     }
 }
 
-fn emit(app: &AppHandle, file_id: i64, file_name: &str, status: &str, error: Option<String>) {
+/// Build and emit a `remote-download-progress` event. The single struct
+/// literal in this helper is the only place the event shape lives — every
+/// caller (downloading / error / success) routes through it so a new field
+/// can never drift between the terminal-success path and the rest.
+///
+/// `local_cache_path` is `Some(...)` only on the `success` event; the struct
+/// uses `skip_serializing_if` so non-success events omit the field on the
+/// wire (TS handler sees `undefined`, not `null`).
+fn emit(
+    app: &AppHandle,
+    file_id: i64,
+    file_name: &str,
+    status: &str,
+    error: Option<String>,
+    local_cache_path: Option<String>,
+) {
     let _ = app.emit(
         "remote-download-progress",
         &RemoteDownloadProgressEvent {
@@ -272,6 +314,7 @@ fn emit(app: &AppHandle, file_id: i64, file_name: &str, status: &str, error: Opt
             file_name: file_name.to_string(),
             status: status.to_string(),
             error,
+            local_cache_path,
         },
     );
 }
