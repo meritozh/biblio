@@ -104,7 +104,9 @@ export async function enqueueDownload(
   const newIds = fileIds.filter((id) => !inFlightIds.has(id));
   if (newIds.length === 0) return;
 
-  const newRows: RemoteDownloadProgress[] = newIds.map((id) => ({
+  const uniqueIds = Array.from(new Set(newIds));
+
+  const newRows: RemoteDownloadProgress[] = uniqueIds.map((id) => ({
     file_id: id,
     file_name: fileNames.get(id) ?? `File ${id}`,
     status: 'pending',
@@ -117,7 +119,7 @@ export async function enqueueDownload(
   // produce two rows with the same file_id, and the listener's `.map`
   // matches by file_id — both rows would then update in lockstep on every
   // event, indistinguishable in the UI.
-  const newIdSet = new Set(newIds);
+  const newIdSet = new Set(uniqueIds);
   store.setState((s) => ({
     ...s,
     downloads: [
@@ -129,9 +131,9 @@ export async function enqueueDownload(
   }));
 
   try {
-    await enqueueRemoteDownload(newIds);
+    await enqueueRemoteDownload(uniqueIds);
   } catch (err) {
-    const ids = new Set(newIds);
+    const ids = new Set(uniqueIds);
     const errMsg = translateError(err instanceof Error ? err.message : String(err));
     store.setState((s) => ({
       ...s,
