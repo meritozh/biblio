@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use tauri::Emitter;
 
@@ -101,13 +100,13 @@ impl Pipeline {
 
         let mut results: Vec<FileContext> = Vec::new();
         while let Some(mut ctx) = rx.recv().await {
-            if env.cancelled.load(Ordering::Relaxed) {
+            if env.cancel.is_cancelled(env.cancel_generation) {
                 break;
             }
             ctx.processed_ordinal = results.len() + 1;
 
             for node in self.phase2.iter() {
-                if env.cancelled.load(Ordering::Relaxed) {
+                if env.cancel.is_cancelled(env.cancel_generation) {
                     break;
                 }
                 if !node.applies(&ctx, &env) {
@@ -130,7 +129,7 @@ impl Pipeline {
             "pipeline run_batch finished — {} of {} files processed, cancelled={}",
             results.len(),
             total,
-            env.cancelled.load(Ordering::Relaxed)
+            env.cancel.is_cancelled(env.cancel_generation)
         );
 
         results

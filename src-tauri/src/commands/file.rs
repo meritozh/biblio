@@ -1420,15 +1420,12 @@ pub async fn file_regenerate_missing_covers(
         });
     }
 
-    // Reset the global cancel flag before launching the pipeline.
-    // `cancel_processing` flips it true whenever the import dialog
-    // closes; without a reset here, a recovery run after any prior
-    // import session bails immediately with `cancelled=true` and zero
-    // files processed. `enqueue_import` does the same reset for the
-    // normal import path.
-    app.state::<crate::ProcessingCancelled>()
-        .0
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+    // Claim a fresh cancellation generation for this recovery run. A prior
+    // `cancel_processing` only covers earlier generations, so this batch
+    // starts un-cancelled without resetting (and un-cancelling) any other
+    // still-draining batch. `enqueue_import` claims its generation the same
+    // way for the normal import path.
+    let generation = app.state::<crate::ProcessingCancelled>().0.begin();
 
     // Build the cover-only subset of the comic pipeline. Re-using the
     // node implementations directly guarantees byte-for-byte parity with
@@ -1441,7 +1438,7 @@ pub async fn file_regenerate_missing_covers(
         .add_phase2(crate::pipeline::nodes::CoverCompressNode)
         .build();
 
-    let env = crate::commands::processing::build_pipeline_env(&app).await?;
+    let env = crate::commands::processing::build_pipeline_env(&app, generation).await?;
     let paths: Vec<PathBuf> = runnable.iter().map(|(p, _, _)| p.clone()).collect();
 
     // run_batch caps Phase-1 fan-out internally (PHASE1_CONCURRENCY=8)

@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
 use tauri_plugin_sql::{DbInstances, DbPool};
 
@@ -151,7 +150,10 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
 #[tauri::command]
 pub async fn cancel_processing(app: tauri::AppHandle) {
     let cancelled = app.state::<ProcessingCancelled>();
-    cancelled.0.store(true, Ordering::Relaxed);
+    // Cancel every batch claimed so far. A batch enqueued AFTER this call
+    // claims a higher generation and is unaffected, so re-adding files after
+    // a cancel no longer un-cancels the still-draining prior batch.
+    cancelled.0.cancel_all();
     // Intentionally do NOT clear `PreparedCoverCache` here. One caller of
     // this command is the import dialog's commit button, which fires it to
     // halt still-queued analysis work right BEFORE running the commit loop
@@ -181,10 +183,10 @@ pub async fn enqueue_import(
     paths: Vec<String>,
     path_folder_roots: Option<HashMap<String, String>>,
 ) -> Result<(), String> {
-    // Reset cancellation so new work after a prior cancel proceeds normally.
-    app.state::<ProcessingCancelled>()
-        .0
-        .store(false, Ordering::Relaxed);
+    // Claim a fresh cancellation generation for this batch. A prior cancel
+    // only covers earlier generations, so this batch starts un-cancelled
+    // without resetting (and thereby un-cancelling) any still-draining batch.
+    let generation = app.state::<ProcessingCancelled>().0.begin();
 
     let path_folder_roots = path_folder_roots.unwrap_or_default();
     let parent_authors = derive_parent_authors(&paths, &path_folder_roots);
@@ -196,6 +198,7 @@ pub async fn enqueue_import(
         let job = ImportJob {
             path,
             parent_authors: candidates,
+            generation,
         };
         sender.0.send(job).map_err(|e| {
             format!("Import queue is closed: {e}. The worker has stopped accepting jobs.")
@@ -212,6 +215,7 @@ pub(crate) async fn process_import_path(
     app: &tauri::AppHandle,
     path: PathBuf,
     parent_authors: Vec<String>,
+    generation: u64,
 ) -> Result<(), String> {
     use crate::pipeline::nodes::{FileKind, kind_for_path};
 
@@ -233,7 +237,7 @@ pub(crate) async fn process_import_path(
         return Ok(());
     };
 
-    let env = build_pipeline_env(app).await?;
+    let env = build_pipeline_env(app, generation).await?;
 
     let pipeline = match kind {
         FileKind::Novel => pipeline::nodes::novel_pipeline()
@@ -254,11 +258,13 @@ pub(crate) async fn process_import_path(
     Ok(())
 }
 
-pub(crate) async fn build_pipeline_env(app: &tauri::AppHandle) -> Result<Arc<PipelineEnv>, String> {
+pub(crate) async fn build_pipeline_env(
+    app: &tauri::AppHandle,
+    generation: u64,
+) -> Result<Arc<PipelineEnv>, String> {
     use super::{Author, Category, FileEntry, Tag};
 
-    let cancelled: Arc<std::sync::atomic::AtomicBool> =
-        Arc::clone(&app.state::<ProcessingCancelled>().0);
+    let cancel = Arc::clone(&app.state::<ProcessingCancelled>().0);
 
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
@@ -322,7 +328,8 @@ pub(crate) async fn build_pipeline_env(app: &tauri::AppHandle) -> Result<Arc<Pip
         pool,
         llm_config,
         app: app.clone(),
-        cancelled,
+        cancel,
+        cancel_generation: generation,
         category_map,
         author_map,
         tag_map,

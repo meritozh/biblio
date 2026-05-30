@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
+use crate::ProcessingCancel;
 use crate::commands::FileEntry;
 use crate::commands::llm::LlmConfig;
 
@@ -19,7 +19,11 @@ pub struct PipelineEnv {
     pub pool: sqlx::SqlitePool,
     pub llm_config: LlmConfig,
     pub app: tauri::AppHandle,
-    pub cancelled: Arc<AtomicBool>,
+    /// Shared cancellation state plus this batch's generation. The runner
+    /// checks `cancel.is_cancelled(cancel_generation)` so a cancel of an
+    /// earlier batch can't stop this one and vice versa.
+    pub cancel: Arc<ProcessingCancel>,
+    pub cancel_generation: u64,
 
     pub category_map: HashMap<String, i64>,
     pub author_map: HashMap<String, i64>,
