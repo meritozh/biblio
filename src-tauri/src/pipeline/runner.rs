@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use tauri::Emitter;
 
@@ -61,9 +60,15 @@ impl Pipeline {
 
         tokio::spawn(async move {
             for (idx, path) in paths.into_iter().enumerate() {
+                if dispatch_env.cancel.is_cancelled(dispatch_env.cancel_generation) {
+                    break;
+                }
                 let Ok(permit) = sem.clone().acquire_owned().await else {
                     break;
                 };
+                if dispatch_env.cancel.is_cancelled(dispatch_env.cancel_generation) {
+                    break;
+                }
                 let tx = tx.clone();
                 let phase1 = Arc::clone(&phase1);
                 let env = Arc::clone(&dispatch_env);
@@ -101,13 +106,13 @@ impl Pipeline {
 
         let mut results: Vec<FileContext> = Vec::new();
         while let Some(mut ctx) = rx.recv().await {
-            if env.cancelled.load(Ordering::Relaxed) {
+            if env.cancel.is_cancelled(env.cancel_generation) {
                 break;
             }
             ctx.processed_ordinal = results.len() + 1;
 
             for node in self.phase2.iter() {
-                if env.cancelled.load(Ordering::Relaxed) {
+                if env.cancel.is_cancelled(env.cancel_generation) {
                     break;
                 }
                 if !node.applies(&ctx, &env) {
@@ -130,7 +135,7 @@ impl Pipeline {
             "pipeline run_batch finished — {} of {} files processed, cancelled={}",
             results.len(),
             total,
-            env.cancelled.load(Ordering::Relaxed)
+            env.cancel.is_cancelled(env.cancel_generation)
         );
 
         results

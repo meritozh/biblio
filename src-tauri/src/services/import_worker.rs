@@ -11,7 +11,6 @@
 //! channel without touching the DB.
 
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 
 use tauri::{AppHandle, Manager};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -26,6 +25,10 @@ use crate::commands::processing::process_import_path;
 pub struct ImportJob {
     pub path: PathBuf,
     pub parent_authors: Vec<String>,
+    /// Cancellation generation claimed by the `enqueue_import` that created
+    /// this job. The worker skips the job iff this generation was cancelled,
+    /// so a cancel of an earlier batch can't drop a later batch's jobs.
+    pub generation: u64,
 }
 
 pub struct ImportQueueSender(pub UnboundedSender<ImportJob>);
@@ -38,18 +41,20 @@ pub fn spawn(app: AppHandle) -> UnboundedSender<ImportJob> {
 
 async fn run(app: AppHandle, mut rx: UnboundedReceiver<ImportJob>) {
     while let Some(job) = rx.recv().await {
-        // Honor cancel by draining without processing. The flag is reset by
-        // `enqueue_import` on the next user action so a future enqueue
-        // proceeds normally.
+        // Honor cancel by draining without processing — but only for the
+        // generation that was actually cancelled. A batch enqueued after a
+        // cancel claims a higher generation and runs normally.
         let cancelled = app
             .state::<ProcessingCancelled>()
             .0
-            .load(Ordering::Relaxed);
+            .is_cancelled(job.generation);
         if cancelled {
             continue;
         }
 
-        if let Err(e) = process_import_path(&app, job.path, job.parent_authors).await {
+        if let Err(e) =
+            process_import_path(&app, job.path, job.parent_authors, job.generation).await
+        {
             eprintln!("import worker: process_import_path failed: {e}");
         }
     }
