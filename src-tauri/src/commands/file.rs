@@ -1786,22 +1786,19 @@ pub async fn file_create(
         .map(|(v,)| v == "copy")
         .unwrap_or(false);
 
-    // Move or copy the file based on setting. Directory sources are
-    // packaged as a `.zip` straight into the destination, then the source
-    // folder is recursively removed (move-mode only).
+    // Stage the destination WITHOUT destroying the source yet. The row writes
+    // below run in one transaction; if any fail we roll back and delete the
+    // staged file, and because the source is still intact (the move-mode
+    // source delete is deferred until after commit) that cleanup can never
+    // lose data. Previously the source was moved/removed before the INSERT, so
+    // a DB failure orphaned the bytes (move mode) or left a row with partial
+    // children (a mid-loop child-insert failure).
     let final_path = if source_is_dir {
-        let zipped = zip_image_dir(&source_canonical, &dest_path)?;
-        if !use_copy {
-            // Best-effort: orphan-on-failure is acceptable here; the DB
-            // insert below is the source of truth, and the user can clean
-            // up the source folder manually.
-            let _ = fs::remove_dir_all(&source_canonical);
-        }
-        zipped
-    } else if use_copy {
-        copy_file(&source_canonical, &dest_path)?
+        zip_image_dir(&source_canonical, &dest_path)?
     } else {
-        move_file(&source_canonical, &dest_path)?
+        // Copy (not move) so the source survives a rolled-back transaction;
+        // the original is removed below only after the commit succeeds.
+        copy_file(&source_canonical, &dest_path)?
     };
     let final_path_str = final_path.to_string_lossy().to_string();
     // Store the destination path RELATIVE to storage_path so the user can
@@ -1811,77 +1808,113 @@ pub async fn file_create(
     let storage_path_str = storage_path.to_string_lossy();
     let stored_path = crate::path_resolve::to_relative_local(&final_path_str, &storage_path_str);
 
-    // Insert into database with in_storage=true
-    let result = sqlx::query(
-        "INSERT INTO files (path, display_name, category_id, in_storage, original_path, file_status, progress) VALUES (?, ?, ?, 1, ?, 'available', ?)"
-    )
-    .bind(&stored_path)
-    .bind(&validated_name)
-    .bind(category_id)
-    .bind(&path)  // original_path is the source path
-    .bind(&progress)
-    .execute(&pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    // Compress the cover (if any) BEFORE opening the transaction so a
+    // compression failure aborts before any DB write and the transaction
+    // stays short. Route through the shared compressor: user-uploaded
+    // replacements arrive uncompressed, and even pipeline-staged bytes
+    // (already JPEG'd by `CoverCompressNode`) round-trip cheaply through it,
+    // avoiding the 1 MB+ blobs the helper exists to prevent.
+    let _ = cover_mime_type;
+    let compressed_cover = match cover_data {
+        Some(data) => Some(
+            crate::commands::cover::compress_cover_bytes(&data)
+                .map_err(|e| format!("Failed to compress cover: {e}"))?,
+        ),
+        None => None,
+    };
 
-    let file_id = result.last_insert_rowid();
+    // All row writes (parent + tags + authors + metadata + cover) go through
+    // one transaction so a mid-sequence failure rolls back to nothing rather
+    // than leaving a row with partial children.
+    let insert_result: Result<i64, String> = async move {
+        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
 
-    // Insert tags
-    if let Some(tags) = tag_ids {
-        for tag_id in tags {
-            sqlx::query("INSERT INTO file_tags (file_id, tag_id) VALUES (?, ?)")
-                .bind(file_id)
-                .bind(tag_id)
-                .execute(&pool)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
-
-    // Insert authors
-    if let Some(authors) = author_ids {
-        for author_id in authors {
-            sqlx::query("INSERT INTO file_authors (file_id, author_id) VALUES (?, ?)")
-                .bind(file_id)
-                .bind(author_id)
-                .execute(&pool)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
-
-    // Insert metadata
-    if let Some(meta) = metadata {
-        for m in meta {
-            sqlx::query("INSERT INTO metadata (file_id, key, value, data_type) VALUES (?, ?, ?, ?)")
-                .bind(file_id)
-                .bind(&m.key)
-                .bind(&m.value)
-                .bind(m.data_type.unwrap_or_else(|| "text".to_string()))
-                .execute(&pool)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
-
-    if let Some(data) = cover_data {
-        // Route through the shared compressor: user-uploaded replacements
-        // arrive uncompressed here, and even pipeline-staged bytes (already
-        // JPEG'd by `CoverCompressNode`) round-trip cheaply through it.
-        // Skipping this branch would re-introduce the 1 MB+ cover blobs
-        // the helper exists to prevent.
-        let _ = cover_mime_type;
-        let compressed = crate::commands::cover::compress_cover_bytes(&data)
-            .map_err(|e| format!("Failed to compress cover: {e}"))?;
-        sqlx::query(
-            "INSERT OR REPLACE INTO covers (file_id, data, mime_type) VALUES (?, ?, ?)"
+        let result = sqlx::query(
+            "INSERT INTO files (path, display_name, category_id, in_storage, original_path, file_status, progress) VALUES (?, ?, ?, 1, ?, 'available', ?)"
         )
-        .bind(file_id)
-        .bind(&compressed)
-        .bind("image/jpeg")
-        .execute(&pool)
+        .bind(&stored_path)
+        .bind(&validated_name)
+        .bind(category_id)
+        .bind(&path)  // original_path is the source path
+        .bind(&progress)
+        .execute(&mut *tx)
         .await
-        .map_err(|e| format!("Failed to save cover: {}", e))?;
+        .map_err(|e| e.to_string())?;
+
+        let file_id = result.last_insert_rowid();
+
+        if let Some(tags) = tag_ids {
+            for tag_id in tags {
+                sqlx::query("INSERT INTO file_tags (file_id, tag_id) VALUES (?, ?)")
+                    .bind(file_id)
+                    .bind(tag_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
+        if let Some(authors) = author_ids {
+            for author_id in authors {
+                sqlx::query("INSERT INTO file_authors (file_id, author_id) VALUES (?, ?)")
+                    .bind(file_id)
+                    .bind(author_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
+        if let Some(meta) = metadata {
+            for m in meta {
+                sqlx::query("INSERT INTO metadata (file_id, key, value, data_type) VALUES (?, ?, ?, ?)")
+                    .bind(file_id)
+                    .bind(&m.key)
+                    .bind(&m.value)
+                    .bind(m.data_type.unwrap_or_else(|| "text".to_string()))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
+        if let Some(compressed) = &compressed_cover {
+            sqlx::query(
+                "INSERT OR REPLACE INTO covers (file_id, data, mime_type) VALUES (?, ?, ?)"
+            )
+            .bind(file_id)
+            .bind(compressed)
+            .bind("image/jpeg")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to save cover: {e}"))?;
+        }
+
+        tx.commit().await.map_err(|e| e.to_string())?;
+        Ok(file_id)
+    }
+    .await;
+
+    let file_id = match insert_result {
+        Ok(id) => id,
+        Err(e) => {
+            // DB rolled back — remove the staged destination so it doesn't
+            // leak as an orphan. The source is untouched (move-mode delete is
+            // deferred below), so retrying from the original is always safe.
+            let _ = fs::remove_file(&final_path);
+            return Err(e);
+        }
+    };
+
+    // DB committed. In move mode, remove the original source now that the
+    // import is durably recorded. Best-effort: a failed cleanup leaves a
+    // harmless duplicate at the source, never data loss.
+    if !use_copy {
+        if source_is_dir {
+            let _ = fs::remove_dir_all(&source_canonical);
+        } else {
+            let _ = fs::remove_file(&source_canonical);
+        }
     }
 
     Ok(FileCreateResponse { id: file_id })
