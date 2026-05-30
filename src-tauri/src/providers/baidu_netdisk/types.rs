@@ -26,7 +26,11 @@ impl From<&str> for BaiduError {
 
 impl From<reqwest::Error> for BaiduError {
     fn from(e: reqwest::Error) -> Self {
-        BaiduError(format!("HTTP error: {e}"))
+        // Strip the URL before stringifying: every Baidu request URL carries
+        // the access_token as a query param, and reqwest's Display embeds the
+        // full URL, which would leak the token into UI error messages and
+        // logs. `without_url` exists precisely to drop such sensitive bits.
+        BaiduError(format!("HTTP error: {}", e.without_url()))
     }
 }
 
