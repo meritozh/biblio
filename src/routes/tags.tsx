@@ -104,6 +104,7 @@ function TagsManagementPage() {
   const navigate = useNavigate();
   const [tags, setTags] = useState<TagWithUsage[]>([]);
   const [total, setTotal] = useState<number>(0);
+  const [fetchedOffset, setFetchedOffset] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -133,6 +134,7 @@ function TagsManagementPage() {
     ]);
     setTags(page.tags);
     setTotal(count);
+    setFetchedOffset(page.tags.length);
     setLoading(false);
   }, []);
 
@@ -141,28 +143,26 @@ function TagsManagementPage() {
   }, [reload]);
 
   const handleLoadMore = useCallback(async () => {
-    if (loadingMore || tags.length >= total) return;
+    if (loadingMore || fetchedOffset >= total) return;
     setLoadingMore(true);
     try {
       const page = await tagList({
         includeUsage: true,
         limit: PAGE_SIZE,
-        offset: tags.length,
+        offset: fetchedOffset,
       });
-      // A local `handleCreate` inserts a row and bumps `total`, so
-      // `tags.length` no longer equals the number of *server* rows already
-      // fetched — using it as the offset can re-request a row we already
-      // hold (or skip one). Dedup by id when appending so an overlapping
-      // page never duplicates a row in the list.
+      // Dedup by id when appending so an overlapping page never duplicates
+      // a row in the list.
       setTags((prev) => {
         const seen = new Set(prev.map((t) => t.id));
         const additions = page.tags.filter((t) => !seen.has(t.id));
         return additions.length === 0 ? prev : [...prev, ...additions];
       });
+      setFetchedOffset((prev) => prev + page.tags.length);
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, tags.length, total]);
+  }, [loadingMore, fetchedOffset, total]);
 
   const handleCreate = async () => {
     const trimmed = newTagName.trim();

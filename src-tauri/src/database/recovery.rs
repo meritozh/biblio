@@ -120,20 +120,21 @@ impl DatabaseRecovery {
 
     #[allow(dead_code)]
     pub fn list_backups(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
-        let data_dir = app.path().app_data_dir()
-            .map_err(|e| format!("Could not get app data directory: {}", e))?;
+        let config_dir = app.path().app_config_dir()
+            .map_err(|e| format!("Could not get app config directory: {}", e))?;
 
-        if !data_dir.exists() {
+        if !config_dir.exists() {
             return Ok(Vec::new());
         }
 
-        let backups: Vec<PathBuf> = fs::read_dir(&data_dir)
+        let backups: Vec<PathBuf> = fs::read_dir(&config_dir)
             .map_err(|e| format!("Failed to read directory: {}", e))?
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
             .filter(|path| {
-                path.extension()
-                    .map(|ext| ext == "backup" || ext == "corrupted")
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|name| name.starts_with("biblio.db") && (name.ends_with(".backup") || name.ends_with(".corrupted")))
                     .unwrap_or(false)
             })
             .collect();
