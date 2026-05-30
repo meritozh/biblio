@@ -216,17 +216,20 @@ export function FileList({
 
   // Resolve incoming ids to entries. Importability is judged by the real
   // filename's extension — but remote objects use an opaque, extension-less
-  // storage path (the real name lives in `original_path`), so judge those by
-  // `original_path` and never drop a remote library row: it's already in the
-  // catalog and its type can't be reconstructed from the opaque path. Local
-  // rows keep the gate; their `path` IS the real file on disk. Missing ids
+  // storage path (the real name lives in `original_path`), so never drop a
+  // remote library row: it's already in the catalog and its type can't be
+  // reconstructed from the opaque path. Local rows judge by `path` — the real
+  // file on disk, which always carries a valid archive/text extension after
+  // import. (Judging local rows by `original_path` dropped folder→zip imports,
+  // whose source `original_path` is a directory with no extension, so a comic
+  // imported from an image folder vanished from the grid.) Missing ids
   // (briefly possible between `removeFile` and the parent re-render) skip.
   const importableEntries = useMemo(() => {
     const out: FileEntry[] = [];
     for (const id of ids) {
       const f = byId.get(id);
       if (!f) continue;
-      if (f.storage_kind === 'remote' || isImportable(f.original_path ?? f.path)) {
+      if (f.storage_kind === 'remote' || isImportable(f.path)) {
         out.push(f);
       }
     }
