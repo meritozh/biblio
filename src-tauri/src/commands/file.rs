@@ -1815,7 +1815,11 @@ pub async fn file_create(
     let compressed_cover = match cover_data {
         Some(data) => Some(
             crate::commands::cover::compress_cover_bytes(&data)
-                .map_err(|e| format!("Failed to compress cover: {e}"))?,
+                .map_err(|e| {
+                    // Clean up the staged destination file on compression failure
+                    let _ = std::fs::remove_file(&final_path);
+                    format!("Failed to compress cover: {e}")
+                })?,
         ),
         None => None,
     };
