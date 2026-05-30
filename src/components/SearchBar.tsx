@@ -28,10 +28,19 @@ export function SearchBar({
   }, [onSearch]);
 
   // Skip the initial commit so mounting with a pre-filled value doesn't
-  // fire a redundant search before the user has typed anything.
-  const initialValueRef = useRef(value);
+  // fire a redundant search before the user has typed anything. Track the
+  // first effect run rather than comparing against the mount value:
+  // comparing meant that editing back to the initial value (e.g. deleting
+  // all input down to the empty string the search mounts with) short-
+  // circuited the commit, so `onSearch('')` never fired and the results
+  // stayed stuck on the last query — diverging from the clear button,
+  // which calls `onSearch('')` directly.
+  const isFirstRun = useRef(true);
   useEffect(() => {
-    if (value === initialValueRef.current) return;
+    if (isFirstRun.current) {
+      isFirstRun.current = false;
+      return;
+    }
     const id = window.setTimeout(() => {
       onSearchRef.current(value);
     }, debounceMs);
