@@ -1,6 +1,6 @@
 [package]
 name = "biblio"
-version = "0.5.1"
+version = "0.6.0"
 description = "A desktop application for organizing files by categories, tags, and searchable metadata"
 authors = ["meritozh"]
 edition = "2024"
