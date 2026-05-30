@@ -35,38 +35,28 @@ export function useView(
   const view = useViewState(key);
   const epoch = useRefreshEpoch();
 
-  // Per-key sequence counters so out-of-order reloads of the same key can't
-  // clobber a newer in-flight result. Each call claims a token and only writes
-  // when it is still the latest one for its key.
-  const seqRef = useRef<Map<string, number>>(new Map());
-
-  // Mirror the live view so `reload` can read the prior slice on error without
-  // depending on `view` (which would recreate the callback on every store
-  // change and retrigger the fetch effect).
-  const viewRef = useRef(view);
-  viewRef.current = view;
+  // Monotonic token per hook instance so out-of-order fetch resolutions can't
+  // clobber a newer result: each reload claims the next token, and only the
+  // call still holding the latest token is allowed to write into the store.
+  const reloadSeqRef = useRef(0);
 
   const reload = useCallback(async () => {
-    const seq = (seqRef.current.get(key) ?? 0) + 1;
-    seqRef.current.set(key, seq);
-    const isLatest = () => seqRef.current.get(key) === seq;
-
+    const seq = ++reloadSeqRef.current;
     setViewLoading(key, true);
     try {
       const result = await fetcher();
-      if (isLatest()) {
-        setView(key, result.files, result.total);
-      }
+      // A newer reload started while this fetch was in flight — drop this
+      // stale result so it doesn't overwrite the newer one.
+      if (seq !== reloadSeqRef.current) return;
+      setView(key, result.files, result.total);
     } catch (error) {
       console.error('useView fetch failed:', error);
-      if (isLatest()) {
-        // Keep the prior rows on a transient failure; only fall back to an
-        // empty view when there is genuinely nothing to preserve.
-        if (viewRef.current.ids.length === 0) {
-          setView(key, [], 0);
-        } else {
-          setViewLoading(key, false);
-        }
+      // Keep the prior rows on a transient failure — only clear the loading
+      // flag. Wiping to an empty view on every error blanks a populated grid
+      // on a single hiccup; stale rows beat a blank screen. Guard on the
+      // token so a stale failure doesn't clear a newer reload's spinner.
+      if (seq === reloadSeqRef.current) {
+        setViewLoading(key, false);
       }
     }
   }, [key, fetcher]);
