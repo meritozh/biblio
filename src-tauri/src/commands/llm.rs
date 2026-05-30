@@ -221,6 +221,13 @@ pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String
 /// on this file and let Phase 2 continue with its error handling.
 const LLM_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Upper bound on how many tags we accept from a single content-analysis
+/// response. The model sometimes returns a long tail of low-confidence tags;
+/// trimming to the top few keeps suggestions focused and the library tidy.
+/// Applies to both the import pipeline and the cleanup re-analysis, since
+/// both go through `extract_content_metadata`.
+const MAX_CONTENT_TAGS: usize = 6;
+
 /// Prepended to every extraction preamble so model output stays in Simplified
 /// Chinese regardless of which active prompt the user has chosen.
 const LANGUAGE_INSTRUCTION: &str = "Output all Chinese text in Simplified Chinese (简体中文). Never use Traditional Chinese (繁體中文) characters.";
@@ -313,7 +320,12 @@ pub async fn extract_content_metadata(
         .build();
 
     match tokio::time::timeout(LLM_REQUEST_TIMEOUT, extractor.extract(&input)).await {
-        Ok(result) => result.map_err(|e| format!("LLM content analysis failed: {e}")),
+        Ok(result) => {
+            let mut meta = result.map_err(|e| format!("LLM content analysis failed: {e}"))?;
+            // Accept at most MAX_CONTENT_TAGS tags from the model; drop the rest.
+            meta.tags.truncate(MAX_CONTENT_TAGS);
+            Ok(meta)
+        }
         Err(_) => Err(format!(
             "LLM content analysis timed out after {}s",
             LLM_REQUEST_TIMEOUT.as_secs()
