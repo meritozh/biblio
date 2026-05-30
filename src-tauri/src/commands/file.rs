@@ -2993,6 +2993,15 @@ pub async fn file_replace(
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
+    // Validate the replacement source EXISTS before destroying the old copy.
+    // file_replace deletes the existing remote/local file + DB row and only
+    // then calls file_create — so if the new source has vanished (a stale
+    // Finder drag, an unmounted volume) the old library entry would be lost
+    // with no replacement. Failing here keeps the existing entry intact.
+    if !std::path::Path::new(&path).exists() {
+        return Err("SOURCE_FILE_NOT_FOUND".into());
+    }
+
     let existing: Option<(String, bool, String)> = sqlx::query_as(
         "SELECT path, in_storage, storage_kind FROM files WHERE id = ?",
     )
