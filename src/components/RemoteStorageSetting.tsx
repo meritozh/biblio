@@ -311,8 +311,9 @@ function EncryptionTools() {
   // terminal states against the total we queued.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let cancelled = false;
     onRemoteReencryptProgress((p) => {
-      if (p.status === 'success' || p.status === 'error') {
+      if (p.status === 'success' || p.status === 'error' || p.status === 'skipped') {
         setProgress((prev) =>
           prev
             ? {
@@ -324,10 +325,12 @@ function EncryptionTools() {
         );
       }
     }).then((u) => {
-      unlisten = u;
+      if (cancelled) u();
+      else unlisten = u;
     });
     return () => {
-      if (unlisten) unlisten();
+      cancelled = true;
+      unlisten?.();
     };
   }, []);
 

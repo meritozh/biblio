@@ -317,11 +317,13 @@ export interface RemoteDeleteProgress {
 /** Re-encrypt progress, emitted by the reencrypt_worker as it back-fills
  *  legacy raw remote files into the encrypted container. The two-stage
  *  pipeline emits `downloading` (download leg) then `uploading` (encrypt +
- *  upload leg) before a terminal `success` | `error`. */
+ *  upload leg) before a terminal `success` | `error`. `skipped` is the
+ *  terminal state for a queued row that turned ineligible before processing
+ *  (already encrypted / no longer remote) — counted as done by the UI. */
 export interface RemoteReencryptProgress {
   file_id: number;
   file_name: string;
-  status: 'downloading' | 'uploading' | 'success' | 'error';
+  status: 'downloading' | 'uploading' | 'success' | 'error' | 'skipped';
   error?: string;
 }
 

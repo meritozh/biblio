@@ -93,7 +93,11 @@ async fn download_leg(
                     break; // upload leg gone; nothing left to do
                 }
             }
-            Ok(None) => {} // ineligible/skipped — silently ignored
+            // Ineligible (already encrypted / no longer remote). Emit a
+            // terminal `skipped` event so the frontend progress counter —
+            // which tallies terminal events against the queued total — can
+            // still reach completion instead of spinning forever.
+            Ok(None) => emit(&app, job.file_id, "", "skipped", None),
             Err((name, err)) => emit(&app, job.file_id, &name, "error", Some(err)),
         }
     }
@@ -209,25 +213,13 @@ async fn reencrypt_one(app: &AppHandle, item: Downloaded) {
     };
     let _ = std::fs::remove_file(&raw_temp);
 
-    // 2. Delete the old raw object. On failure: keep the row legacy and bail
-    //    so it is retried later — leaving an encrypted orphan (safe), never a
-    //    raw one. The new encrypted copy was uploaded under a fresh token, so
-    //    a retry re-encrypts cleanly.
-    if let Err(e) = delete_on_remote(&pool, &old_remote_path).await {
-        emit(
-            app,
-            file_id,
-            &display_name,
-            "error",
-            Some(format!(
-                "uploaded encrypted copy but failed to delete the raw original (will retry): {e}"
-            )),
-        );
-        return;
-    }
-
-    // 3. Flip the row onto the encrypted object. original_path / display_name
-    //    are untouched, so the real filename is still recovered on download.
+    // 2. Flip the row onto the NEW encrypted object BEFORE deleting the old
+    //    raw one. If this UPDATE fails, the row still points at the intact raw
+    //    object (downloadable, remote_container still NULL → re-runnable) and
+    //    the new encrypted copy is a harmless orphan — never a row pointing at
+    //    a deleted object. This ordering keeps a live reference at every step.
+    //    original_path / display_name are untouched, so the real filename is
+    //    still recovered on download.
     if let Err(e) = sqlx::query(
         "UPDATE files SET \
          path = ?, remote_fs_id = ?, remote_md5 = ?, remote_size = ?, remote_container = 'bbx1' \
@@ -246,11 +238,20 @@ async fn reencrypt_one(app: &AppHandle, item: Downloaded) {
             file_id,
             &display_name,
             "error",
-            Some(format!(
-                "DB update failed; encrypted copy is on the cloud at {relative_path}: {e}"
-            )),
+            Some(format!("DB update failed (raw original kept; will retry): {e}")),
         );
         return;
+    }
+
+    // 3. Delete the old raw object, best-effort. The row already points at the
+    //    encrypted copy, so a failed delete only leaves a harmless raw orphan
+    //    on Baidu (the row is no longer eligible for re-encryption) — never
+    //    data loss. Log it so the orphan can be reclaimed.
+    if let Err(e) = delete_on_remote(&pool, &old_remote_path).await {
+        eprintln!(
+            "Re-encrypt: row {file_id} flipped to encrypted, but deleting the raw \
+             original at {old_remote_path} failed (orphan left on remote): {e}"
+        );
     }
 
     emit(app, file_id, &display_name, "success", None);

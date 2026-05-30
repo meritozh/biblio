@@ -92,7 +92,7 @@ impl Phase2Node for FilenameLlmNode {
             &env.app,
             ctx.processed_ordinal,
             ctx.total,
-            &ctx.file_name,
+            &ctx.event_key(),
             "extracting_name",
         );
 

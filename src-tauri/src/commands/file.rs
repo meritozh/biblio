@@ -506,6 +506,14 @@ pub async fn file_list(
         where_clause.push_str(&format!(" AND category_id = {}", cat_id));
     }
     if let Some(s) = &status {
+        // Allow-list the status value before interpolating — it crosses the
+        // IPC boundary as an arbitrary String (the TS `FileStatus` union is
+        // compile-time only), so an unchecked value here is a SQL-injection
+        // sink. Mirrors the airtight guard in `build_filter_sql`. Unknown
+        // values are rejected rather than silently dropped.
+        if !matches!(s.as_str(), "available" | "missing" | "moved") {
+            return Err(format!("Invalid file_status filter: {s}"));
+        }
         where_clause.push_str(&format!(" AND file_status = '{}'", s));
     }
     where_clause.push_str(&filter_sql);
@@ -2756,10 +2764,18 @@ fn prepare_search_filter(raw: &str) -> Option<SearchFilter> {
         return None;
     }
 
-    let longest = terms.iter().map(|t| t.chars().count()).max().unwrap_or(0);
-    if longest < TRIGRAM_MIN_CHARS {
-        // Below the trigram window — fall back to a LIKE scan over the
-        // raw trimmed query. Escape `%`, `_`, and `\` so the user can't
+    // FTS5's trigram tokenizer only indexes 3-char windows, so a sub-trigram
+    // token can never MATCH and — ANDed with the rest — would zero out the
+    // whole query (e.g. "JP 火影忍者" returned nothing). Keep only tokens long
+    // enough for the index; drop the shorter ones from the FTS expression.
+    let fts_terms: Vec<&&str> = terms
+        .iter()
+        .filter(|t| t.chars().count() >= TRIGRAM_MIN_CHARS)
+        .collect();
+
+    if fts_terms.is_empty() {
+        // No token reaches the trigram window — fall back to a LIKE scan over
+        // the raw trimmed query. Escape `%`, `_`, and `\` so the user can't
         // smuggle wildcards into the pattern.
         let pattern = raw
             .trim()
@@ -2775,7 +2791,7 @@ fn prepare_search_filter(raw: &str) -> Option<SearchFilter> {
     // Quote each term so spaces, slashes, and other token-internal
     // punctuation are searched literally rather than parsed as FTS5
     // syntax. Trigram needs the entire term as a contiguous substring.
-    let quoted: Vec<String> = terms.iter().map(|t| format!("\"{}\"", t)).collect();
+    let quoted: Vec<String> = fts_terms.iter().map(|t| format!("\"{}\"", t)).collect();
     Some(SearchFilter::Fts(quoted.join(" ")))
 }
 

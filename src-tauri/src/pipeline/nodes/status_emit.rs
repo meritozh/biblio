@@ -33,7 +33,7 @@ impl Phase2Node for StatusEmitNode {
             &env.app,
             ctx.processed_ordinal,
             ctx.total,
-            &ctx.file_name,
+            &ctx.event_key(),
             status,
         );
         Ok(())

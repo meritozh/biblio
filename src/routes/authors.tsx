@@ -126,7 +126,16 @@ function AuthorsManagementPage() {
         limit: PAGE_SIZE,
         offset: authors.length,
       });
-      setAuthors((prev) => [...prev, ...page.authors]);
+      // A local `handleCreate` inserts a row and bumps `total`, so
+      // `authors.length` no longer equals the number of *server* rows
+      // already fetched — using it as the offset can re-request a row we
+      // already hold (or skip one). Dedup by id when appending so an
+      // overlapping page never duplicates a row in the list.
+      setAuthors((prev) => {
+        const seen = new Set(prev.map((a) => a.id));
+        const additions = page.authors.filter((a) => !seen.has(a.id));
+        return additions.length === 0 ? prev : [...prev, ...additions];
+      });
     } finally {
       setLoadingMore(false);
     }

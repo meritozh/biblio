@@ -31,27 +31,35 @@ async function ensureListener(): Promise<void> {
     return;
   }
   listenerPromise = (async () => {
-    await onRemoteDeleteProgress((event) => {
-      store.setState((s) => ({
-        ...s,
-        deletes: s.deletes.map((d) =>
-          d.file_id === event.file_id
-            ? {
-                ...d,
-                status: event.status,
-                error: event.error,
-                file_name: event.file_name || d.file_name,
-              }
-            : d
-        ),
-      }));
-      // Drop the row from the normalized store on success so the card
-      // disappears from the grid without a file-list refetch.
-      if (event.status === 'success') {
-        removeFile(event.file_id);
-      }
-    });
-    listenerStarted = true;
+    try {
+      await onRemoteDeleteProgress((event) => {
+        store.setState((s) => ({
+          ...s,
+          deletes: s.deletes.map((d) =>
+            d.file_id === event.file_id
+              ? {
+                  ...d,
+                  status: event.status,
+                  error: event.error,
+                  file_name: event.file_name || d.file_name,
+                }
+              : d
+          ),
+        }));
+        // Drop the row from the normalized store on success so the card
+        // disappears from the grid without a file-list refetch.
+        if (event.status === 'success') {
+          removeFile(event.file_id);
+        }
+      });
+      listenerStarted = true;
+    } catch (err) {
+      // Reset so a subsequent enqueueDelete can retry the listen()
+      // handshake instead of awaiting the same rejected promise forever
+      // (transient webview-not-ready races at app startup, etc).
+      listenerPromise = null;
+      throw err;
+    }
   })();
   await listenerPromise;
 }

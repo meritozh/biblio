@@ -149,7 +149,10 @@ const EMPTY_FORM_VALUES: DynamicMetadataFormValues = {
  *  Cover handling: file_replace cascades-deletes the existing row's
  *  cover. If the new params have neither inline `cover_data` nor a
  *  pipeline-staged path, we fetch the existing cover via `coverGet` and
- *  stash it as `cover_data` so the new row inherits the cover bytes. */
+ *  stash it as `cover_data` so the new row inherits the cover bytes. The
+ *  one exception is when the user explicitly removed the cover in the form
+ *  (`cover_removed`): that's a deliberate clear, not a missed extraction,
+ *  so we skip the inherit and let the new row land without a cover. */
 async function mergeReplaceParams<T extends FileCreateRequest>(
   newParams: T,
   existingId: number,
@@ -181,7 +184,11 @@ async function mergeReplaceParams<T extends FileCreateRequest>(
   if (!newParams.progress || !newParams.progress.trim()) {
     merged.progress = existing.progress ?? undefined;
   }
-  if (!newParams.cover_data && !newParams.staged_cover_path) {
+  if (
+    !newParams.cover_removed &&
+    !newParams.cover_data &&
+    !newParams.staged_cover_path
+  ) {
     try {
       const c = await coverGet(existingId);
       merged.cover_data = c.data;
@@ -245,6 +252,11 @@ export function ProcessingPipeline({
     progress?: UnlistenFn;
     prepared?: UnlistenFn;
   }>({});
+  // Flips true on each open transition and is consumed (reset to false) by
+  // the path-diff effect's first run for that open. Lets us clear the
+  // `importing` re-entrancy guard only on a genuine fresh open, not on every
+  // `paths` delta — otherwise adding files mid-import would unlock Import.
+  const justOpenedRef = useRef(false);
 
   useEffect(() => {
     categoriesRef.current = categories;
@@ -277,6 +289,10 @@ export function ProcessingPipeline({
       setExpandedIds(new Set());
       return;
     }
+
+    // Fresh open — the path-diff effect will clear the `importing` guard
+    // exactly once for this session, then reset the flag.
+    justOpenedRef.current = true;
 
     let cancelled = false;
 
@@ -412,7 +428,13 @@ export function ProcessingPipeline({
       }
       return additions.length === 0 ? prev : [...prev, ...additions];
     });
-    setImporting(false);
+    // Only clear the re-entrancy guard on a genuine fresh open. A `paths`
+    // delta while an import is in flight (user adds more files mid-import)
+    // must not unlock the Import button under the running loop.
+    if (justOpenedRef.current) {
+      justOpenedRef.current = false;
+      setImporting(false);
+    }
   }, [open, paths]);
 
   // `analyzing` is derived from item statuses now that the queue model has
@@ -432,6 +454,19 @@ export function ProcessingPipeline({
   // (The streaming path can mark a file ready → we then import it and it
   //  fails → status becomes error; in that case leave selected untouched so
   //  the error stays visible in Failed tab without surprising re-check.)
+  //
+  // Depend on a signature of the error+selected paths, not `fileItems.length`:
+  // a status→error transition without a count change (the common case — a
+  // ready file that fails to import) wouldn't re-run a length-keyed effect,
+  // leaving the errored item checked.
+  const erroredSelectedKey = useMemo(
+    () =>
+      fileItems
+        .filter((i) => i.status === 'error' && i.selected)
+        .map((i) => i.path)
+        .join(' '),
+    [fileItems]
+  );
   useEffect(() => {
     setFileItems((prev) => {
       let changed = false;
@@ -444,7 +479,7 @@ export function ProcessingPipeline({
       });
       return changed ? next : prev;
     });
-  }, [fileItems.length]);
+  }, [erroredSelectedKey]);
 
   const handleCancelAnalysis = useCallback(async () => {
     await cancelProcessing();
@@ -745,6 +780,10 @@ export function ProcessingPipeline({
             cover_data: item.formValues.cover_data,
             cover_mime_type: item.formValues.cover_mime_type,
             staged_cover_path: item.formValues.staged_cover_path,
+            // A user "Remove cover" sets cover_removed on the form values;
+            // carry it through so a fresh create lands without a cover and
+            // the Replace merge below skips inheriting the existing one.
+            cover_removed: item.formValues.cover_removed,
           };
 
           if (

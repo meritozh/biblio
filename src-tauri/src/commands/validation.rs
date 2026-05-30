@@ -39,7 +39,7 @@ pub fn validate_tag_name(name: &str) -> Result<String, String> {
         return Err("Tag name cannot be empty".to_string());
     }
 
-    if normalized.len() > 50 {
+    if normalized.chars().count() > 50 {
         return Err("Tag name must be 50 characters or less".to_string());
     }
 
@@ -68,7 +68,7 @@ pub fn validate_metadata_key(key: &str) -> Result<String, String> {
         return Err("Metadata key cannot be empty".to_string());
     }
 
-    if normalized.len() > 100 {
+    if normalized.chars().count() > 100 {
         return Err("Metadata key must be 100 characters or less".to_string());
     }
 
@@ -88,7 +88,7 @@ pub fn validate_metadata_key(key: &str) -> Result<String, String> {
 }
 
 pub fn validate_metadata_value(value: &str) -> Result<String, String> {
-    if value.len() > 10000 {
+    if value.chars().count() > 10000 {
         return Err("Metadata value must be 10,000 characters or less".to_string());
     }
 
@@ -119,7 +119,7 @@ pub fn validate_display_name(name: &str) -> Result<String, String> {
         return Err("Display name cannot be empty".to_string());
     }
 
-    if normalized.len() > 255 {
+    if normalized.chars().count() > 255 {
         return Err("Display name must be 255 characters or less".to_string());
     }
 
@@ -141,7 +141,7 @@ pub fn validate_category_name(name: &str) -> Result<String, String> {
         return Err("Category name cannot be empty".to_string());
     }
 
-    if normalized.len() > 50 {
+    if normalized.chars().count() > 50 {
         return Err("Category name must be 50 characters or less".to_string());
     }
 
@@ -163,7 +163,7 @@ pub fn validate_author_name(name: &str) -> Result<String, String> {
         return Err("Author name cannot be empty".to_string());
     }
 
-    if normalized.len() > 100 {
+    if normalized.chars().count() > 100 {
         return Err("Author name must be 100 characters or less".to_string());
     }
 

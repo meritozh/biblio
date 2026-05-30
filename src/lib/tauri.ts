@@ -1,11 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
-  FileEntry,
   FileWithDetails,
-  FileListRequest,
   FileCreateRequest,
-  FileSearchRequest,
   Category,
   Tag,
   Author,
@@ -21,18 +18,6 @@ import type {
   RemoteDeleteProgress,
   RemoteReencryptProgress,
 } from '@/types';
-
-export async function fileList(
-  params?: FileListRequest
-): Promise<{ files: FileEntry[]; total: number }> {
-  return invoke('file_list', {
-    categoryId: params?.category_id,
-    tagIds: params?.tag_ids,
-    status: params?.status,
-    limit: params?.limit,
-    offset: params?.offset,
-  });
-}
 
 export async function fileGet(id: number): Promise<FileWithDetails> {
   return invoke('file_get', { id });
@@ -373,19 +358,6 @@ export async function importFinalize(
   return invoke('import_finalize', {
     folderRoot,
     hadFolderImports,
-  });
-}
-
-export async function fileSearch(
-  params: FileSearchRequest
-): Promise<{ files: FileEntry[]; total: number }> {
-  return invoke('file_search', {
-    query: params.query,
-    categoryId: params.category_id,
-    tagIds: params.tag_ids,
-    metadataFilters: params.metadata_filters,
-    limit: params.limit,
-    offset: params.offset,
   });
 }
 

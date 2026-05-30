@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import {
   appendToView,
   setView,
@@ -35,14 +35,39 @@ export function useView(
   const view = useViewState(key);
   const epoch = useRefreshEpoch();
 
+  // Per-key sequence counters so out-of-order reloads of the same key can't
+  // clobber a newer in-flight result. Each call claims a token and only writes
+  // when it is still the latest one for its key.
+  const seqRef = useRef<Map<string, number>>(new Map());
+
+  // Mirror the live view so `reload` can read the prior slice on error without
+  // depending on `view` (which would recreate the callback on every store
+  // change and retrigger the fetch effect).
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
   const reload = useCallback(async () => {
+    const seq = (seqRef.current.get(key) ?? 0) + 1;
+    seqRef.current.set(key, seq);
+    const isLatest = () => seqRef.current.get(key) === seq;
+
     setViewLoading(key, true);
     try {
       const result = await fetcher();
-      setView(key, result.files, result.total);
+      if (isLatest()) {
+        setView(key, result.files, result.total);
+      }
     } catch (error) {
       console.error('useView fetch failed:', error);
-      setView(key, [], 0);
+      if (isLatest()) {
+        // Keep the prior rows on a transient failure; only fall back to an
+        // empty view when there is genuinely nothing to preserve.
+        if (viewRef.current.ids.length === 0) {
+          setView(key, [], 0);
+        } else {
+          setViewLoading(key, false);
+        }
+      }
     }
   }, [key, fetcher]);
 

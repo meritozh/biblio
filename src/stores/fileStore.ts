@@ -124,27 +124,6 @@ export function removeFile(id: number): void {
   });
 }
 
-/** Insert a single new row, optionally pushing it to the front of one view.
- *  The view's total bumps by one; other views are untouched. */
-export function addFile(file: FileEntry, viewKey?: string): void {
-  fileStore.setState((s) => {
-    const byId = new Map(s.byId);
-    byId.set(file.id, file);
-    const views = new Map(s.views);
-    if (viewKey) {
-      const prev = views.get(viewKey) ?? EMPTY_VIEW;
-      if (!prev.ids.includes(file.id)) {
-        views.set(viewKey, {
-          ids: [file.id, ...prev.ids],
-          total: prev.total + 1,
-          loading: prev.loading,
-        });
-      }
-    }
-    return { ...s, byId, views };
-  });
-}
-
 /** Merge an arbitrary set of file rows into `byId` without touching any
  *  view's id list. Used by the comic collection drill-down: it needs the
  *  drilled file rows resolvable in `byId`, but those ids belong to no

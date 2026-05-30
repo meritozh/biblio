@@ -149,7 +149,16 @@ function TagsManagementPage() {
         limit: PAGE_SIZE,
         offset: tags.length,
       });
-      setTags((prev) => [...prev, ...page.tags]);
+      // A local `handleCreate` inserts a row and bumps `total`, so
+      // `tags.length` no longer equals the number of *server* rows already
+      // fetched — using it as the offset can re-request a row we already
+      // hold (or skip one). Dedup by id when appending so an overlapping
+      // page never duplicates a row in the list.
+      setTags((prev) => {
+        const seen = new Set(prev.map((t) => t.id));
+        const additions = page.tags.filter((t) => !seen.has(t.id));
+        return additions.length === 0 ? prev : [...prev, ...additions];
+      });
     } finally {
       setLoadingMore(false);
     }

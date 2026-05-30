@@ -88,12 +88,27 @@ pub async fn download_to(
         "{}.tmp",
         dest.extension().and_then(|s| s.to_str()).unwrap_or("part"),
     ));
+    // Once the temp exists, every later error path must remove it before
+    // propagating — otherwise a failed write/flush/sync/rename leaks a
+    // partial sibling that looks like an orphaned download artifact.
     let mut file = File::create(&tmp).await?;
-    file.write_all(&bytes).await?;
-    file.flush().await?;
-    file.sync_all().await?;
+    if let Err(e) = file.write_all(&bytes).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e.into());
+    }
+    if let Err(e) = file.flush().await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e.into());
+    }
+    if let Err(e) = file.sync_all().await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e.into());
+    }
     drop(file);
 
-    tokio::fs::rename(&tmp, dest).await?;
+    if let Err(e) = tokio::fs::rename(&tmp, dest).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e.into());
+    }
     Ok(bytes.len() as u64)
 }

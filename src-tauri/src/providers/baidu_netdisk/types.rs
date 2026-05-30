@@ -52,8 +52,13 @@ pub struct UploadResult {
 #[derive(Debug, Deserialize)]
 pub(super) struct PrecreateResponse {
     pub errno: i32,
+    // Echoed by Baidu but not consumed: the rapid-upload path now falls
+    // through to the normal create flow rather than reading `path`/`return_type`.
+    // Kept for wire-format fidelity.
+    #[allow(dead_code)]
     pub path: Option<String>,
     pub uploadid: Option<String>,
+    #[allow(dead_code)]
     pub return_type: Option<i32>,
     // Echoed back by Baidu's precreate but biblio doesn't consume it
     // (we already track the block layout client-side). Keep for wire-

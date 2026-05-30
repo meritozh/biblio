@@ -39,8 +39,6 @@ import { RemoteDownloadProgressPanel } from '@/components/RemoteDownloadProgress
 import { RemoteDeleteProgressPanel } from '@/components/RemoteDeleteProgress';
 import {
   cacheClear,
-  fileCreate,
-  coverSet,
   storageGetPath,
   storageCheckAccess,
   remoteConfigGet,
@@ -55,29 +53,10 @@ import { Button } from '@/components/ui/button';
 import { AlertCircle } from 'lucide-react';
 import { EditFileDialog } from '@/components/EditFileDialog';
 import { ConfirmDeleteDialog } from '@/components/ConfirmDeleteDialog';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from '@/components/ui/dialog';
-import {
-  DynamicMetadataForm,
-  type DynamicMetadataFormValues,
-} from '@/components/DynamicMetadataForm';
-import { schemaForCategoryId, schemaForPath, isImportable } from '@/lib/categorySchema';
+import { schemaForCategoryId, isImportable } from '@/lib/categorySchema';
 import { resolveViewConfig } from '@/lib/categoryViewConfig';
 import { useFileActions } from '@/hooks/useFileActions';
 import type { FileEntry } from '@/types';
-
-const EMPTY_FORM_VALUES: DynamicMetadataFormValues = {
-  display_name: '',
-  category_id: null,
-  tag_ids: [],
-  author_ids: [],
-  metadata: [],
-};
 
 // First fetch fills the viewport (a few rows worth), then the virtualizer's
 // load-more trigger streams the rest as the user scrolls. Larger pages
@@ -93,6 +72,10 @@ function HomePage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const selectedCategoryId = useAppState((s) => s.selectedCategoryId);
   const settingsOpen = useAppState((s) => s.settingsOpen);
+  // Categories come from the shared appStore — the same source the sidebar's
+  // `selectedCategoryId` lives in. Pulling them from `useFileActions` too
+  // would fire a second `category_list` IPC and keep a divergent copy.
+  const categories = useAppState((s) => s.categories);
   // `searchQuery` is the live input value; `debouncedQuery` is the effective
   // value used for fetches, updated 300ms after the user stops typing so we
   // don't fire one backend request per keystroke.
@@ -112,14 +95,11 @@ function HomePage() {
   // results match across paginated load-more requests. Ownership belongs to
   // Library; FileList receives them as controlled props.
   const [conditions, setConditions] = useState<Condition[]>([]);
-  const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   // Map of every imported path → the folder the user picked it from. Empty
   // for plain file picks. Used to drive per-comic author hints and the
   // post-import empty-dir cleanup, both of which are scoped per root.
   const [selectedPathFolderRoots, setSelectedPathFolderRoots] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
-  const [formValues, setFormValues] = useState<DynamicMetadataFormValues>(EMPTY_FORM_VALUES);
   const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
   const [storagePathAccessible, setStoragePathAccessible] = useState(true);
   const [pipelineOpen, setPipelineOpen] = useState(false);
@@ -134,13 +114,16 @@ function HomePage() {
   const downloadState = useRemoteDownloadStore();
   const deleteState = useRemoteDeleteStore();
 
-  // Debounce the search input. `searchQuery` reflects every keystroke;
-  // `debouncedQuery` is what actually drives fetches, so typing quickly
-  // collapses to a single request.
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
+  // Single owner of `debouncedQuery`: SearchBar already debounces typing
+  // (its internal timer) and fires synchronously on Enter / clear, so it is
+  // the one source that drives this commit. We previously also ran a 300ms
+  // effect here off `searchQuery`, which produced a competing, untrimmed
+  // write to `debouncedQuery` — a double-debounce. The effect is gone; this
+  // callback is the only place `debouncedQuery` is set, and it trims so the
+  // value used for fetches stays normalized regardless of whitespace.
+  const handleSearchCommit = useCallback((query: string) => {
+    setDebouncedQuery(query.trim());
+  }, []);
 
   // Stable string key for the view cache. Conditions hash by JSON because
   // the array identity churns on every keystroke in the editor; the JSON
@@ -191,7 +174,6 @@ function HomePage() {
   // The hook drives store mutations directly — it no longer needs a reload
   // callback. Tag/author rename events trigger a view refresh internally.
   const {
-    categories,
     tags,
     authors,
     handleTagCreate,
@@ -415,8 +397,6 @@ function HomePage() {
       return additions.length === 0 ? prev : [...prev, ...additions];
     });
     setSelectedPathFolderRoots((prev) => ({ ...prev, ...keptFolderRoots }));
-    setFormValues(EMPTY_FORM_VALUES);
-    setAddDialogOpen(false);
     setPipelineMinimized(false);
     setPipelineOpen(true);
 
@@ -427,43 +407,6 @@ function HomePage() {
     enqueueImport(kept, keptFolderRoots).catch((err) => {
       console.error('enqueue_import failed:', err);
     });
-  };
-
-  const handleAddFile = async () => {
-    if (saving) return;
-    setSaving(true);
-    try {
-      for (const path of selectedFiles) {
-        const defaultName = path.substring(Math.max(0, path.lastIndexOf('/') + 1)) || path;
-        const display_name = selectedFiles.length === 1 ? formValues.display_name : defaultName;
-
-        const result = await fileCreate({
-          path,
-          display_name,
-          category_id: formValues.category_id,
-          tag_ids: formValues.tag_ids,
-          author_ids: formValues.author_ids,
-          metadata: formValues.metadata,
-        });
-
-        if (formValues.cover_data && result.id) {
-          const binaryString = atob(formValues.cover_data);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
-          await coverSet(result.id, Array.from(bytes));
-        }
-      }
-      setAddDialogOpen(false);
-      setSelectedFiles([]);
-      setFormValues(EMPTY_FORM_VALUES);
-      void reload();
-    } catch (error) {
-      console.error('Failed to add file:', error);
-      alert(`Failed to add file: ${error}`);
-    }
-    setSaving(false);
   };
 
   const handleFileClick = (file: FileEntry) => {
@@ -607,7 +550,7 @@ function HomePage() {
             <SearchBar
               value={searchQuery}
               onChange={setSearchQuery}
-              onSearch={setDebouncedQuery}
+              onSearch={handleSearchCommit}
               placeholder="Search title, path…"
             />
           </div>
@@ -798,49 +741,6 @@ function HomePage() {
         }}
       />
 
-      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Add Files</DialogTitle>
-          </DialogHeader>
-          {selectedFiles.length === 1 ? (
-            <DynamicMetadataForm
-              values={formValues}
-              onChange={setFormValues}
-              schema={schemaForPath(selectedFiles[0]) ?? undefined}
-              categories={categories}
-              tags={tags}
-              authors={authors}
-                    onTagCreate={handleTagCreate}
-              onAuthorCreate={handleAuthorCreate}
-            />
-          ) : (
-            <div className="py-4">
-              <p className="text-sm text-muted-foreground">Adding {selectedFiles.length} files.</p>
-              <div className="mt-4">
-                <DynamicMetadataForm
-                  values={formValues}
-                  onChange={setFormValues}
-                  schema={schemaForPath(selectedFiles[0]) ?? undefined}
-                  categories={categories}
-                  tags={tags}
-                  authors={authors}
-                            onTagCreate={handleTagCreate}
-                  onAuthorCreate={handleAuthorCreate}
-                />
-              </div>
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setAddDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddFile} disabled={saving}>
-              {saving ? 'Adding...' : 'Add'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </>
   );
 }

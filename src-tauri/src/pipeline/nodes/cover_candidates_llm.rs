@@ -24,7 +24,7 @@ impl Phase2Node for LlmCoverCandidatesNode {
             &env.app,
             ctx.processed_ordinal,
             ctx.total,
-            &ctx.file_name,
+            &ctx.event_key(),
             "picking_cover_candidates",
         );
 

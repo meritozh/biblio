@@ -161,7 +161,7 @@ pub async fn prompt_create(
     let legacy_group = legacy_mime_group(slug, &payload.step);
     let legacy_category = legacy_category_label(slug, &payload.step);
 
-    sqlx::query(
+    let id = sqlx::query(
         "INSERT INTO prompts (name, content, category, mime_group, schema_slug, step, is_default) VALUES (?, ?, ?, ?, ?, ?, 0)",
     )
     .bind(&payload.name)
@@ -172,11 +172,13 @@ pub async fn prompt_create(
     .bind(&payload.step)
     .execute(&pool)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())?
+    .last_insert_rowid();
 
     let prompt: Prompt = sqlx::query_as(
-        &format!("{PROMPT_SELECT} WHERE id = last_insert_rowid()"),
+        &format!("{PROMPT_SELECT} WHERE id = ?"),
     )
+    .bind(id)
     .fetch_one(&pool)
     .await
     .map_err(|e| e.to_string())?;

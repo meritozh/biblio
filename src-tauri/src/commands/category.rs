@@ -50,10 +50,16 @@ fn normalize_view_config(raw: Option<String>) -> Result<Option<String>, String> 
 }
 
 async fn get_unique_folder_name(pool: &sqlx::SqlitePool, base: &str) -> Result<String, String> {
+    // Escape LIKE wildcards (`_`, `%`) and the escape char itself so a
+    // `base` containing them matches literally rather than as a pattern.
+    let escaped = base
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
     let existing: Vec<(String,)> = sqlx::query_as(
-        "SELECT folder_name FROM categories WHERE folder_name LIKE ?"
+        "SELECT folder_name FROM categories WHERE folder_name LIKE ? ESCAPE '\\'"
     )
-    .bind(format!("{}%", base))
+    .bind(format!("{}%", escaped))
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -124,9 +130,12 @@ pub async fn category_update(
                         }
                     }
 
-                    // Update file paths
+                    // Update file paths. Only local rows have a
+                    // category folder spliced into their path — remote
+                    // rows use opaque, extension-less object names that
+                    // must never be rewritten, so filter them out.
                     let files: Vec<(i64, String)> = sqlx::query_as(
-                        "SELECT id, path FROM files WHERE category_id = ?"
+                        "SELECT id, path FROM files WHERE category_id = ? AND COALESCE(storage_kind, 'local') = 'local'"
                     )
                     .bind(id)
                     .fetch_all(&pool)

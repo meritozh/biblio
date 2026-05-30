@@ -39,25 +39,33 @@ async function ensureListener(): Promise<void> {
     return;
   }
   listenerPromise = (async () => {
-    await onRemoteUploadProgress((event) => {
-      store.setState((s) => ({
-        ...s,
-        uploads: s.uploads.map((u) =>
-          u.file_id === event.file_id
-            ? { ...u, status: event.status, error: event.error, file_name: event.file_name || u.file_name }
-            : u
-        ),
-      }));
-      // On a successful upload, patch the file's row in the normalized
-      // store so the card's storage badge flips to cloud without any
-      // file-list refetch. The provider name isn't on the event payload,
-      // so we leave `remote_provider` alone — the row already has it from
-      // its initial load.
-      if (event.status === 'success') {
-        patchFile(event.file_id, { storage_kind: 'remote' });
-      }
-    });
-    listenerStarted = true;
+    try {
+      await onRemoteUploadProgress((event) => {
+        store.setState((s) => ({
+          ...s,
+          uploads: s.uploads.map((u) =>
+            u.file_id === event.file_id
+              ? { ...u, status: event.status, error: event.error, file_name: event.file_name || u.file_name }
+              : u
+          ),
+        }));
+        // On a successful upload, patch the file's row in the normalized
+        // store so the card's storage badge flips to cloud without any
+        // file-list refetch. The provider name isn't on the event payload,
+        // so we leave `remote_provider` alone — the row already has it from
+        // its initial load.
+        if (event.status === 'success') {
+          patchFile(event.file_id, { storage_kind: 'remote' });
+        }
+      });
+      listenerStarted = true;
+    } catch (err) {
+      // Reset so a subsequent enqueueUpload can retry the listen()
+      // handshake instead of awaiting the same rejected promise forever
+      // (transient webview-not-ready races at app startup, etc).
+      listenerPromise = null;
+      throw err;
+    }
   })();
   await listenerPromise;
 }
@@ -90,27 +98,37 @@ export async function enqueueUpload(
   const newIds = fileIds.filter((id) => !inFlightIds.has(id));
   if (newIds.length === 0) return;
 
-  const newRows: RemoteUploadProgress[] = newIds.map((id) => ({
+  const uniqueIds = Array.from(new Set(newIds));
+
+  const newRows: RemoteUploadProgress[] = uniqueIds.map((id) => ({
     file_id: id,
     file_name: fileNames.get(id) ?? `File ${id}`,
     status: 'pending',
   }));
 
+  // Drop any prior terminal-state row for a file_id we're re-queuing.
+  // The pending/uploading filter above already excludes in-flight ids, so
+  // anything left in `newIds` is either fresh or an old error/success row
+  // sitting in the panel. Without this filter a retry would produce two
+  // rows with the same file_id, and the listener's `.map` matches by
+  // file_id — both rows would then update in lockstep on every event,
+  // indistinguishable in the UI (and a React duplicate-key collision).
+  const newIdSet = new Set(uniqueIds);
   store.setState((s) => ({
     ...s,
-    uploads: [...s.uploads, ...newRows],
+    uploads: [...s.uploads.filter((u) => !newIdSet.has(u.file_id)), ...newRows],
     showPanel: true,
     // New work always pops the panel back to expanded so the user sees it.
     minimized: false,
   }));
 
   try {
-    await enqueueRemoteUpload(newIds);
+    await enqueueRemoteUpload(uniqueIds);
   } catch (err) {
     // The backend rejected the enqueue (queue closed, plugin error, etc.).
     // Mark the rows we just added as errored so the user sees the failure
     // instead of a perpetually pending row.
-    const ids = new Set(newIds);
+    const ids = new Set(uniqueIds);
     const errMsg = translateError(err instanceof Error ? err.message : String(err));
     store.setState((s) => ({
       ...s,
