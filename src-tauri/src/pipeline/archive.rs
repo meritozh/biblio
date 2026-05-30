@@ -75,6 +75,27 @@ fn is_image_basename(name: &str) -> bool {
         || lower.ends_with(".gif")
 }
 
+/// OS-metadata cruft that should be transparent to folder-import scanning:
+/// it must neither block comic-folder detection (a folder of pages plus a
+/// stray `Thumbs.db` is still a comic) nor count as content that keeps a
+/// source folder alive during move-mode cleanup. Covers dotfiles
+/// (`.DS_Store`, `._*`, `.localized`, …) and the Windows Explorer junk
+/// (`Thumbs.db`, `ehthumbs.db`, `desktop.ini`) that, unlike dotfiles,
+/// doesn't start with `.`. `name` is a single path component (basename).
+///
+/// Detection only — these names are already excluded from the produced
+/// archive by the `is_image_filename` gate in `zip_image_dir`, so this
+/// never causes junk to be stored; it only stops junk from hiding a comic.
+pub fn is_ignorable_metadata(name: &str) -> bool {
+    if name.starts_with('.') {
+        return true;
+    }
+    matches!(
+        name.to_lowercase().as_str(),
+        "thumbs.db" | "ehthumbs.db" | "desktop.ini"
+    )
+}
+
 fn basename_of(raw_name: &str) -> String {
     Path::new(raw_name)
         .file_name()
@@ -311,6 +332,33 @@ mod tests {
     fn is_image_basename_rejects_non_images() {
         for name in ["README.txt", "meta.json", "001", "folder/", "001.bmp"] {
             assert!(!is_image_basename(name), "{name} should not be image");
+        }
+    }
+
+    #[test]
+    fn is_ignorable_metadata_matches_dotfiles_and_os_junk() {
+        for name in [
+            ".DS_Store",
+            "._cover.jpg",
+            ".localized",
+            "Thumbs.db",
+            "thumbs.db",
+            "THUMBS.DB",
+            "ehthumbs.db",
+            "desktop.ini",
+            "Desktop.ini",
+        ] {
+            assert!(is_ignorable_metadata(name), "{name} should be ignorable");
+        }
+    }
+
+    #[test]
+    fn is_ignorable_metadata_keeps_real_pages() {
+        for name in ["001.jpg", "cover.png", "page 1.webp", "notes.txt", "info.db"] {
+            assert!(
+                !is_ignorable_metadata(name),
+                "{name} should not be ignorable"
+            );
         }
     }
 

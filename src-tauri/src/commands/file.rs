@@ -2252,13 +2252,15 @@ pub struct FileUpdateResponse {
 /// AND `dir` contains no subdirectories. Hidden entries are ignored.
 /// Empty directories return false (no content to import).
 fn folder_is_image_leaf(dir: &std::path::Path) -> std::io::Result<bool> {
-    use crate::pipeline::archive::is_image_filename;
+    use crate::pipeline::archive::{is_ignorable_metadata, is_image_filename};
     let mut saw_image = false;
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if name_str.starts_with('.') {
+        // OS-metadata junk (dotfiles, Thumbs.db, desktop.ini) is transparent:
+        // a folder of pages plus a stray Thumbs.db is still a comic leaf.
+        if is_ignorable_metadata(&name_str) {
             continue;
         }
         let p = entry.path();
@@ -2280,11 +2282,14 @@ fn folder_is_image_leaf(dir: &std::path::Path) -> std::io::Result<bool> {
 /// pipeline zips them on commit). See `list_files_in_folder` for the
 /// rationale behind the leaf-only collapse rule.
 fn folder_walk(dir: &std::path::Path, out: &mut Vec<String>) -> std::io::Result<()> {
+    use crate::pipeline::archive::is_ignorable_metadata;
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if name_str.starts_with('.') {
+        // Skip OS-metadata junk so it isn't emitted as a bogus standalone
+        // import path (matches the leaf detector's transparency rule).
+        if is_ignorable_metadata(&name_str) {
             continue;
         }
         let path = entry.path();
@@ -2466,24 +2471,26 @@ pub async fn import_finalize(
         }
     }
 
-    /// True iff `dir` recursively contains no non-hidden files. Hidden
-    /// entries (`.DS_Store`, `.localized`, etc.) are transparent —
-    /// macOS Finder seeds them everywhere it's been opened, and they
-    /// would otherwise block cleanup of folders that are otherwise empty
-    /// after `file_create` removed the leaf source dirs. Mirrors the
-    /// hidden-skip convention used by `list_files_in_folder` and
-    /// `zip_image_dir`.
-    fn has_only_hidden_content(dir: &std::path::Path) -> std::io::Result<bool> {
+    /// True iff `dir` recursively contains no real content — only
+    /// OS-metadata junk. Dotfiles (`.DS_Store`, `.localized`, …) plus
+    /// Windows Explorer junk (`Thumbs.db`, `desktop.ini`) are transparent:
+    /// the OS seeds them everywhere it's been opened, and they would
+    /// otherwise block cleanup of folders that are otherwise empty after
+    /// `file_create` removed the leaf source dirs. Mirrors the
+    /// `is_ignorable_metadata` convention used by `folder_is_image_leaf`
+    /// and `folder_walk`.
+    fn has_only_ignorable_content(dir: &std::path::Path) -> std::io::Result<bool> {
+        use crate::pipeline::archive::is_ignorable_metadata;
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with('.') {
+            if is_ignorable_metadata(&name_str) {
                 continue;
             }
             let p = entry.path();
             if p.is_dir() {
-                if !has_only_hidden_content(&p)? {
+                if !has_only_ignorable_content(&p)? {
                     return Ok(false);
                 }
             } else {
@@ -2493,7 +2500,7 @@ pub async fn import_finalize(
         Ok(true)
     }
 
-    match has_only_hidden_content(&root) {
+    match has_only_ignorable_content(&root) {
         Ok(true) => {
             // `remove_dir_all` nukes the dir tree including the hidden
             // metadata we treated as transparent above.
