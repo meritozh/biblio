@@ -16,9 +16,15 @@ import type { FileCardProps } from './types';
 function ComicCover({ fileId }: { fileId: number }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
+    let cancelled = false;
     coverGet(fileId)
-      .then(({ data, mime_type }) => setSrc(`data:${mime_type};base64,${data}`))
+      .then(({ data, mime_type }) => {
+        if (!cancelled) setSrc(`data:${mime_type};base64,${data}`);
+      })
       .catch(() => { });
+    return () => {
+      cancelled = true;
+    };
   }, [fileId]);
   return src ? (
     <img src={src} alt="Cover" className="h-full w-full object-cover" />

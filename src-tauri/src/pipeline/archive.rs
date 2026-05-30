@@ -82,6 +82,19 @@ fn basename_of(raw_name: &str) -> String {
         .unwrap_or_else(|| raw_name.to_string())
 }
 
+/// Reject macOS AppleDouble cruft that lives inside ZIP/RAR archives
+/// produced on macOS. `__MACOSX/._cover.jpg` and stray `._foo.jpg`
+/// sidecars carry an image extension but are resource-fork metadata,
+/// not real pages — treating them as the cover yields a corrupt
+/// thumbnail. Mirrors the dotfile skip the directory backend already
+/// does in `collect_dir_image_paths`. `raw_name` is the full
+/// archive-internal path; `basename` its last component.
+fn is_apple_double(raw_name: &str, basename: &str) -> bool {
+    raw_name.split('/').any(|seg| seg == "__MACOSX")
+        || basename.starts_with("._")
+        || basename.starts_with('.')
+}
+
 /// MIME type to attach when uploading one of the listed image entries to
 /// a vision LLM. Defaults to JPEG when the extension is unknown because
 /// most comic dumps use JPEG.
@@ -185,8 +198,9 @@ fn list_image_entries_zip(path: &Path) -> Result<Vec<ArchiveImageEntry>, String>
         let entry = archive
             .by_index_raw(i)
             .map_err(|e| format!("ZIP entry error: {e}"))?;
-        let basename = basename_of(entry.name());
-        if !is_image_basename(&basename) {
+        let raw_name = entry.name().to_string();
+        let basename = basename_of(&raw_name);
+        if is_apple_double(&raw_name, &basename) || !is_image_basename(&basename) {
             continue;
         }
         entries.push(ArchiveImageEntry {
@@ -225,7 +239,7 @@ fn list_image_entries_rar(path: &Path) -> Result<Vec<ArchiveImageEntry>, String>
         }
         let raw_name = entry.filename.to_string_lossy().to_string();
         let basename = basename_of(&raw_name);
-        if !is_image_basename(&basename) {
+        if is_apple_double(&raw_name, &basename) || !is_image_basename(&basename) {
             continue;
         }
         entries.push(ArchiveImageEntry {

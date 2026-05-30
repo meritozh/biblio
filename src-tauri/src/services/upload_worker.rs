@@ -40,8 +40,10 @@ pub struct RemoteUploadProgressEvent {
     pub error: Option<String>,
 }
 
-fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
-    let instances_lock = instances.0.try_read().map_err(|e| e.to_string())?;
+async fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
+    // Park on writer contention via the async read guard instead of dropping
+    // the job with `try_read`, which fails transiently while a writer holds it.
+    let instances_lock = instances.0.read().await;
     let db_pool = instances_lock.get(db_url).ok_or("Database not found")?;
     match db_pool {
         DbPool::Sqlite(pool) => Ok(pool.clone()),
@@ -66,7 +68,7 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
     let UploadJob { file_id } = job;
 
     let instances = app.state::<DbInstances>();
-    let pool = match get_sqlite_pool(&instances, "sqlite:biblio.db") {
+    let pool = match get_sqlite_pool(&instances, "sqlite:biblio.db").await {
         Ok(p) => p,
         Err(e) => {
             emit(app, file_id, "", "error", Some(e));
@@ -175,6 +177,13 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
     .execute(&pool)
     .await
     {
+        // The encrypted object is already uploaded but the row never flipped to
+        // 'remote', so it's now orphaned. Best-effort delete it so we don't leak
+        // a dangling remote object; log the path either way so it's recoverable.
+        let remote_path = format!("{}/{relative_path}", remote_cfg.app_root.trim_end_matches('/'));
+        let _ = crate::commands::remote::delete_on_remote(&pool, &remote_path).await;
+        eprintln!("Remote upload orphaned (status update failed): {remote_path}");
+
         emit(
             app,
             file_id,
@@ -230,7 +239,12 @@ pub(crate) async fn wrap_and_upload(
     let remote_path = format!("{app_root}/{relative_path}");
 
     let tmp = std::env::temp_dir().join(format!("biblio-wrap-{}.bbx", container::random_token()));
-    container::wrap(source_path, &tmp, &key).map_err(|e| format!("container wrap failed: {e}"))?;
+    // A failed wrap can still leave a partial container behind; clean up the
+    // temp before propagating so it isn't leaked on this early-return path.
+    if let Err(e) = container::wrap(source_path, &tmp, &key) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("container wrap failed: {e}"));
+    }
     let result = upload_to_remote(pool, &tmp, &remote_path).await;
     let _ = std::fs::remove_file(&tmp);
     let upload = result?;

@@ -112,16 +112,20 @@ async fn process_one(app: &AppHandle, job: DeleteJob) {
         }
     } else if in_storage {
         if let Err(e) = std::fs::remove_file(&path) {
-            // Permission denied is the common case worth surfacing; for
-            // anything else the row stays so the user can retry.
-            emit(
-                app,
-                file_id,
-                &display_name,
-                "error",
-                Some(format!("Failed to remove local file: {e}")),
-            );
-            return;
+            // "Already missing on disk" satisfies the invariant — the
+            // external state is what we wanted, so proceed to the row
+            // DELETE. Anything else (permission denied, file locked, IO
+            // error) surfaces and leaves the row so the user can retry.
+            if e.kind() != std::io::ErrorKind::NotFound {
+                emit(
+                    app,
+                    file_id,
+                    &display_name,
+                    "error",
+                    Some(format!("Failed to remove local file: {e}")),
+                );
+                return;
+            }
         }
     }
 

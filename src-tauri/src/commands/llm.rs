@@ -201,10 +201,15 @@ pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String
         .max_tokens(64)
         .build();
 
-    let response: String = agent
-        .prompt("Say OK")
-        .await
-        .map_err(|e| format!("LLM connection test failed: {e}"))?;
+    let response: String = match tokio::time::timeout(LLM_REQUEST_TIMEOUT, agent.prompt("Say OK")).await {
+        Ok(result) => result.map_err(|e| format!("LLM connection test failed: {e}"))?,
+        Err(_) => {
+            return Err(format!(
+                "LLM connection test timed out after {}s",
+                LLM_REQUEST_TIMEOUT.as_secs()
+            ));
+        }
+    };
 
     Ok(response)
 }

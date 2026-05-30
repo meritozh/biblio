@@ -54,7 +54,9 @@ impl Phase2Node for DbDuplicateDetectNode {
         };
 
         let recommendation = match (&ctx.progress, &existing.progress) {
-            (Some(new_p), Some(old_p)) if new_p >= old_p => DuplicateAction::Replace,
+            (Some(new_p), Some(old_p)) if progress_at_least(new_p, old_p) => {
+                DuplicateAction::Replace
+            }
             (Some(_), None) => DuplicateAction::Replace,
             (None, Some(_)) => DuplicateAction::Delete,
             _ => DuplicateAction::Replace,
@@ -116,6 +118,33 @@ impl Phase2Node for DbDuplicateDetectNode {
         });
         Ok(())
     }
+}
+
+/// Whether `new_p` represents progress at least as far as `old_p`,
+/// used to decide whether the incoming file should `Replace` the
+/// existing one. Progress is stored as a free-form string (e.g.
+/// "10", "完结", "第 12 话"), but the common case is a chapter/volume
+/// number — comparing those as raw strings is wrong ("9" >= "10"
+/// lexically). Parse the leading integer from each side and compare
+/// numerically; when either side has no leading number, fall back to
+/// the previous lexical comparison.
+fn progress_at_least(new_p: &str, old_p: &str) -> bool {
+    match (leading_number(new_p), leading_number(old_p)) {
+        (Some(new_n), Some(old_n)) => new_n >= old_n,
+        _ => new_p >= old_p,
+    }
+}
+
+/// Parse the leading run of ASCII digits from a progress string into a
+/// number, ignoring leading whitespace. Returns `None` when no digit
+/// starts the (trimmed) string, signalling the caller to fall back.
+fn leading_number(s: &str) -> Option<u64> {
+    let digits: String = s
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
 }
 
 /// Prefix-similarity ratio between two already-normalized names:

@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import {
   appendToView,
   setView,
@@ -35,14 +35,29 @@ export function useView(
   const view = useViewState(key);
   const epoch = useRefreshEpoch();
 
+  // Monotonic token per hook instance so out-of-order fetch resolutions can't
+  // clobber a newer result: each reload claims the next token, and only the
+  // call still holding the latest token is allowed to write into the store.
+  const reloadSeqRef = useRef(0);
+
   const reload = useCallback(async () => {
+    const seq = ++reloadSeqRef.current;
     setViewLoading(key, true);
     try {
       const result = await fetcher();
+      // A newer reload started while this fetch was in flight — drop this
+      // stale result so it doesn't overwrite the newer one.
+      if (seq !== reloadSeqRef.current) return;
       setView(key, result.files, result.total);
     } catch (error) {
       console.error('useView fetch failed:', error);
-      setView(key, [], 0);
+      // Keep the prior rows on a transient failure — only clear the loading
+      // flag. Wiping to an empty view on every error blanks a populated grid
+      // on a single hiccup; stale rows beat a blank screen. Guard on the
+      // token so a stale failure doesn't clear a newer reload's spinner.
+      if (seq === reloadSeqRef.current) {
+        setViewLoading(key, false);
+      }
     }
   }, [key, fetcher]);
 

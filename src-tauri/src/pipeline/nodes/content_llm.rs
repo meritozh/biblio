@@ -38,7 +38,7 @@ impl Phase2Node for ContentLlmNode {
             &env.app,
             ctx.processed_ordinal,
             ctx.total,
-            &ctx.file_name,
+            &ctx.event_key(),
             "analyzing_content",
         );
 

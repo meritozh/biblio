@@ -117,9 +117,14 @@ export const STORAGE_KIND_OPTIONS: ReadonlyArray<{ value: StorageKind; label: st
 
 // ── Builders ─────────────────────────────────────────────────────────────────
 
-let _idCounter = 1;
+// Seed from a per-launch timestamp prefix so freshly minted ids never collide
+// with persisted condition ids (`c1`, `c2`, …) restored from a prior session,
+// which would otherwise produce duplicate React keys. The trailing counter
+// keeps ids unique within a launch even when several are made in the same ms.
+const _idPrefix = `c${Date.now().toString(36)}`;
+let _idCounter = 0;
 export function makeId(): string {
-  return `c${_idCounter++}`;
+  return `${_idPrefix}-${_idCounter++}`;
 }
 
 /** Fresh condition with a sensible default op when the user picks a field. */

@@ -36,7 +36,10 @@ pub struct RecoveryResult {
 
 impl DatabaseRecovery {
     pub fn get_database_path(app: &AppHandle) -> Option<PathBuf> {
-        app.path().app_data_dir().ok().map(|p| p.join("database.sqlite"))
+        // The live DB lives in the app config dir as biblio.db (tauri_plugin_sql
+        // opens "sqlite:biblio.db" relative to app_config_dir). Backups and
+        // size/stats must target that file, not app_data_dir/database.sqlite.
+        app.path().app_config_dir().ok().map(|p| p.join("biblio.db"))
     }
 
     pub fn get_backup_path(app: &AppHandle) -> Option<PathBuf> {
@@ -117,20 +120,21 @@ impl DatabaseRecovery {
 
     #[allow(dead_code)]
     pub fn list_backups(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
-        let data_dir = app.path().app_data_dir()
-            .map_err(|e| format!("Could not get app data directory: {}", e))?;
+        let config_dir = app.path().app_config_dir()
+            .map_err(|e| format!("Could not get app config directory: {}", e))?;
 
-        if !data_dir.exists() {
+        if !config_dir.exists() {
             return Ok(Vec::new());
         }
 
-        let backups: Vec<PathBuf> = fs::read_dir(&data_dir)
+        let backups: Vec<PathBuf> = fs::read_dir(&config_dir)
             .map_err(|e| format!("Failed to read directory: {}", e))?
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
             .filter(|path| {
-                path.extension()
-                    .map(|ext| ext == "backup" || ext == "corrupted")
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|name| name.starts_with("biblio.db") && (name.ends_with(".backup") || name.ends_with(".corrupted")))
                     .unwrap_or(false)
             })
             .collect();
@@ -190,18 +194,15 @@ pub async fn db_create_backup(app: AppHandle) -> Result<RecoveryResult, String> 
         });
     }
 
-    match DatabaseRecovery::create_backup(&app) {
-        Ok(_) => Ok(RecoveryResult {
-            status: RecoveryStatus::Healthy,
-            backup_created: true,
-            message: "Backup created successfully".to_string(),
-        }),
-        Err(e) => Ok(RecoveryResult {
-            status: RecoveryStatus::Healthy,
-            backup_created: false,
-            message: e,
-        }),
-    }
+    // Surface a real failure as Err so structured callers don't see a
+    // "Healthy, no backup" result that hides the error in the message.
+    DatabaseRecovery::create_backup(&app)?;
+
+    Ok(RecoveryResult {
+        status: RecoveryStatus::Healthy,
+        backup_created: true,
+        message: "Backup created successfully".to_string(),
+    })
 }
 
 #[tauri::command]
@@ -222,7 +223,9 @@ pub async fn db_optimize(app: AppHandle) -> Result<RecoveryResult, String> {
 pub async fn db_get_stats(app: AppHandle) -> Result<DatabaseStats, String> {
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-    let size = DatabaseRecovery::get_database_size(&app).unwrap_or(0);
+    // Propagate a failed size lookup rather than masking it as a 0-byte DB,
+    // which would be indistinguishable from a genuinely empty file.
+    let size = DatabaseRecovery::get_database_size(&app)?;
 
     let file_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files")
         .fetch_one(&pool)

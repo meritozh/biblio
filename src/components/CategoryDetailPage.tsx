@@ -21,9 +21,15 @@ export function CategoryDetailPage({ categoryId }: CategoryDetailPageProps) {
   const { ids, total, loading } = useView(`cat-detail::${id}`, fetcher);
 
   useEffect(() => {
+    let cancelled = false;
     invoke<Category>('category_get', { id })
-      .then(setCategory)
+      .then((c) => {
+        if (!cancelled) setCategory(c);
+      })
       .catch((error) => console.error('Failed to load category:', error));
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
   const handleFileClick = (file: FileEntry) => {

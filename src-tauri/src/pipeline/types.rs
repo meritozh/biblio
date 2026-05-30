@@ -209,6 +209,16 @@ impl FileContext {
         }
     }
 
+    /// Key used by `processing-progress` events. The frontend matches each
+    /// event against the placeholder row's `path` (the full absolute path it
+    /// was created with), so progress events MUST carry the full path, not the
+    /// basename — otherwise none of them land and the StatusEmitNode verdict
+    /// (`partial`/`error`) is lost. `file-prepared` already keys on the full
+    /// path; this keeps the contract consistent.
+    pub fn event_key(&self) -> String {
+        self.file_path.to_string_lossy().to_string()
+    }
+
     pub fn record(&mut self, name: &'static str, status: NodeStatus) {
         self.outcomes.push(NodeOutcome { name, status });
     }

@@ -144,19 +144,27 @@ function CleanupPage() {
     setBulkBusy(true);
     try {
       await tagDeleteUnused();
+      // The bulk delete fires a tag-deleted event the listener above reacts
+      // to, but a dropped event would leave a stale list. Refetch directly
+      // as an idempotent safety net.
+      void fetchUnused();
     } finally {
       setBulkBusy(false);
     }
-  }, []);
+  }, [fetchUnused]);
 
   const handleDeleteUnusedAuthors = useCallback(async () => {
     setBulkBusy(true);
     try {
       await authorDeleteUnused();
+      // The bulk delete fires an author-deleted event the listener above
+      // reacts to, but a dropped event would leave a stale list. Refetch
+      // directly as an idempotent safety net.
+      void fetchUnused();
     } finally {
       setBulkBusy(false);
     }
-  }, []);
+  }, [fetchUnused]);
 
   const handleDeleteFile = useCallback((file: FileEntry) => {
     const fileNames = new Map([[file.id, file.display_name]]);

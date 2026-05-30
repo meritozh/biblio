@@ -86,6 +86,7 @@ function AuthorsManagementPage() {
   const navigate = useNavigate();
   const [authors, setAuthors] = useState<AuthorWithUsage[]>([]);
   const [total, setTotal] = useState<number>(0);
+  const [fetchedOffset, setFetchedOffset] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -110,6 +111,7 @@ function AuthorsManagementPage() {
     ]);
     setAuthors(page.authors);
     setTotal(count);
+    setFetchedOffset(page.authors.length);
     setLoading(false);
   }, []);
 
@@ -118,19 +120,26 @@ function AuthorsManagementPage() {
   }, [reload]);
 
   const handleLoadMore = useCallback(async () => {
-    if (loadingMore || authors.length >= total) return;
+    if (loadingMore || fetchedOffset >= total) return;
     setLoadingMore(true);
     try {
       const page = await authorList({
         includeUsage: true,
         limit: PAGE_SIZE,
-        offset: authors.length,
+        offset: fetchedOffset,
       });
-      setAuthors((prev) => [...prev, ...page.authors]);
+      // Dedup by id when appending so an overlapping page never duplicates
+      // a row in the list.
+      setAuthors((prev) => {
+        const seen = new Set(prev.map((a) => a.id));
+        const additions = page.authors.filter((a) => !seen.has(a.id));
+        return additions.length === 0 ? prev : [...prev, ...additions];
+      });
+      setFetchedOffset((prev) => prev + page.authors.length);
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, authors.length, total]);
+  }, [loadingMore, fetchedOffset, total]);
 
   const handleCreate = async () => {
     const trimmed = newAuthorName.trim();

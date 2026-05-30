@@ -66,17 +66,11 @@ pub async fn upload_file(
 
     // `return_type == 2` from precreate means "rapid-uploaded" — Baidu
     // already has an identical file (matched by MD5) and no bytes need to
-    // be sent. Skip straight to the response path.
-    if precreate.return_type == Some(2) {
-        if let Some(path) = precreate.path {
-            return Ok(UploadResult {
-                fs_id: String::new(), // xpan precreate doesn't return fs_id on rapid hit
-                md5: slice_md5s.first().cloned().unwrap_or_default(),
-                size: total_size,
-                path,
-            });
-        }
-    }
+    // be sent. We deliberately do NOT early-return here: xpan precreate
+    // doesn't hand back an fs_id on a rapid hit, and persisting a row with
+    // an empty fs_id yields an undownloadable file. Instead we fall through
+    // to the normal create flow below, which returns a real fs_id (the
+    // slice loop short-circuits cheaply since Baidu already has the bytes).
 
     // ── 2. Upload slices ────────────────────────────────────────────
     // Baidu requires blocks be uploaded in partseq=0..N order; we stream

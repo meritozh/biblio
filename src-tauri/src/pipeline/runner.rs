@@ -80,7 +80,7 @@ impl Pipeline {
                         candidates_for_task,
                     );
 
-                    emit_progress(&env.app, idx + 1, total, &ctx.file_name, "gathering_signals");
+                    emit_progress(&env.app, idx + 1, total, &ctx.event_key(), "gathering_signals");
 
                     for node in phase1.iter() {
                         if !node.applies(&ctx, &env) {

@@ -349,10 +349,14 @@ pub async fn author_set(
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
+    // Replace the full set of authors atomically: a mid-loop failure must not
+    // leave the file with a partially-applied author set.
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+
     // First remove all existing author assignments for this file
     sqlx::query("DELETE FROM file_authors WHERE file_id = ?")
         .bind(file_id)
-        .execute(&pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -361,10 +365,12 @@ pub async fn author_set(
         sqlx::query("INSERT INTO file_authors (file_id, author_id) VALUES (?, ?)")
             .bind(file_id)
             .bind(author_id)
-            .execute(&pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
     }
+
+    tx.commit().await.map_err(|e| e.to_string())?;
 
     let _ = super::file::rename_file_to_match_metadata(&pool, file_id).await;
 

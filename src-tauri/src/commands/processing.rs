@@ -218,16 +218,15 @@ pub(crate) async fn process_import_path(
     // Bail early on unsupported extensions so the frontend's placeholder
     // doesn't sit in pending forever.
     let Some(kind) = kind_for_path(&path) else {
-        let file_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string_lossy().to_string());
         let _ = app.emit(
             "processing-progress",
             &ProcessingProgressEvent {
                 current: 1,
                 total: 1,
-                current_file: file_name,
+                // Match on the full path the frontend placeholder was created
+                // with (the listener keys by path) so this unsupported-file
+                // error actually lands instead of leaving the item pending.
+                current_file: path.to_string_lossy().to_string(),
                 status: "error".into(),
             },
         );

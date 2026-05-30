@@ -46,6 +46,8 @@ export function AiSetting() {
     setTesting(true);
     setTestResult(null);
     try {
+      // Test the config currently on screen, not the last-saved one.
+      await llmConfigSet(config);
       const result = await llmTestConnection();
       setTestResult({ ok: true, message: result });
     } catch (err) {
