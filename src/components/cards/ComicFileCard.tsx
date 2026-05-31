@@ -46,6 +46,7 @@ export const ComicFileCard = memo(function ComicFileCard({
   onToggleSelect,
   onEdit,
   onDelete,
+  remoteEnabled,
 }: FileCardProps) {
   const file = useFile(id);
   const categories = useAppState((s) => s.categories);
@@ -111,7 +112,12 @@ export const ComicFileCard = memo(function ComicFileCard({
       </button>
       {!selectionMode && onEdit && onDelete && (
         <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity z-10">
-          <FileContextMenu file={file} onEdit={onEdit} onDelete={onDelete} />
+          <FileContextMenu
+            file={file}
+            onEdit={onEdit}
+            onDelete={onDelete}
+            remoteEnabled={remoteEnabled}
+          />
         </div>
       )}
     </div>

@@ -10,4 +10,7 @@ export interface FileCardProps {
   onToggleSelect: (id: number) => void;
   onEdit?: (file: FileEntry) => void;
   onDelete?: (file: FileEntry) => void;
+  /** Whether cloud storage is configured. Forwarded to the row's context
+   *  menu to gate its Upload / Download items. */
+  remoteEnabled?: boolean;
 }

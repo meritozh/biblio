@@ -469,6 +469,7 @@ export function FileList({
         onFileEdit={onFileEdit}
         onFileDelete={onFileDelete}
         onOpenCollection={onOpenCollection}
+        remoteEnabled={remoteEnabled}
       />
     </div>
   );

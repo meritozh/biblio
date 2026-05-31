@@ -42,6 +42,9 @@ interface FileListContentProps {
   onFileEdit?: (file: FileEntry) => void;
   onFileDelete?: (file: FileEntry) => void;
   onOpenCollection?: (c: Collection) => void;
+  /** Whether cloud storage is configured. Forwarded to each card's
+   *  context menu to gate Upload / Download. */
+  remoteEnabled?: boolean;
 }
 
 /** Virtualized grid container. Renders either file cards (ComicFileCard /
@@ -69,6 +72,7 @@ export function FileListContent({
   onFileEdit,
   onFileDelete,
   onOpenCollection,
+  remoteEnabled,
 }: FileListContentProps) {
   const categories = useAppState((s) => s.categories);
 
@@ -156,6 +160,7 @@ export function FileListContent({
             onToggleSelect={onToggleSelect}
             onEdit={onFileEdit}
             onDelete={onFileDelete}
+            remoteEnabled={remoteEnabled}
           />
         );
       }}

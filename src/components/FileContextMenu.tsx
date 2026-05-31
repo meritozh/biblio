@@ -8,27 +8,42 @@ import {
 import { Button } from '@/components/ui/button';
 import {
   Copy,
+  Download,
   FolderOpen,
   MoreHorizontal,
   Pencil,
   Play,
   Trash2,
+  Upload,
   XCircle,
 } from 'lucide-react';
 import { cacheClear, cacheOpen, revealItemInDir } from '@/lib/tauri';
 import { patchFile } from '@/stores/fileStore';
+import {
+  enqueueUpload,
+  useRemoteUploadStore,
+} from '@/stores/remoteUploadStore';
+import {
+  enqueueDownload,
+  useRemoteDownloadStore,
+} from '@/stores/remoteDownloadStore';
 import type { FileEntry } from '@/types';
 
 interface FileContextMenuProps {
   file: FileEntry;
   onEdit: (file: FileEntry) => void;
   onDelete: (file: FileEntry) => void;
+  /** Whether cloud storage is configured. Gates Upload / Download so
+   *  actions that would fail authentication aren't shown. Defaults to
+   *  false — when omitted, only local-only items appear. */
+  remoteEnabled?: boolean;
 }
 
 export function FileContextMenu({
   file,
   onEdit,
   onDelete,
+  remoteEnabled = false,
 }: FileContextMenuProps) {
   const isRemote = file.storage_kind === 'remote';
   const hasCache = !!file.local_cache_path;
@@ -36,6 +51,40 @@ export function FileContextMenu({
   // row whose download worker has populated the cache. The Open and
   // Show-in-Finder items key off this.
   const hasLocalCopy = !isRemote || hasCache;
+
+  // Per-file in-flight state so the menu disables a queued action instead
+  // of re-enqueuing it on a second click. Mirrors the bulk bar's guard.
+  const uploadState = useRemoteUploadStore();
+  const downloadState = useRemoteDownloadStore();
+  const isUploading = uploadState.uploads.some(
+    (u) =>
+      u.file_id === file.id &&
+      (u.status === 'pending' || u.status === 'uploading')
+  );
+  const isDownloading = downloadState.downloads.some(
+    (d) =>
+      d.file_id === file.id &&
+      (d.status === 'pending' || d.status === 'downloading')
+  );
+
+  // Storage actions keyed on the row's storage state. Cloud actions
+  // require remote configured; clearing a local cache copy is always
+  // safe (the remote original stays).
+  const canUpload = !isRemote && remoteEnabled;
+  const canDownload = isRemote && !hasCache && remoteEnabled;
+  const canClearCache = isRemote && hasCache;
+  const showStorageSection = canUpload || canDownload || canClearCache;
+
+  const handleUpload = async () => {
+    // The store enqueue takes a fileId list + a name map (for the
+    // progress panel's row labels) and handles backend errors internally
+    // by marking the row errored — so no toast here, the panel surfaces it.
+    await enqueueUpload([file.id], new Map([[file.id, file.display_name]]));
+  };
+
+  const handleDownload = async () => {
+    await enqueueDownload([file.id], new Map([[file.id, file.display_name]]));
+  };
 
   const handleOpen = async () => {
     try {
@@ -127,14 +176,24 @@ export function FileContextMenu({
           <Copy className="h-4 w-4 mr-2" />
           Copy Path
         </DropdownMenuItem>
-        {isRemote && hasCache && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={handleClearCache}>
-              <XCircle className="h-4 w-4 mr-2" />
-              Clear cache
-            </DropdownMenuItem>
-          </>
+        {showStorageSection && <DropdownMenuSeparator />}
+        {canUpload && (
+          <DropdownMenuItem onClick={handleUpload} disabled={isUploading}>
+            <Upload className="h-4 w-4 mr-2" />
+            {isUploading ? 'Uploading…' : 'Upload to cloud'}
+          </DropdownMenuItem>
+        )}
+        {canDownload && (
+          <DropdownMenuItem onClick={handleDownload} disabled={isDownloading}>
+            <Download className="h-4 w-4 mr-2" />
+            {isDownloading ? 'Downloading…' : 'Download'}
+          </DropdownMenuItem>
+        )}
+        {canClearCache && (
+          <DropdownMenuItem onClick={handleClearCache}>
+            <XCircle className="h-4 w-4 mr-2" />
+            Clear cache
+          </DropdownMenuItem>
         )}
       </DropdownMenuContent>
     </DropdownMenu>
