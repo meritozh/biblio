@@ -153,9 +153,9 @@ export function DuplicateWarning({
   const nextSize = formatBytes(duplicateInfo.new_size);
 
   // Schema-routed middle row. Novel schema (covering every novel-schema
-  // category) keeps the Progress text row; comic schema renders the
-  // Cover visual row instead. Anything else falls through to no middle
-  // row — safer than guessing.
+  // category) keeps the Progress text row; comic and galgame schemas store
+  // real cover art, so they render the Cover visual row instead. Anything
+  // else falls through to no middle row — safer than guessing.
   const middleRow =
     schema.slug === 'novel' ? (
       <CompareRow
@@ -163,7 +163,7 @@ export function DuplicateWarning({
         existing={duplicateInfo.existing_progress ?? 'None'}
         next={newProgress ?? 'None'}
       />
-    ) : schema.slug === 'comic' ? (
+    ) : schema.slug === 'comic' || schema.slug === 'galgame' ? (
       <CoverCompareRow
         existingFileId={duplicateInfo.existing_file_id}
         newCoverData={newCoverData}

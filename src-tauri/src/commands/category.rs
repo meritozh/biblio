@@ -35,6 +35,91 @@ pub async fn category_get(app: AppHandle, id: i64) -> Result<Category, String> {
         .ok_or("CATEGORY_NOT_FOUND".to_string())
 }
 
+#[derive(serde::Serialize)]
+pub struct CategoryCreateResponse {
+    pub id: i64,
+}
+
+/// Create a new category. Mirrors the validation `category_update` applies:
+/// the name is validated + uniqued, a sanitized unique `folder_name` is
+/// derived, the schema slug is checked against the known set, and the
+/// `view_config` JSON is normalized. The storage subfolder is created eagerly
+/// when a storage path is configured (so the first import doesn't race folder
+/// creation); a missing storage path is allowed — `file_create` makes the
+/// folder on demand. New categories are never the default.
+#[tauri::command]
+pub async fn category_create(
+    app: AppHandle,
+    name: String,
+    description: Option<String>,
+    schema_slug: String,
+    view_config: Option<String>,
+) -> Result<CategoryCreateResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    let validated_name = validate_category_name(&name)?;
+
+    if !SchemaSlug::is_known(&schema_slug) {
+        return Err("INVALID_SCHEMA_SLUG".to_string());
+    }
+    let canonical_slug = SchemaSlug::from_str(&schema_slug).as_str();
+
+    // UNIQUE(name) is enforced by the table, but check up front for a clean
+    // error instead of a raw constraint-violation string.
+    let existing: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM categories WHERE name = ?")
+            .bind(&validated_name)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    if existing.is_some() {
+        return Err("CATEGORY_NAME_EXISTS".to_string());
+    }
+
+    let base_folder = sanitize_folder_name(&validated_name);
+    let folder_name = get_unique_folder_name(&pool, &base_folder).await?;
+
+    let normalized_view_config = normalize_view_config(view_config)?;
+    let description = description.filter(|d| !d.trim().is_empty());
+
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO categories (name, description, schema_slug, folder_name, view_config, is_default)
+         VALUES (?, ?, ?, ?, ?, 0) RETURNING id",
+    )
+    .bind(&validated_name)
+    .bind(&description)
+    .bind(canonical_slug)
+    .bind(&folder_name)
+    .bind(&normalized_view_config)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Eagerly create the storage subfolder when a path is configured. Mirrors
+    // the on-demand creation in `file_create`; failure here is non-fatal (the
+    // import path recreates it), so a permission hiccup doesn't block the row.
+    let storage_path: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM app_settings WHERE key = 'storage_path'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if let Some((storage,)) = storage_path {
+        if !storage.is_empty() {
+            let dir = std::path::PathBuf::from(&storage).join(&folder_name);
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                eprintln!(
+                    "category_create: failed to pre-create folder {}: {e}",
+                    dir.display()
+                );
+            }
+        }
+    }
+
+    Ok(CategoryCreateResponse { id })
+}
+
 /// Coerce blank-string and whitespace-only payloads to NULL so the DB
 /// column stays clean, and reject malformed JSON early. The frontend
 /// owns the shape; we just confirm it parses.

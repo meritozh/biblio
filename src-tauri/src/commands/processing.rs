@@ -182,6 +182,7 @@ pub async fn enqueue_import(
     app: tauri::AppHandle,
     paths: Vec<String>,
     path_folder_roots: Option<HashMap<String, String>>,
+    category_id: Option<i64>,
 ) -> Result<(), String> {
     // Claim a fresh cancellation generation for this batch. A prior cancel
     // only covers earlier generations, so this batch starts un-cancelled
@@ -198,6 +199,7 @@ pub async fn enqueue_import(
         let job = ImportJob {
             path,
             parent_authors: candidates,
+            category_id,
             generation,
         };
         sender.0.send(job).map_err(|e| {
@@ -215,35 +217,74 @@ pub(crate) async fn process_import_path(
     app: &tauri::AppHandle,
     path: PathBuf,
     parent_authors: Vec<String>,
+    category_id: Option<i64>,
     generation: u64,
 ) -> Result<(), String> {
     use crate::pipeline::nodes::{FileKind, kind_for_path};
 
-    // Bail early on unsupported extensions so the frontend's placeholder
-    // doesn't sit in pending forever.
-    let Some(kind) = kind_for_path(&path) else {
+    let emit_error = |reason: &str| {
+        eprintln!("import: {} for {}", reason, path.to_string_lossy());
         let _ = app.emit(
             "processing-progress",
             &ProcessingProgressEvent {
                 current: 1,
                 total: 1,
                 // Match on the full path the frontend placeholder was created
-                // with (the listener keys by path) so this unsupported-file
-                // error actually lands instead of leaving the item pending.
+                // with (the listener keys by path) so the error actually lands
+                // instead of leaving the item pending.
                 current_file: path.to_string_lossy().to_string(),
                 status: "error".into(),
             },
         );
-        return Ok(());
     };
 
+    // Category-first routing: when the import UI passed a target category, the
+    // category's schema picks the pipeline and `kind_for_path` is demoted to a
+    // validator (so "Novel category + dropped .zip" surfaces as an error
+    // instead of silently running the comic pipeline). When no category was
+    // supplied (legacy callers), fall back to extension-based routing.
     let env = build_pipeline_env(app, generation).await?;
+
+    let kind = if let Some(cat_id) = category_id {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT schema_slug FROM categories WHERE id = ?")
+                .bind(cat_id)
+                .fetch_optional(&env.pool)
+                .await
+                .map_err(|e| format!("Failed to load category schema: {e}"))?;
+        let Some((slug,)) = row else {
+            emit_error("target category not found");
+            return Ok(());
+        };
+        let schema = crate::schema::SchemaSlug::from_str(&slug);
+        let want = FileKind::for_schema(schema);
+        // Validate the input *fits* the chosen category's schema. A mismatch
+        // (e.g. a .txt dropped into a comic category) is a user error, not a
+        // silent reroute. `accepts_path` (not `kind_for_path` equality)
+        // resolves the comic/galgame `.zip`+folder overlap — the category
+        // already fixed the kind.
+        if !want.accepts_path(&path) {
+            emit_error("input does not match the selected category's schema");
+            return Ok(());
+        }
+        want
+    } else {
+        // Legacy path: route purely by extension.
+        let Some(detected) = kind_for_path(&path) else {
+            emit_error("unsupported file type");
+            return Ok(());
+        };
+        detected
+    };
 
     let pipeline = match kind {
         FileKind::Novel => pipeline::nodes::novel_pipeline()
             .add_phase2(EmitPreparedNode)
             .build(),
         FileKind::Comic => pipeline::nodes::comic_pipeline()
+            .add_phase2(EmitPreparedNode)
+            .build(),
+        FileKind::Galgame => pipeline::nodes::galgame_pipeline()
             .add_phase2(EmitPreparedNode)
             .build(),
     };

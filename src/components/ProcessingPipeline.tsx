@@ -9,6 +9,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   Tabs,
@@ -36,6 +37,9 @@ import {
   listenFilePrepared,
   importFinalize,
   tagList,
+  vndbSearch,
+  vndbFetchCover,
+  type VndbCandidate,
 } from '@/lib/tauri';
 import {
   REGISTRY,
@@ -115,6 +119,11 @@ interface ProcessingPipelineProps {
    *  import; per-path values let the backend group comics by root for
    *  the parent-dir author hint. */
   pathFolderRoots?: Record<string, string>;
+  /** Category-first import: the category the user is importing INTO. Drives
+   *  the default category for every reviewed file (the backend already
+   *  validated the input against this category's schema). Falls back to
+   *  extension-based schema inference when null (legacy / no selection). */
+  targetCategoryId?: number | null;
   categories: Category[];
   tags: Tag[];
   authors: Author[];
@@ -227,6 +236,7 @@ export function ProcessingPipeline({
   onExpand,
   paths,
   pathFolderRoots,
+  targetCategoryId,
   categories,
   tags,
   authors,
@@ -242,6 +252,10 @@ export function ProcessingPipeline({
   // Refs so the long-lived listener callbacks always read the latest props
   // / context without re-subscribing on every parent re-render.
   const categoriesRef = useRef(categories);
+  // Category-first import: the category being imported into. Kept in a ref so
+  // the long-lived `file-prepared` listener defaults each item to it without
+  // re-subscribing.
+  const targetCategoryIdRef = useRef(targetCategoryId);
   // Snapshots of the parent's catalog used by the adopt handlers to do an
   // in-memory case-insensitive lookup before falling back to *_create. The
   // parent passes the canonical authors/tags arrays (loaded via LIMIT -1
@@ -261,6 +275,10 @@ export function ProcessingPipeline({
   useEffect(() => {
     categoriesRef.current = categories;
   }, [categories]);
+
+  useEffect(() => {
+    targetCategoryIdRef.current = targetCategoryId;
+  }, [targetCategoryId]);
   useEffect(() => {
     authorsRef.current = authors;
   }, [authors]);
@@ -328,13 +346,16 @@ export function ProcessingPipeline({
             prev.map((item) => {
               if (item.path !== result.path) return item;
 
-              // Folder imports always become comics on commit; everything
-              // else routes by extension.
+              // Category-first import: default to the category the user is
+              // importing into (the backend already validated the input
+              // against its schema). Fall back to the legacy extension guess
+              // only when no target category was supplied.
               const itemSchemaSlug = result.source_is_directory
                 ? 'comic'
                 : (schemaForPath(item.path)?.slug ?? null);
               const resolvedCategoryId =
                 result.category_id ??
+                targetCategoryIdRef.current ??
                 (itemSchemaSlug
                   ? defaultCategoryIdForSchema(itemSchemaSlug, categoriesRef.current)
                   : null);
@@ -1249,6 +1270,200 @@ function TabPanel({
   );
 }
 
+/** Renders a VNDB cover thumbnail by fetching its bytes through the Rust
+ *  `vndb_fetch_cover` command and showing a local data URL. We never put the
+ *  remote `t.vndb.org` URL in an <img src> — the webview CSP is `self`-only,
+ *  so a cross-origin image would be blocked. Falls back to a dashed
+ *  placeholder while loading, on error, or when there's no cover. */
+function VndbThumb({ url }: { url: string | null }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (!url) {
+      setSrc(null);
+      return;
+    }
+    let cancelled = false;
+    vndbFetchCover(url)
+      .then(({ data, mime_type }) => {
+        if (!cancelled) setSrc(`data:${mime_type};base64,${data}`);
+      })
+      .catch(() => {
+        if (!cancelled) setSrc(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+  return src ? (
+    <img
+      src={src}
+      alt=""
+      className="h-14 w-10 object-cover rounded border shrink-0"
+    />
+  ) : (
+    <div className="h-14 w-10 rounded border border-dashed shrink-0" />
+  );
+}
+
+/** Galgame-only VNDB match panel. Auto-searches on mount using the cleaned
+ *  display name (the filename-LLM result, or the raw file name when the LLM is
+ *  off), lets the user pick a candidate or re-search, and on pick autofills
+ *  the form: origin title (alttitle → title), cover (fetched + dropped into
+ *  `cover_data`), and developer (routed through the existing author-adopt
+ *  handler so it reuses find-or-create). Failures degrade to manual entry. */
+function GalgameVndbPanel({
+  item,
+  onFormChange,
+  onApproveSuggestedAuthor,
+}: {
+  item: FileItemState;
+  onFormChange: (path: string, values: DynamicMetadataFormValues) => void;
+  onApproveSuggestedAuthor: (path: string, authorName: string) => void;
+}) {
+  const [query, setQuery] = useState(
+    () => item.formValues.display_name || item.preparedImport?.file_name || ''
+  );
+  const [candidates, setCandidates] = useState<VndbCandidate[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [applyingId, setApplyingId] = useState<string | null>(null);
+
+  const runSearch = useCallback(async (q: string) => {
+    const trimmed = q.trim();
+    if (!trimmed) {
+      setCandidates([]);
+      return;
+    }
+    setSearching(true);
+    setError(null);
+    try {
+      setCandidates(await vndbSearch(trimmed));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setCandidates([]);
+    } finally {
+      setSearching(false);
+    }
+  }, []);
+
+  // Auto-search once on mount with the cleaned name. Re-runs only via the
+  // manual search box afterward so we don't spam the API on every re-render.
+  const didAutoSearch = useRef(false);
+  useEffect(() => {
+    if (didAutoSearch.current) return;
+    didAutoSearch.current = true;
+    void runSearch(query);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const applyCandidate = async (c: VndbCandidate) => {
+    setApplyingId(c.id);
+    try {
+      const title = c.alttitle?.trim() || c.title.trim();
+      let next: DynamicMetadataFormValues = {
+        ...item.formValues,
+        display_name: title || item.formValues.display_name,
+      };
+      // Fetch the cover and inline it so the normal commit path stores it.
+      if (c.image_url) {
+        try {
+          const { data, mime_type } = await vndbFetchCover(c.image_url);
+          next = {
+            ...next,
+            cover_data: data,
+            cover_mime_type: mime_type,
+            cover_removed: false,
+            staged_cover_path: undefined,
+          };
+        } catch (err) {
+          console.error('VNDB cover fetch failed:', err);
+        }
+      }
+      onFormChange(item.path, next);
+      // Developer → author through the existing adopt handler (find-or-create
+      // against the catalog snapshot). Only the first developer is adopted.
+      const dev = c.developers[0]?.trim();
+      if (dev) onApproveSuggestedAuthor(item.path, dev);
+    } finally {
+      setApplyingId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-muted-foreground">VNDB match</p>
+      <div className="flex items-center gap-2">
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void runSearch(query);
+            }
+          }}
+          placeholder="Search VNDB by title…"
+          className="h-8 text-sm"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 shrink-0"
+          onClick={() => void runSearch(query)}
+          disabled={searching}
+        >
+          {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Search'}
+        </Button>
+      </div>
+
+      {error && <p className="text-xs text-destructive">VNDB error: {error}</p>}
+
+      {candidates != null && candidates.length === 0 && !searching && !error && (
+        <p className="text-xs text-muted-foreground">
+          No matches — edit the title and search again, or fill metadata
+          manually below.
+        </p>
+      )}
+
+      {candidates != null && candidates.length > 0 && (
+        <ul className="space-y-1.5">
+          {candidates.map((c) => (
+            <li key={c.id}>
+              <button
+                type="button"
+                onClick={() => void applyCandidate(c)}
+                disabled={applyingId != null}
+                className="w-full flex items-center gap-3 rounded-md border p-2 text-left hover:bg-muted/50 transition-colors disabled:opacity-50"
+              >
+                <VndbThumb url={c.thumbnail ?? c.image_url} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium truncate">
+                    {c.alttitle?.trim() || c.title}
+                  </p>
+                  {c.alttitle?.trim() && (
+                    <p className="text-xs text-muted-foreground truncate">
+                      {c.title}
+                    </p>
+                  )}
+                  <p className="text-xs text-muted-foreground truncate">
+                    {[c.released, c.developers[0]]
+                      .filter(Boolean)
+                      .join(' · ') || '—'}
+                  </p>
+                </div>
+                {applyingId === c.id && (
+                  <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 interface FileCardRowProps {
   item: FileItemState;
   tabKey: TabKey;
@@ -1409,6 +1624,14 @@ function FileCardRow({
                   ))}
                 </div>
               </div>
+            )}
+
+            {resolvedSchema.slug === 'galgame' && (
+              <GalgameVndbPanel
+                item={item}
+                onFormChange={onFormChange}
+                onApproveSuggestedAuthor={onApproveSuggestedAuthor}
+              />
             )}
 
             <DynamicMetadataForm

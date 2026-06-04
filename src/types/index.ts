@@ -4,7 +4,7 @@ export type MetadataType = 'text' | 'number' | 'date' | 'boolean';
 /** Built-in schema slug. Each value picks a `CategorySchema` from
  *  `lib/categorySchema.ts` that decides which form sections, card
  *  fields, and prompts apply to files in this category. */
-export type SchemaSlug = 'novel' | 'comic';
+export type SchemaSlug = 'novel' | 'comic' | 'galgame';
 
 export interface Category {
   id: number;

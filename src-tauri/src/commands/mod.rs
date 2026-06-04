@@ -11,6 +11,7 @@ pub mod processing;
 pub mod llm;
 pub mod prompts;
 pub mod remote;
+pub mod vndb;
 
 #[cfg(test)]
 pub mod test_helpers;

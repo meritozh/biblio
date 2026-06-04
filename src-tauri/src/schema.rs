@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 pub enum SchemaSlug {
     Novel,
     Comic,
+    Galgame,
 }
 
 impl SchemaSlug {
@@ -27,12 +28,14 @@ impl SchemaSlug {
         match self {
             SchemaSlug::Novel => "novel",
             SchemaSlug::Comic => "comic",
+            SchemaSlug::Galgame => "galgame",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
             "comic" => SchemaSlug::Comic,
+            "galgame" => SchemaSlug::Galgame,
             // Default for any unknown value so a category row written by
             // a future binary that introduced a new slug doesn't error
             // here — it just renders with novel defaults until the
@@ -45,7 +48,10 @@ impl SchemaSlug {
     /// validation when accepting user input from a Tauri command, which
     /// should reject typos rather than silently falling back.
     pub fn is_known(s: &str) -> bool {
-        matches!(s.to_ascii_lowercase().as_str(), "novel" | "comic")
+        matches!(
+            s.to_ascii_lowercase().as_str(),
+            "novel" | "comic" | "galgame"
+        )
     }
 }
 
@@ -55,7 +61,7 @@ mod tests {
 
     #[test]
     fn round_trip_known() {
-        for slug in [SchemaSlug::Novel, SchemaSlug::Comic] {
+        for slug in [SchemaSlug::Novel, SchemaSlug::Comic, SchemaSlug::Galgame] {
             assert_eq!(SchemaSlug::from_str(slug.as_str()), slug);
         }
     }
@@ -70,6 +76,7 @@ mod tests {
     fn is_known_excludes_fallback_targets() {
         assert!(SchemaSlug::is_known("novel"));
         assert!(SchemaSlug::is_known("Comic"));
+        assert!(SchemaSlug::is_known("galgame"));
         assert!(!SchemaSlug::is_known("manga"));
         assert!(!SchemaSlug::is_known(""));
     }

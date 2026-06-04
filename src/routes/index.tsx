@@ -404,7 +404,7 @@ function HomePage() {
     // events drive the dialog state via the existing listeners. Logging the
     // failure path keeps the dev console useful — placeholder items would
     // otherwise sit in `pending` forever with no diagnostic.
-    enqueueImport(kept, keptFolderRoots).catch((err) => {
+    enqueueImport(kept, keptFolderRoots, selectedCategoryId).catch((err) => {
       console.error('enqueue_import failed:', err);
     });
   };
@@ -418,10 +418,15 @@ function HomePage() {
   // dropped paths through the same import flow as FilePicker.
   const handleFilesSelectedRef = useRef(handleFilesSelected);
   const storageReadyRef = useRef(storagePathConfigured !== false);
+  // Drop handler lives in a one-time effect; keep the active schema in a ref
+  // so a folder drop scans with the selected category's semantics (galgame =
+  // whole-folder unit) without re-subscribing the listener.
+  const dropSchemaSlugRef = useRef(selectedCategorySchema.slug);
 
   useEffect(() => {
     handleFilesSelectedRef.current = handleFilesSelected;
     storageReadyRef.current = storagePathConfigured !== false;
+    dropSchemaSlugRef.current = selectedCategorySchema.slug;
   });
 
   useEffect(() => {
@@ -441,7 +446,7 @@ function HomePage() {
             // same way `FilePicker` walks an explicit folder pick, so a
             // mixed drop of files + folders feeds the import worker the
             // same shape both paths produce.
-            void expandDropPaths(p.paths)
+            void expandDropPaths(p.paths, dropSchemaSlugRef.current)
               .then(({ files, path_folder_roots, empty_folders }) => {
                 if (empty_folders.length > 0) {
                   alert(
@@ -556,6 +561,7 @@ function HomePage() {
           </div>
           <FilePicker
             onFilesSelected={handleFilesSelected}
+            schemaSlug={selectedCategorySchema.slug}
             disabled={storagePathConfigured === false}
           />
         </div>
@@ -727,6 +733,7 @@ function HomePage() {
         onExpand={() => setPipelineMinimized(false)}
         paths={selectedFiles}
         pathFolderRoots={selectedPathFolderRoots}
+        targetCategoryId={selectedCategoryId}
         categories={categories}
         tags={tags}
         authors={authors}

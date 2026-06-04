@@ -25,8 +25,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { ArrowDown, ArrowUp, Pencil, FolderOpen } from 'lucide-react';
-import { categoryUpdate, tagList } from '@/lib/tauri';
+import { ArrowDown, ArrowUp, Pencil, FolderOpen, Plus } from 'lucide-react';
+import { categoryCreate, categoryUpdate, tagList } from '@/lib/tauri';
 import { loadCategories, useAppState } from '@/stores/appStore';
 import { SCHEMA_LABELS, coerceSchemaSlug } from '@/lib/categorySchema';
 import {
@@ -294,6 +294,9 @@ function CategoriesPage() {
   const categories = useAppState((s) => s.categories);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<CategoryFormState>(EMPTY_FORM);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createForm, setCreateForm] = useState<CategoryFormState>(EMPTY_FORM);
+  const [creating, setCreating] = useState(false);
   const [tags, setTags] = useState<Tag[]>([]);
 
   useEffect(() => {
@@ -305,6 +308,32 @@ function CategoriesPage() {
       .then(({ tags }) => setTags(tags))
       .catch((err) => console.error('Failed to load tags:', err));
   }, []);
+
+  const handleStartCreate = () => {
+    setCreateForm(EMPTY_FORM);
+    setCreateOpen(true);
+  };
+
+  const handleSaveCreate = async () => {
+    if (!createForm.name.trim()) return;
+    setCreating(true);
+    try {
+      await categoryCreate({
+        name: createForm.name.trim(),
+        description: createForm.description.trim() || undefined,
+        schemaSlug: createForm.schemaSlug,
+        viewConfig: serializeViewConfig(createForm.viewConfig),
+      });
+      setCreateOpen(false);
+      setCreateForm(EMPTY_FORM);
+      void loadCategories();
+    } catch (error) {
+      console.error('Failed to create category:', error);
+      alert(`Failed to create category: ${error}`);
+    } finally {
+      setCreating(false);
+    }
+  };
 
   const handleStartEdit = (category: Category) => {
     setEditingId(category.id);
@@ -360,6 +389,10 @@ function CategoriesPage() {
             — {categories.length} {categories.length === 1 ? 'category' : 'categories'}
           </span>
         </div>
+        <Button onClick={handleStartCreate} className="gap-2">
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          New Category
+        </Button>
       </div>
 
       <div className="flex-1 overflow-auto px-8 py-6">
@@ -378,8 +411,8 @@ function CategoriesPage() {
             <TableBody>
               {categories.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="h-24 text-center">
-                    No categories seeded yet.
+                  <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                    No categories yet — click “New Category” to add one.
                   </TableCell>
                 </TableRow>
               ) : (
@@ -433,6 +466,45 @@ function CategoriesPage() {
           </Table>
         </div>
       </div>
+
+      <Dialog
+        open={createOpen}
+        onOpenChange={(open) => {
+          if (!open && !creating) {
+            setCreateOpen(false);
+            setCreateForm(EMPTY_FORM);
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>New Category</DialogTitle>
+          </DialogHeader>
+          <CategoryFormFields
+            values={createForm}
+            onChange={setCreateForm}
+            availableTags={tags}
+          />
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setCreateOpen(false);
+                setCreateForm(EMPTY_FORM);
+              }}
+              disabled={creating}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveCreate}
+              disabled={!createForm.name.trim() || creating}
+            >
+              {creating ? 'Creating…' : 'Create'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={editingId !== null}

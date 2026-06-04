@@ -73,13 +73,21 @@ export const REGISTRY: Readonly<Record<SchemaSlug, CategorySchema>> = {
     cardFields: ['authors'],
     acceptedExtensions: ['cbz', 'zip', 'cbr', 'rar'],
   },
+  galgame: {
+    slug: 'galgame',
+    // VNDB supplies origin title, cover, and developer (→ author). The form
+    // surfaces those plus the category picker; no tags/progress for v1.
+    formFields: ['display_name', 'category', 'authors', 'cover'],
+    cardFields: ['authors'],
+    acceptedExtensions: ['zip', '7z', 'rar'],
+  },
 };
 
 /** Safe slug coercion. Mirrors the Rust fallback: any unknown value
  *  collapses to `'novel'`, so a stale slug from a row written by a
  *  newer binary doesn't crash render paths. */
 export function coerceSchemaSlug(raw: string | null | undefined): SchemaSlug {
-  if (raw === 'novel' || raw === 'comic') return raw;
+  if (raw === 'novel' || raw === 'comic' || raw === 'galgame') return raw;
   return 'novel';
 }
 
@@ -153,9 +161,13 @@ export const PROMPT_STEPS_BY_SCHEMA: Readonly<
     { step: 'cover_pick', label: 'Cover detection' },
     { step: 'filename_folder', label: 'Folder filename extraction' },
   ],
+  galgame: [
+    { step: 'filename', label: 'Filename extraction' },
+  ],
 };
 
 export const SCHEMA_LABELS: Readonly<Record<SchemaSlug, string>> = {
   novel: 'Novel',
   comic: 'Comic',
+  galgame: 'Galgame',
 };

@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Plus, Files, Folder, Loader2 } from 'lucide-react';
 import { listFilesInFolder } from '@/lib/tauri';
+import type { SchemaSlug } from '@/types';
 
 interface FilePickerProps {
   /** `pathFolderRoots` maps every scanned path back to the folder the user
@@ -17,11 +18,20 @@ interface FilePickerProps {
     paths: string[],
     pathFolderRoots?: Record<string, string>
   ) => void;
+  /** Schema of the category being imported into. Drives folder-scan
+   *  semantics: galgame folders collapse to one unit, comic/novel keep the
+   *  image-leaf walk. Defaults to novel on the backend when omitted. */
+  schemaSlug?: SchemaSlug;
   multiple?: boolean;
   disabled?: boolean;
 }
 
-export function FilePicker({ onFilesSelected, multiple = true, disabled = false }: FilePickerProps) {
+export function FilePicker({
+  onFilesSelected,
+  schemaSlug,
+  multiple = true,
+  disabled = false,
+}: FilePickerProps) {
   const [expanding, setExpanding] = useState(false);
 
   const handlePickFiles = async () => {
@@ -87,7 +97,7 @@ export function FilePicker({ onFilesSelected, multiple = true, disabled = false 
         const scans = await Promise.all(
           folderPaths.map(async (root) => ({
             root,
-            files: await listFilesInFolder(root),
+            files: await listFilesInFolder(root, schemaSlug),
           }))
         );
 

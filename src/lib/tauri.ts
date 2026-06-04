@@ -204,8 +204,11 @@ export async function fileDeleteSource(path: string): Promise<void> {
   return invoke('file_delete_source', { path });
 }
 
-export async function listFilesInFolder(path: string): Promise<string[]> {
-  return invoke('list_files_in_folder', { path });
+export async function listFilesInFolder(
+  path: string,
+  schemaSlug?: import('@/types').SchemaSlug
+): Promise<string[]> {
+  return invoke('list_files_in_folder', { path, schemaSlug: schemaSlug ?? null });
 }
 
 /** Group files by author or by series-name prefix within one schema
@@ -340,12 +343,15 @@ export async function fileListByIds(
  *  folders are walked the same way `listFilesInFolder` walks them. The
  *  returned `path_folder_roots` mirrors what `FilePicker` produces for
  *  folder picks, so the rest of the import flow stays uniform. */
-export async function expandDropPaths(paths: string[]): Promise<{
+export async function expandDropPaths(
+  paths: string[],
+  schemaSlug?: import('@/types').SchemaSlug
+): Promise<{
   files: string[];
   path_folder_roots: Record<string, string>;
   empty_folders: string[];
 }> {
-  return invoke('expand_drop_paths', { paths });
+  return invoke('expand_drop_paths', { paths, schemaSlug: schemaSlug ?? null });
 }
 
 /** Post-import cleanup for folder picks. Removes empty subdirectories
@@ -373,6 +379,26 @@ export async function categoryList(): Promise<Category[]> {
 
 export async function categoryGet(id: number): Promise<Category> {
   return invoke('category_get', { id });
+}
+
+export interface CategoryCreateInput {
+  name: string;
+  description?: string;
+  schemaSlug: import('@/types').SchemaSlug;
+  /** Optional view-config JSON (sort / view mode / filters / open-app). Omit
+   *  to leave the column NULL so the schema defaults apply. */
+  viewConfig?: string;
+}
+
+export async function categoryCreate(
+  input: CategoryCreateInput
+): Promise<{ id: number }> {
+  return invoke('category_create', {
+    name: input.name,
+    description: input.description ?? null,
+    schemaSlug: input.schemaSlug,
+    viewConfig: input.viewConfig ?? null,
+  });
 }
 
 export interface CategoryUpdateInput {
@@ -639,13 +665,15 @@ export function translateError(error: string): string {
  *  analysis is in flight — new paths append to the queue. */
 export async function enqueueImport(
   paths: string[],
-  pathFolderRoots?: Record<string, string>
+  pathFolderRoots?: Record<string, string>,
+  categoryId?: number | null
 ): Promise<void> {
   return invoke('enqueue_import', {
     paths,
     pathFolderRoots: pathFolderRoots && Object.keys(pathFolderRoots).length > 0
       ? pathFolderRoots
       : null,
+    categoryId: categoryId ?? null,
   });
 }
 
@@ -692,6 +720,38 @@ export function listenTagAuthorChanges(
     };
     return unlistenAll;
   });
+}
+
+/** One VNDB search hit, mirrors the Rust `VndbCandidate`. `alttitle` is the
+ *  origin-script title (the galgame schema's preferred display name);
+ *  `image_url` feeds {@link vndbFetchCover}; `developers[0]` becomes the
+ *  author on confirm. */
+export interface VndbCandidate {
+  id: string;
+  title: string;
+  alttitle: string | null;
+  image_url: string | null;
+  /** Smaller cover thumbnail URL. Fetched through {@link vndbFetchCover} and
+   *  rendered as a local data URL — never put in an <img src> directly, so the
+   *  webview CSP stays `self`-only. */
+  thumbnail: string | null;
+  released: string | null;
+  developers: string[];
+}
+
+/** Search VNDB for galgame metadata candidates. Read-only, no auth. Returns
+ *  up to 10 best-first; rejects only on network/HTTP errors (the caller then
+ *  falls back to manual entry). */
+export async function vndbSearch(query: string): Promise<VndbCandidate[]> {
+  return invoke('vndb_search', { query });
+}
+
+/** Fetch a chosen candidate's cover bytes (base64 + mime) so the form can
+ *  drop them straight into `cover_data` and reuse the normal commit path. */
+export async function vndbFetchCover(
+  url: string
+): Promise<{ data: string; mime_type: string }> {
+  return invoke('vndb_fetch_cover', { url });
 }
 
 export async function llmConfigGet(): Promise<LlmConfig> {

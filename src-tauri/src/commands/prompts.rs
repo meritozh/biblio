@@ -66,7 +66,8 @@ fn validate_slug_step(slug: &str, step: &str) -> Result<(), String> {
         | (SchemaSlug::Novel, "content")
         | (SchemaSlug::Comic, "filename")
         | (SchemaSlug::Comic, "cover_pick")
-        | (SchemaSlug::Comic, "filename_folder") => Ok(()),
+        | (SchemaSlug::Comic, "filename_folder")
+        | (SchemaSlug::Galgame, "filename") => Ok(()),
         _ => Err("INVALID_PROMPT_SCHEMA_STEP".to_string()),
     }
 }
@@ -79,6 +80,7 @@ fn legacy_mime_group(slug: SchemaSlug, step: &str) -> &'static str {
         (SchemaSlug::Novel, _) => "text",
         (SchemaSlug::Comic, "filename_folder") => "image_folder",
         (SchemaSlug::Comic, _) => "archive",
+        (SchemaSlug::Galgame, _) => "game",
     }
 }
 

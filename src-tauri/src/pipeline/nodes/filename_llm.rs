@@ -22,6 +22,11 @@ enum FilenameSource {
     /// `authors` (folder name is the work title; author candidates
     /// come from the picked-root LLM cleanup).
     Folder,
+    /// Galgame imports — either an archive (.zip / .7z / .rar) or an
+    /// installed folder. Cleans the name into `ctx.display_name` so the
+    /// frontend can seed a VNDB search; authors come from VNDB (the
+    /// confirmed developer), not the filename.
+    Galgame,
 }
 
 /// LLM Call 1: extract display_name / authors / progress from the filename.
@@ -58,6 +63,13 @@ impl FilenameLlmNode {
             source: FilenameSource::Folder,
         }
     }
+    pub fn galgame() -> Self {
+        Self {
+            schema_slug: SchemaSlug::Galgame,
+            step: "filename",
+            source: FilenameSource::Galgame,
+        }
+    }
 }
 
 #[async_trait]
@@ -84,6 +96,10 @@ impl Phase2Node for FilenameLlmNode {
             FilenameSource::Archive => !is_dir,
             // Folder variant only fires for directory inputs.
             FilenameSource::Folder => is_dir,
+            // Galgame inputs can be either an archive or an installed
+            // folder; the galgame pipeline carries only this one filename
+            // node, so it handles both shapes.
+            FilenameSource::Galgame => true,
         }
     }
 
