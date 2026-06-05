@@ -25,7 +25,7 @@ pub async fn get_download_dlink(
          &fsids={fsids}&dlink=1&thumb=0&extra=0"
     );
 
-    let resp: FilemetasResponse = reqwest::Client::new()
+    let resp: FilemetasResponse = super::http_client()?
         .get(&url)
         .send()
         .await?
@@ -71,9 +71,11 @@ pub async fn download_to(
         format!("{dlink}?access_token={access_token}")
     };
 
-    let resp = reqwest::Client::new()
+    // Shared client already sets `User-Agent: pan.baidu.com` (the dlink
+    // endpoint 403s without it) and a connect-only timeout — no total timeout,
+    // since a multi-GB body can legitimately stream for minutes.
+    let resp = super::http_client()?
         .get(&url)
-        .header("User-Agent", "pan.baidu.com")
         .send()
         .await?
         .error_for_status()?;

@@ -14,7 +14,7 @@ pub async fn delete_file(access_token: &str, remote_path: &str) -> Result<(), Ba
         "{FILEMANAGER_URL}?method=filemanager&opera=delete&access_token={access_token}"
     );
 
-    let resp: FileManagerResponse = reqwest::Client::new()
+    let resp: FileManagerResponse = super::http_client()?
         .post(&url)
         .form(&[("async", "0"), ("filelist", &filelist)])
         .send()

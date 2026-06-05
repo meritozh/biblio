@@ -64,10 +64,10 @@ pub(super) struct PrecreateResponse {
     pub uploadid: Option<String>,
     #[allow(dead_code)]
     pub return_type: Option<i32>,
-    // Echoed back by Baidu's precreate but biblio doesn't consume it
-    // (we already track the block layout client-side). Keep for wire-
-    // format fidelity in case a future caller needs it.
-    #[allow(dead_code)]
+    /// Slice indices Baidu still needs uploaded for this `uploadid`. On a
+    /// fresh precreate this is every index; on a re-precreate of a partially
+    /// uploaded file it's the remaining subset, which is what enables resume.
+    /// `serde(default)` because Baidu omits it on the rapid-upload hit path.
     #[serde(default)]
     pub block_list: Vec<u32>,
 }
