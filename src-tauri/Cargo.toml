@@ -45,3 +45,31 @@ rand = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+
+# Optimize the per-byte crypto/hash hot loops even in debug builds. The
+# encrypted-container wrap (XChaCha20-Poly1305) and Baidu block_list (MD5) both
+# stream the whole file byte-by-byte; at the default debug `opt-level = 0` the
+# cipher runs ~20-100x slower (no SIMD/inlining, bounds checks everywhere),
+# which made an 8 GB upload's "Encrypting" phase take ~30 min in `tauri build
+# --debug`. Optimizing only these dependency crates keeps fast incremental
+# compiles for our own code while restoring near-release crypto throughput.
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.dev.package.md-5]
+opt-level = 3
+
+# Max-performance release build. `opt-level = 3` is already the release default,
+# so the real gains come from cross-crate LTO + a single codegen unit — both
+# matter most for the byte-streaming crypto/hash hot loops. Trade-off: a much
+# slower release compile (one-time, only on `tauri:build`). `panic = "abort"` is
+# deliberately NOT set: a panic in a Tauri command should unwind into an error
+# returned to the frontend, not abort the whole app.
+[profile.release]
+opt-level = 3
+lto = "fat"          # link-time optimization across all crates
+codegen-units = 1    # optimize the whole program as one unit (slower build)
+strip = true         # drop symbols: smaller binary + faster load (no runtime cost)
