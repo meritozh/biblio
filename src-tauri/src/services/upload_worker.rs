@@ -22,6 +22,43 @@ use crate::services::container;
 /// temp creation and the startup sweep so the two can't drift.
 const WRAP_TEMP_PREFIX: &str = "biblio-wrap-";
 
+/// Plaintext bytes per part when an upload artifact is too large for a single
+/// remote object. Baidu's per-object cap is 20 GB (SVIP); a file larger than
+/// this is split into N parts, each encrypted and uploaded as its own object,
+/// then reassembled on download. 10 GiB keeps every part well under the cap
+/// (negligible AEAD overhead) and the temp footprint to one part at a time.
+/// This is both the split threshold and the chunk size: files <= PART_SIZE are
+/// a single 'bbx1' object (unchanged); larger ones become 'bbx1-split'.
+const PART_SIZE: u64 = 10 * 1024 * 1024 * 1024;
+
+/// One uploaded part of a split file, recorded into `remote_parts`.
+pub(crate) struct UploadedPart {
+    pub index: i64,
+    pub object_name: String,
+    pub fs_id: String,
+    pub md5: String,
+    pub ciphertext_size: i64,
+    pub plaintext_size: i64,
+}
+
+/// Result of [`wrap_and_upload`]: a file small enough for one remote object, or
+/// one split across N encrypted parts.
+pub(crate) enum WrapUploadOutcome {
+    Single {
+        /// Opaque token stored as `files.path`; also the remote object name.
+        relative_path: String,
+        upload: UploadResult,
+    },
+    Split {
+        /// Opaque token stored as `files.path` — a unique placeholder only; the
+        /// real objects live in `remote_parts`. There is no single object here.
+        placeholder_path: String,
+        /// Original (plaintext) artifact size; stored as `files.remote_size`.
+        total_plaintext: i64,
+        parts: Vec<UploadedPart>,
+    },
+}
+
 /// Delete leftover multi-GB remote-operation temps (`biblio-wrap-*.bbx` from the
 /// upload pipeline, `biblio-reenc-*.raw` from reencrypt) in the temp dir. Each is
 /// removed on the normal return path, but a hard kill (force-quit / crash) during
@@ -232,7 +269,7 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
             emit_progress(&progress_app, file_id, &progress_name, phase, done, total);
         }
     };
-    let (relative_path, upload) =
+    let outcome =
         match wrap_and_upload(&pool, &remote_cfg.app_root, &source_path, file_id, on_progress)
             .await
         {
@@ -243,28 +280,12 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
             }
         };
 
-    if let Err(e) = sqlx::query(
-        "UPDATE files SET \
-         path = ?, storage_kind = 'remote', remote_provider = 'baidu_netdisk', \
-         remote_fs_id = ?, remote_md5 = ?, remote_size = ?, remote_container = 'bbx1', \
-         in_storage = 0, original_path = ?, file_status = 'available' \
-         WHERE id = ?",
-    )
-    .bind(&relative_path)
-    .bind(&upload.fs_id)
-    .bind(&upload.md5)
-    .bind(upload.size)
-    .bind(&local_path)
-    .bind(file_id)
-    .execute(&pool)
-    .await
-    {
-        // The encrypted object is already uploaded but the row never flipped to
-        // 'remote', so it's now orphaned. Best-effort delete it so we don't leak
-        // a dangling remote object; log the path either way so it's recoverable.
-        let remote_path = format!("{}/{relative_path}", remote_cfg.app_root.trim_end_matches('/'));
-        let _ = crate::commands::remote::delete_on_remote(&pool, &remote_path).await;
-        eprintln!("Remote upload orphaned (status update failed): {remote_path}");
+    if let Err(e) = commit_upload_outcome(&pool, file_id, &local_path, &outcome).await {
+        // The encrypted object(s) are already uploaded but the row never flipped
+        // to 'remote', so they're now orphaned. Best-effort delete them so we
+        // don't leak dangling remote objects.
+        delete_outcome_objects(&pool, remote_cfg.app_root.trim_end_matches('/'), &outcome).await;
+        eprintln!("Remote upload orphaned (status update failed) for file {file_id}");
 
         emit(
             app,
@@ -284,6 +305,85 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
     }
 
     emit(app, file_id, &display_name, "success", None);
+}
+
+/// Flip a file row onto its freshly-uploaded remote object(s). Single → one
+/// 'bbx1' object; Split → a 'bbx1-split' row (no single fs_id/md5) plus the
+/// `remote_parts` rows. `original_local_path` is recorded as `original_path`
+/// so the real filename survives for download.
+async fn commit_upload_outcome(
+    pool: &sqlx::SqlitePool,
+    file_id: i64,
+    original_local_path: &str,
+    outcome: &WrapUploadOutcome,
+) -> Result<(), String> {
+    match outcome {
+        WrapUploadOutcome::Single {
+            relative_path,
+            upload,
+        } => {
+            sqlx::query(
+                "UPDATE files SET \
+                 path = ?, storage_kind = 'remote', remote_provider = 'baidu_netdisk', \
+                 remote_fs_id = ?, remote_md5 = ?, remote_size = ?, remote_container = 'bbx1', \
+                 in_storage = 0, original_path = ?, file_status = 'available' \
+                 WHERE id = ?",
+            )
+            .bind(relative_path)
+            .bind(&upload.fs_id)
+            .bind(&upload.md5)
+            .bind(upload.size)
+            .bind(original_local_path)
+            .bind(file_id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        WrapUploadOutcome::Split {
+            placeholder_path,
+            total_plaintext,
+            parts,
+        } => {
+            // No single object: remote_fs_id/remote_md5 are NULL; remote_size is
+            // the original plaintext size; per-object data lives in remote_parts.
+            sqlx::query(
+                "UPDATE files SET \
+                 path = ?, storage_kind = 'remote', remote_provider = 'baidu_netdisk', \
+                 remote_fs_id = NULL, remote_md5 = NULL, remote_size = ?, \
+                 remote_container = 'bbx1-split', in_storage = 0, original_path = ?, \
+                 file_status = 'available' \
+                 WHERE id = ?",
+            )
+            .bind(placeholder_path)
+            .bind(total_plaintext)
+            .bind(original_local_path)
+            .bind(file_id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+            persist_remote_parts(pool, file_id, parts).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Best-effort delete of an upload's remote object(s) — used when the row never
+/// flipped to 'remote' so nothing is left dangling. One object for Single, all
+/// part objects for Split.
+async fn delete_outcome_objects(
+    pool: &sqlx::SqlitePool,
+    app_root: &str,
+    outcome: &WrapUploadOutcome,
+) {
+    match outcome {
+        WrapUploadOutcome::Single { relative_path, .. } => {
+            let remote_path = format!("{app_root}/{relative_path}");
+            let _ = crate::commands::remote::delete_on_remote(pool, &remote_path).await;
+        }
+        WrapUploadOutcome::Split { parts, .. } => {
+            cleanup_part_objects(pool, app_root, parts).await;
+        }
+    }
 }
 
 /// Wrap `source_path` in the encrypted container and upload it under an
@@ -309,28 +409,32 @@ pub(crate) async fn wrap_and_upload(
     source_path: &std::path::Path,
     exclude_file_id: i64,
     mut on_progress: impl FnMut(Phase, i64, i64),
-) -> Result<(String, UploadResult), String> {
+) -> Result<WrapUploadOutcome, String> {
     use crate::providers::baidu_netdisk::UploadPhase;
 
     let key = container::get_or_create_key(pool).await?;
     let app_root = app_root.trim_end_matches('/');
 
-    // Opaque, extension-less remote name. A 128-bit token collision is
-    // astronomically unlikely, but the existing de-dup invariant is cheap.
-    let mut relative_path = container::random_token();
-    loop {
-        let existing: Option<(i64,)> =
-            sqlx::query_as("SELECT id FROM files WHERE path = ? AND id != ?")
-                .bind(&relative_path)
-                .bind(exclude_file_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| e.to_string())?;
-        if existing.is_none() {
-            break;
-        }
-        relative_path = container::random_token();
+    let total = std::fs::metadata(source_path)
+        .map_err(|e| format!("I/O error reading upload size: {e}"))?
+        .len();
+
+    // Oversized artifact → split into encrypted parts under the per-object cap.
+    if total > PART_SIZE {
+        return wrap_and_upload_split(
+            pool,
+            app_root,
+            source_path,
+            exclude_file_id,
+            total,
+            &key,
+            on_progress,
+        )
+        .await;
     }
+
+    // ── Single-object path (unchanged) ──────────────────────────────
+    let relative_path = unique_token(pool, exclude_file_id).await?;
     let remote_path = format!("{app_root}/{relative_path}");
 
     let tmp = std::env::temp_dir()
@@ -375,7 +479,179 @@ pub(crate) async fn wrap_and_upload(
     .await;
     let _ = std::fs::remove_file(&tmp);
     let upload = result?;
-    Ok((relative_path, upload))
+    Ok(WrapUploadOutcome::Single {
+        relative_path,
+        upload,
+    })
+}
+
+/// Generate an opaque, extension-less remote token unique within `files.path`.
+/// A 128-bit collision is astronomically unlikely, but the de-dup invariant is
+/// cheap and keeps `files.path UNIQUE` honest.
+async fn unique_token(pool: &sqlx::SqlitePool, exclude_file_id: i64) -> Result<String, String> {
+    loop {
+        let token = container::random_token();
+        let existing: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM files WHERE path = ? AND id != ?")
+                .bind(&token)
+                .bind(exclude_file_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        if existing.is_none() {
+            return Ok(token);
+        }
+    }
+}
+
+/// Split path: encrypt and upload `source_path` as `ceil(total / PART_SIZE)`
+/// independent parts, one at a time (temp footprint = one part). Each part is a
+/// standalone `.bbx` object; on any part failure, already-uploaded part objects
+/// are best-effort deleted so a partial split never leaks. Overall progress
+/// advances one part-chunk per part during its Uploading phase (the slow leg);
+/// Encrypting/Hashing hold the baseline so the bar stays monotonic, while the
+/// phase label still updates.
+async fn wrap_and_upload_split(
+    pool: &sqlx::SqlitePool,
+    app_root: &str,
+    source_path: &std::path::Path,
+    exclude_file_id: i64,
+    total: u64,
+    key: &[u8; 32],
+    mut on_progress: impl FnMut(Phase, i64, i64),
+) -> Result<WrapUploadOutcome, String> {
+    use crate::providers::baidu_netdisk::UploadPhase;
+
+    let placeholder_path = unique_token(pool, exclude_file_id).await?;
+    let n_parts = total.div_ceil(PART_SIZE);
+    let total_i = total as i64;
+    let mut parts: Vec<UploadedPart> = Vec::with_capacity(n_parts as usize);
+    let mut completed_plaintext: i64 = 0;
+
+    for i in 0..n_parts {
+        let offset = i * PART_SIZE;
+        let len = PART_SIZE.min(total - offset);
+        let object_name = container::random_token();
+        let remote_path = format!("{app_root}/{object_name}");
+        let tmp = std::env::temp_dir()
+            .join(format!("{WRAP_TEMP_PREFIX}{}.bbx", container::random_token()));
+
+        // Encrypt this range → tmp on the blocking pool. The bar holds at the
+        // baseline; we drain the channel only to keep emitting the phase label.
+        {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+            let src = source_path.to_path_buf();
+            let dst = tmp.clone();
+            let key = *key;
+            let wrap_task = tokio::task::spawn_blocking(move || {
+                container::wrap_range_with_progress(&src, &dst, &key, offset, len, |_, _| {
+                    let _ = tx.send(());
+                })
+            });
+            while rx.recv().await.is_some() {
+                on_progress(Phase::Encrypting, completed_plaintext, total_i);
+            }
+            match wrap_task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    cleanup_part_objects(pool, app_root, &parts).await;
+                    return Err(format!("container wrap (part {i}) failed: {e}"));
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    cleanup_part_objects(pool, app_root, &parts).await;
+                    return Err(format!("container wrap task (part {i}) failed: {e}"));
+                }
+            }
+        }
+
+        let part_len = len as i64;
+        let base = completed_plaintext;
+        let result = upload_to_remote(pool, &tmp, &remote_path, |phase, done, ph_total| {
+            let p = match phase {
+                UploadPhase::Hashing => Phase::Hashing,
+                UploadPhase::Uploading => Phase::Uploading,
+            };
+            // Advance the overall bar only during Uploading, scaled to this
+            // part's share of the whole-file plaintext; Hashing holds baseline.
+            let overall = if matches!(phase, UploadPhase::Uploading) && ph_total > 0 {
+                base + (done as i128 * part_len as i128 / ph_total as i128) as i64
+            } else {
+                base
+            };
+            on_progress(p, overall, total_i);
+        })
+        .await;
+        let _ = std::fs::remove_file(&tmp);
+
+        let upload = match result {
+            Ok(u) => u,
+            Err(e) => {
+                cleanup_part_objects(pool, app_root, &parts).await;
+                return Err(format!("upload (part {i}) failed: {e}"));
+            }
+        };
+
+        parts.push(UploadedPart {
+            index: i as i64,
+            object_name,
+            fs_id: upload.fs_id,
+            md5: upload.md5,
+            ciphertext_size: upload.size,
+            plaintext_size: part_len,
+        });
+        completed_plaintext += part_len;
+    }
+
+    Ok(WrapUploadOutcome::Split {
+        placeholder_path,
+        total_plaintext: total_i,
+        parts,
+    })
+}
+
+/// Best-effort delete of already-uploaded part objects when a split upload
+/// aborts mid-way, so a failed multi-part upload doesn't leak remote objects.
+async fn cleanup_part_objects(pool: &sqlx::SqlitePool, app_root: &str, parts: &[UploadedPart]) {
+    for part in parts {
+        let remote_path = format!("{app_root}/{}", part.object_name);
+        if let Err(e) = crate::commands::remote::delete_on_remote(pool, &remote_path).await {
+            eprintln!("Split upload cleanup: failed to delete orphan part {remote_path}: {e}");
+        }
+    }
+}
+
+/// Persist a split file's parts: clear any prior rows for this file (so a retry
+/// is idempotent) then insert the new set.
+pub(crate) async fn persist_remote_parts(
+    pool: &sqlx::SqlitePool,
+    file_id: i64,
+    parts: &[UploadedPart],
+) -> Result<(), String> {
+    sqlx::query("DELETE FROM remote_parts WHERE file_id = ?")
+        .bind(file_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    for part in parts {
+        sqlx::query(
+            "INSERT INTO remote_parts \
+             (file_id, part_index, object_name, fs_id, md5, ciphertext_size, plaintext_size) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(file_id)
+        .bind(part.index)
+        .bind(&part.object_name)
+        .bind(&part.fs_id)
+        .bind(&part.md5)
+        .bind(part.ciphertext_size)
+        .bind(part.plaintext_size)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn emit(app: &AppHandle, file_id: i64, file_name: &str, status: &str, error: Option<String>) {

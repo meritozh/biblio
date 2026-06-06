@@ -41,5 +41,26 @@ pub fn get_migrations() -> Vec<Migration> {
                    'galgame_filename', 1, 'game', 'filename', 'galgame');",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "remote multi-part objects",
+            // A file larger than the remote per-object cap (Baidu SVIP: 20 GB)
+            // is uploaded as N encrypted parts instead of one object. Each part
+            // is an independent `.bbx` with its own remote object; this table
+            // maps one logical file -> its ordered parts. The file row carries
+            // `remote_container = 'bbx1-split'`; single-object rows ('bbx1') and
+            // legacy raw rows (NULL) have no parts and are untouched.
+            sql: "CREATE TABLE IF NOT EXISTS remote_parts (\
+                      file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, \
+                      part_index INTEGER NOT NULL, \
+                      object_name TEXT NOT NULL, \
+                      fs_id TEXT, \
+                      md5 TEXT, \
+                      ciphertext_size INTEGER, \
+                      plaintext_size INTEGER, \
+                      PRIMARY KEY (file_id, part_index)\
+                  );",
+            kind: MigrationKind::Up,
+        },
     ]
 }

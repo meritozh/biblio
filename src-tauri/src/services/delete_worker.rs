@@ -16,7 +16,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_sql::{DbInstances, DbPool};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::commands::remote::delete_on_remote;
+use crate::commands::remote::delete_on_remote_for_file;
 
 #[derive(Debug, Clone)]
 pub struct DeleteJob {
@@ -106,7 +106,7 @@ async fn process_one(app: &AppHandle, job: DeleteJob) {
     emit(app, file_id, &display_name, "deleting", None);
 
     if storage_kind == "remote" {
-        if let Err(e) = delete_on_remote(&pool, &path).await {
+        if let Err(e) = delete_on_remote_for_file(&pool, file_id, &path).await {
             emit(app, file_id, &display_name, "error", Some(e));
             return;
         }

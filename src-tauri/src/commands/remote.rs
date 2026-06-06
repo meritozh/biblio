@@ -199,6 +199,50 @@ pub async fn delete_on_remote(pool: &sqlx::SqlitePool, remote_path: &str) -> Res
         .map_err(|e: BaiduError| e.0)
 }
 
+/// Delete a file's remote object(s), handling both layouts: a single 'bbx1'
+/// object at `single_remote_path`, or every part object of a 'bbx1-split' file
+/// (looked up from `remote_parts`). Callers pass the already-resolved single
+/// path (for non-split rows) plus the `file_id` so split rows are expanded.
+/// Every part is attempted even if one fails; the first error is returned (so a
+/// caller using strict "delete remote before dropping the row" ordering won't
+/// drop the row while objects remain).
+pub async fn delete_on_remote_for_file(
+    pool: &sqlx::SqlitePool,
+    file_id: i64,
+    single_remote_path: &str,
+) -> Result<(), String> {
+    let parts: Vec<(String,)> =
+        sqlx::query_as("SELECT object_name FROM remote_parts WHERE file_id = ? ORDER BY part_index")
+            .bind(file_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    let access_token = ensure_access_token(pool).await?;
+
+    if parts.is_empty() {
+        return delete_file(&access_token, single_remote_path)
+            .await
+            .map_err(|e: BaiduError| e.0);
+    }
+
+    let roots = crate::commands::settings::load_path_roots(pool).await?;
+    let app_root = roots.app_root.trim_end_matches('/');
+    let mut first_err: Option<String> = None;
+    for (object_name,) in parts {
+        let remote_path = format!("{app_root}/{object_name}");
+        if let Err(e) = delete_file(&access_token, &remote_path).await {
+            if first_err.is_none() {
+                first_err = Some(e.0);
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
 /// Push a batch of file IDs into the upload worker queue and return immediately.
 ///
 /// Producer-consumer model: the worker drains jobs serially and emits

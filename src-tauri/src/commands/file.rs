@@ -2713,7 +2713,7 @@ pub async fn file_delete(
     // the same id. Matches the bulk-delete worker's policy and prevents
     // orphans on Baidu Pan / in the storage folder.
     if storage_kind == "remote" {
-        super::remote::delete_on_remote(&pool, &path).await?;
+        super::remote::delete_on_remote_for_file(&pool, id, &path).await?;
     } else if in_storage {
         if let Err(e) = fs::remove_file(&path) {
             // "Already missing on disk" satisfies the invariant — the
@@ -3197,7 +3197,7 @@ pub async fn file_replace(
         // (in_storage=false skipped the local branch, the DB row went
         // away, the cloud copy stayed).
         if storage_kind == "remote" {
-            super::remote::delete_on_remote(&pool, &existing_path).await?;
+            super::remote::delete_on_remote_for_file(&pool, existing_file_id, &existing_path).await?;
         } else if in_storage {
             if let Err(e) = fs::remove_file(&existing_path) {
                 if e.kind() != std::io::ErrorKind::NotFound {

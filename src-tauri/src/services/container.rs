@@ -24,7 +24,7 @@
 //! RAM, matching the 4 MiB slice size the Baidu uploader already uses.
 
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use base64::Engine;
@@ -75,10 +75,48 @@ pub fn wrap_with_progress(
     }
 }
 
+/// Encrypt the byte range `[offset, offset + len)` of `src` into a standalone
+/// container at `dst`. Used to split an oversized upload artifact into parts
+/// that each stay under the remote's per-object size cap: each part is a
+/// complete, independently-decryptable `.bbx` (its own nonce, its own
+/// `encrypt_last` final frame), so download just unwraps each part and
+/// concatenates the plaintext. `total`/`done` reported to `on_progress` are
+/// plaintext bytes within this range.
+pub fn wrap_range_with_progress(
+    src: &Path,
+    dst: &Path,
+    key: &[u8; 32],
+    offset: u64,
+    len: u64,
+    on_progress: impl FnMut(u64, u64),
+) -> io::Result<()> {
+    let mut nonce = [0u8; NONCE_LEN];
+    OsRng.fill_bytes(&mut nonce);
+
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
+    let enc = EncryptorBE32::from_aead(cipher, nonce.as_ref().into());
+
+    let mut input = File::open(src)?;
+    input.seek(SeekFrom::Start(offset))?;
+    // `take(len)` bounds the frame loop to exactly this part's bytes; the read
+    // hitting the limit looks like EOF, which fires `encrypt_last` — same path
+    // as a whole-file wrap reaching the real EOF.
+    let mut bounded = input.take(len);
+    let mut output = File::create(dst)?;
+    match wrap_frames(&mut bounded, &mut output, &nonce, enc, len, on_progress) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(dst);
+            Err(e)
+        }
+    }
+}
+
 /// Inner loop of [`wrap`]: write the nonce, then the AEAD frames, then flush.
-/// Split out so [`wrap`] can clean up a partial `dst` on any error.
+/// Split out so [`wrap`] can clean up a partial `dst` on any error. `input` is
+/// a reader (a whole `File`, or a length-bounded `Take<File>` for a part).
 fn wrap_frames(
-    input: &mut File,
+    input: &mut impl Read,
     output: &mut File,
     nonce: &[u8; NONCE_LEN],
     mut enc: EncryptorBE32<XChaCha20Poly1305>,
@@ -136,6 +174,22 @@ pub fn unwrap(src: &Path, dst: &Path, key: &[u8; 32]) -> io::Result<()> {
             Err(e)
         }
     }
+}
+
+/// Decrypt the container at `src` and append its plaintext to the already-open
+/// `output` (positioned at its current end). Used to reassemble a multi-part
+/// upload: each part is unwrapped in order onto the tail of the cache file.
+/// Unlike [`unwrap`], this does NOT delete `output` on error — `output` holds
+/// the prior parts and is owned by the caller, which cleans up the whole file
+/// if any part fails.
+pub fn unwrap_append(src: &Path, output: &mut File, key: &[u8; 32]) -> io::Result<()> {
+    let mut input = File::open(src)?;
+    let mut nonce = [0u8; NONCE_LEN];
+    input.read_exact(&mut nonce)?;
+
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
+    let dec = DecryptorBE32::from_aead(cipher, nonce.as_ref().into());
+    unwrap_frames(&mut input, output, dec)
 }
 
 /// Inner loop of [`unwrap`]: decrypt AEAD frames into `output`, then flush.
@@ -331,5 +385,70 @@ mod tests {
         for p in [&src, &enc, &dec] {
             let _ = std::fs::remove_file(p);
         }
+    }
+
+    /// The load-bearing multi-part invariant: splitting plaintext into ranges,
+    /// wrapping each range independently, then unwrap-appending the parts in
+    /// order reconstructs the source byte-for-byte. A boundary off-by-one here
+    /// would silently corrupt a reassembled multi-GB upload, so this pins it on
+    /// a tiny fixture (part size deliberately not a multiple of the 4 MiB frame).
+    fn roundtrip_split(data: &[u8], part_size: u64) {
+        use std::io::Write as _;
+        let key = [7u8; 32];
+        let src = tmp("split-src");
+        let dec = tmp("split-dec");
+        std::fs::write(&src, data).unwrap();
+
+        let total = data.len() as u64;
+        let n_parts = total.div_ceil(part_size).max(1);
+        let mut part_files = Vec::new();
+        for i in 0..n_parts {
+            let offset = i * part_size;
+            let len = part_size.min(total - offset);
+            let part = tmp(&format!("split-part{i}"));
+            wrap_range_with_progress(&src, &part, &key, offset, len, |_, _| {}).unwrap();
+            // Each part is an independent, complete container.
+            let cipher = std::fs::read(&part).unwrap();
+            assert!(cipher.len() >= NONCE_LEN + TAG_LEN);
+            part_files.push(part);
+        }
+
+        // Reassemble by unwrap-appending each part in order.
+        {
+            let mut out = std::fs::File::create(&dec).unwrap();
+            for part in &part_files {
+                unwrap_append(part, &mut out, &key).unwrap();
+            }
+            out.flush().unwrap();
+        }
+        assert_eq!(std::fs::read(&dec).unwrap(), data, "reassembly must be byte-exact");
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dec);
+        for p in &part_files {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn split_roundtrip_multi_part_reassembles_exactly() {
+        // 2.5 frames of data, split at 1 MiB → parts cross frame boundaries and
+        // the final part is partial; exercises encrypt_last on every part.
+        let data: Vec<u8> = (0..(2 * CHUNK + CHUNK / 2)).map(|i| (i * 31 % 251) as u8).collect();
+        roundtrip_split(&data, 1024 * 1024);
+    }
+
+    #[test]
+    fn split_roundtrip_part_size_exact_multiple_of_frame() {
+        // Part size == one frame, total == 3 frames: every part ends exactly on
+        // a frame boundary (the empty-final-frame case must still round-trip).
+        let data: Vec<u8> = (0..(3 * CHUNK)).map(|i| (i % 256) as u8).collect();
+        roundtrip_split(&data, CHUNK as u64);
+    }
+
+    #[test]
+    fn split_roundtrip_single_part_when_data_fits() {
+        // Data smaller than the part size → exactly one part, still correct.
+        roundtrip_split(b"a small payload that fits in one part", 1024 * 1024);
     }
 }

@@ -30,7 +30,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::commands::remote::{delete_on_remote, ensure_access_token, load_config};
 use crate::providers::baidu_netdisk::{download_to, get_download_dlink};
 use crate::services::container;
-use crate::services::upload_worker::wrap_and_upload;
+use crate::services::upload_worker::{WrapUploadOutcome, persist_remote_parts, wrap_and_upload};
 
 /// Max raw plaintext temps buffered between the download and upload legs.
 const PIPELINE_DEPTH: usize = 5;
@@ -204,38 +204,64 @@ async fn reencrypt_one(app: &AppHandle, item: Downloaded) {
     //    on Baidu is untouched and the row stays legacy (re-runnable).
     // Re-encryption is a background backfill — no per-slice progress UI, so a
     // no-op progress sink.
-    let (relative_path, upload) =
-        match wrap_and_upload(&pool, &app_root, &raw_temp, file_id, |_, _, _| {}).await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = std::fs::remove_file(&raw_temp);
-            emit(app, file_id, &display_name, "error", Some(e));
-            return;
-        }
-    };
+    let outcome =
+        match wrap_and_upload(&pool, &app_root, &raw_temp, file_id, |_, _, _| {}).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = std::fs::remove_file(&raw_temp);
+                emit(app, file_id, &display_name, "error", Some(e));
+                return;
+            }
+        };
     let _ = std::fs::remove_file(&raw_temp);
 
-    // 2. Flip the row onto the NEW encrypted object BEFORE deleting the old
+    // 2. Flip the row onto the NEW encrypted object(s) BEFORE deleting the old
     //    raw one. If this UPDATE fails, the row still points at the intact raw
     //    object (downloadable, remote_container still NULL → re-runnable) and
     //    the new encrypted copy is a harmless orphan — never a row pointing at
     //    a deleted object. This ordering keeps a live reference at every step.
     //    original_path / display_name are untouched, so the real filename is
-    //    still recovered on download.
-    if let Err(e) = sqlx::query(
-        "UPDATE files SET \
-         path = ?, remote_fs_id = ?, remote_md5 = ?, remote_size = ?, remote_container = 'bbx1' \
-         WHERE id = ?",
-    )
-    .bind(&relative_path)
-    .bind(&upload.fs_id)
-    .bind(&upload.md5)
-    .bind(upload.size)
-    .bind(file_id)
-    .execute(&pool)
-    .await
-    {
+    //    still recovered on download. A legacy raw file larger than the part
+    //    threshold re-encrypts into a 'bbx1-split' set, same as a fresh upload.
+    let commit = match &outcome {
+        WrapUploadOutcome::Single {
+            relative_path,
+            upload,
+        } => sqlx::query(
+            "UPDATE files SET \
+             path = ?, remote_fs_id = ?, remote_md5 = ?, remote_size = ?, remote_container = 'bbx1' \
+             WHERE id = ?",
+        )
+        .bind(relative_path)
+        .bind(&upload.fs_id)
+        .bind(&upload.md5)
+        .bind(upload.size)
+        .bind(file_id)
+        .execute(&pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string()),
+        WrapUploadOutcome::Split {
+            placeholder_path,
+            total_plaintext,
+            parts,
+        } => match sqlx::query(
+            "UPDATE files SET \
+             path = ?, remote_fs_id = NULL, remote_md5 = NULL, remote_size = ?, \
+             remote_container = 'bbx1-split' \
+             WHERE id = ?",
+        )
+        .bind(placeholder_path)
+        .bind(total_plaintext)
+        .bind(file_id)
+        .execute(&pool)
+        .await
+        {
+            Ok(_) => persist_remote_parts(&pool, file_id, parts).await,
+            Err(e) => Err(e.to_string()),
+        },
+    };
+    if let Err(e) = commit {
         emit(
             app,
             file_id,
