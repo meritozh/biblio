@@ -44,8 +44,17 @@ const TAG_LEN: usize = 16;
 /// app_settings key holding the base64-encoded 32-byte container key.
 const KEY_SETTING: &str = "remote_container_key";
 
-/// Encrypt `src` into the container at `dst`.
-pub fn wrap(src: &Path, dst: &Path, key: &[u8; 32]) -> io::Result<()> {
+/// Encrypt `src` into the container at `dst`, invoking `on_progress(done,
+/// total)` after each chunk so a long encryption of a multi-GB file can drive
+/// a UI progress bar. `total` is the source file's byte length (stat'd once);
+/// `done` is plaintext bytes consumed so far. Pass `|_, _| {}` when progress
+/// isn't needed.
+pub fn wrap_with_progress(
+    src: &Path,
+    dst: &Path,
+    key: &[u8; 32],
+    on_progress: impl FnMut(u64, u64),
+) -> io::Result<()> {
     let mut nonce = [0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce);
 
@@ -53,10 +62,11 @@ pub fn wrap(src: &Path, dst: &Path, key: &[u8; 32]) -> io::Result<()> {
     let enc = EncryptorBE32::from_aead(cipher, nonce.as_ref().into());
 
     let mut input = File::open(src)?;
+    let total = input.metadata()?.len();
     let mut output = File::create(dst)?;
     // Any failure after this point leaves a partial container on disk; remove
     // it so callers never mistake a truncated file for a valid one.
-    match wrap_frames(&mut input, &mut output, &nonce, enc) {
+    match wrap_frames(&mut input, &mut output, &nonce, enc, total, on_progress) {
         Ok(()) => Ok(()),
         Err(e) => {
             let _ = std::fs::remove_file(dst);
@@ -72,10 +82,13 @@ fn wrap_frames(
     output: &mut File,
     nonce: &[u8; NONCE_LEN],
     mut enc: EncryptorBE32<XChaCha20Poly1305>,
+    total: u64,
+    mut on_progress: impl FnMut(u64, u64),
 ) -> io::Result<()> {
     output.write_all(nonce)?;
 
     let mut buf = vec![0u8; CHUNK];
+    let mut done: u64 = 0;
     loop {
         let n = read_fill(input, &mut buf)?;
         if n == CHUNK {
@@ -83,6 +96,8 @@ fn wrap_frames(
                 .encrypt_next(&buf[..n])
                 .map_err(|e| io::Error::other(format!("encrypt_next: {e}")))?;
             output.write_all(&frame)?;
+            done += n as u64;
+            on_progress(done, total);
         } else {
             // Short read = EOF (and the exact-multiple case yields a final
             // empty last frame, which is valid).
@@ -90,6 +105,8 @@ fn wrap_frames(
                 .encrypt_last(&buf[..n])
                 .map_err(|e| io::Error::other(format!("encrypt_last: {e}")))?;
             output.write_all(&frame)?;
+            done += n as u64;
+            on_progress(done, total);
             break;
         }
     }
@@ -246,7 +263,7 @@ mod tests {
         let (src, enc, dec) = (tmp("src"), tmp("enc"), tmp("dec"));
         std::fs::write(&src, data).unwrap();
 
-        wrap(&src, &enc, &key).unwrap();
+        wrap_with_progress(&src, &enc, &key, |_, _| {}).unwrap();
         let cipher = std::fs::read(&enc).unwrap();
         // Container is at least nonce + tag, and never the raw plaintext.
         assert!(cipher.len() >= NONCE_LEN + TAG_LEN);
@@ -291,7 +308,7 @@ mod tests {
     fn wrong_key_fails_to_decrypt() {
         let (src, enc, dec) = (tmp("wk_src"), tmp("wk_enc"), tmp("wk_dec"));
         std::fs::write(&src, b"secret bytes").unwrap();
-        wrap(&src, &enc, &[1u8; 32]).unwrap();
+        wrap_with_progress(&src, &enc, &[1u8; 32], |_, _| {}).unwrap();
         assert!(unwrap(&enc, &dec, &[2u8; 32]).is_err());
         for p in [&src, &enc, &dec] {
             let _ = std::fs::remove_file(p);
@@ -303,7 +320,7 @@ mod tests {
         let key = [5u8; 32];
         let (src, enc, dec) = (tmp("t_src"), tmp("t_enc"), tmp("t_dec"));
         std::fs::write(&src, b"authenticated content here").unwrap();
-        wrap(&src, &enc, &key).unwrap();
+        wrap_with_progress(&src, &enc, &key, |_, _| {}).unwrap();
 
         let mut cipher = std::fs::read(&enc).unwrap();
         let last = cipher.len() - 1;

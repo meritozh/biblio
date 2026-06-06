@@ -38,6 +38,17 @@ pub struct RemoteUploadProgressEvent {
     pub file_name: String,
     pub status: String,
     pub error: Option<String>,
+    /// Bytes done so far / total, populated on progress ticks. `None` on
+    /// status-only events (pending, error). The frontend derives percent +
+    /// speed from successive ticks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uploaded_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<i64>,
+    /// Which long phase the byte counts belong to: "encrypting", "hashing", or
+    /// "uploading". `None` on status-only events. Drives the panel's row label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 async fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
@@ -152,8 +163,29 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
     // extension-less random name, then record the 'bbx1' marker so the
     // download path knows to unwrap it. Plaintext never leaves the device;
     // only ciphertext is hashed for Baidu's block_list.
+    //
+    // Progress callback throttled to ~4 events/sec within a phase: a 10 GB
+    // file is ~2,600 slices/blocks per phase, and emitting each would flood the
+    // webview event bus. Always emit on a phase change so the bar's reset to 0%
+    // for the next phase (Encrypting → Hashing → Uploading) isn't throttled
+    // away. The terminal `success`/`error` status `emit` follows separately.
+    let progress_app = app.clone();
+    let progress_name = display_name.clone();
+    let mut last_emit = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let mut last_phase: Option<Phase> = None;
+    let on_progress = move |phase: Phase, done: i64, total: i64| {
+        let now = std::time::Instant::now();
+        let phase_changed = last_phase != Some(phase);
+        if phase_changed || now.duration_since(last_emit) >= std::time::Duration::from_millis(250) {
+            last_emit = now;
+            last_phase = Some(phase);
+            emit_progress(&progress_app, file_id, &progress_name, phase, done, total);
+        }
+    };
     let (relative_path, upload) =
-        match wrap_and_upload(&pool, &remote_cfg.app_root, &source_path, file_id).await {
+        match wrap_and_upload(&pool, &remote_cfg.app_root, &source_path, file_id, on_progress)
+            .await
+        {
             Ok(v) => v,
             Err(e) => {
                 emit(app, file_id, &display_name, "error", Some(e));
@@ -211,12 +243,25 @@ async fn process_one(app: &AppHandle, job: UploadJob) {
 /// Returns the stored relative path (a random token) and Baidu's upload
 /// result. Because only the ciphertext is hashed, 秒传 never matches and the
 /// remote object carries no recognizable name, extension, or format.
+/// The long-running phases of a remote upload, reported to the progress
+/// callback so the UI can label the bar. `Encrypting` and `Hashing` each read
+/// the whole multi-GB file and cost minutes; `Uploading` is the slice POSTs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Phase {
+    Encrypting,
+    Hashing,
+    Uploading,
+}
+
 pub(crate) async fn wrap_and_upload(
     pool: &sqlx::SqlitePool,
     app_root: &str,
     source_path: &std::path::Path,
     exclude_file_id: i64,
+    mut on_progress: impl FnMut(Phase, i64, i64),
 ) -> Result<(String, UploadResult), String> {
+    use crate::providers::baidu_netdisk::UploadPhase;
+
     let key = container::get_or_create_key(pool).await?;
     let app_root = app_root.trim_end_matches('/');
 
@@ -241,11 +286,42 @@ pub(crate) async fn wrap_and_upload(
     let tmp = std::env::temp_dir().join(format!("biblio-wrap-{}.bbx", container::random_token()));
     // A failed wrap can still leave a partial container behind; clean up the
     // temp before propagating so it isn't leaked on this early-return path.
-    if let Err(e) = container::wrap(source_path, &tmp, &key) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!("container wrap failed: {e}"));
+    // `wrap_with_progress` is blocking + CPU-heavy; offload to the blocking
+    // pool so it doesn't stall the worker's async runtime, threading progress
+    // out through a channel to keep emitting `Encrypting` ticks.
+    {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(i64, i64)>();
+        let src = source_path.to_path_buf();
+        let dst = tmp.clone();
+        let wrap_task = tokio::task::spawn_blocking(move || {
+            container::wrap_with_progress(&src, &dst, &key, |done, total| {
+                let _ = tx.send((done as i64, total as i64));
+            })
+        });
+        while let Some((done, total)) = rx.recv().await {
+            on_progress(Phase::Encrypting, done, total);
+        }
+        match wrap_task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(format!("container wrap failed: {e}"));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(format!("container wrap task failed: {e}"));
+            }
+        }
     }
-    let result = upload_to_remote(pool, &tmp, &remote_path).await;
+
+    let result = upload_to_remote(pool, &tmp, &remote_path, |phase, done, total| {
+        let p = match phase {
+            UploadPhase::Hashing => Phase::Hashing,
+            UploadPhase::Uploading => Phase::Uploading,
+        };
+        on_progress(p, done, total);
+    })
+    .await;
     let _ = std::fs::remove_file(&tmp);
     let upload = result?;
     Ok((relative_path, upload))
@@ -259,6 +335,39 @@ fn emit(app: &AppHandle, file_id: i64, file_name: &str, status: &str, error: Opt
             file_name: file_name.to_string(),
             status: status.to_string(),
             error,
+            uploaded_bytes: None,
+            total_bytes: None,
+            phase: None,
+        },
+    );
+}
+
+/// Emit a progress tick carrying byte counts + the active phase. Status stays
+/// `uploading` for all three phases (the panel's spinner is the same); the
+/// `phase` label distinguishes Encrypting / Hashing / Uploading.
+fn emit_progress(
+    app: &AppHandle,
+    file_id: i64,
+    file_name: &str,
+    phase: Phase,
+    done: i64,
+    total: i64,
+) {
+    let phase_str = match phase {
+        Phase::Encrypting => "encrypting",
+        Phase::Hashing => "hashing",
+        Phase::Uploading => "uploading",
+    };
+    let _ = app.emit(
+        "remote-upload-progress",
+        &RemoteUploadProgressEvent {
+            file_id,
+            file_name: file_name.to_string(),
+            status: "uploading".to_string(),
+            error: None,
+            uploaded_bytes: Some(done),
+            total_bytes: Some(total),
+            phase: Some(phase_str.to_string()),
         },
     );
 }

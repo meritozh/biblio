@@ -21,7 +21,7 @@ pub use auth::build_authorize_url;
 pub use delete::delete_file;
 pub use download::{download_to, get_download_dlink};
 pub use types::{BaiduError, UploadResult};
-pub use upload::upload_file;
+pub use upload::{upload_file, UploadPhase};
 
 use std::time::Duration;
 

@@ -45,7 +45,17 @@ async function ensureListener(): Promise<void> {
           ...s,
           uploads: s.uploads.map((u) =>
             u.file_id === event.file_id
-              ? { ...u, status: event.status, error: event.error, file_name: event.file_name || u.file_name }
+              ? {
+                  ...u,
+                  status: event.status,
+                  error: event.error,
+                  file_name: event.file_name || u.file_name,
+                  // Byte counts + phase only ride progress ticks; a status-only
+                  // event (e.g. error) omits them, so keep the last values.
+                  uploaded_bytes: event.uploaded_bytes ?? u.uploaded_bytes,
+                  total_bytes: event.total_bytes ?? u.total_bytes,
+                  phase: event.phase ?? u.phase,
+                }
               : u
           ),
         }));

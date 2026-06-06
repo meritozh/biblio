@@ -11,6 +11,19 @@ import {
 } from 'lucide-react';
 import type { RemoteUploadProgress } from '@/types';
 
+/** Format a byte count as a compact human string (e.g. "4.2 GB"). */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(1)} ${units[i]}`;
+}
+
 interface RemoteUploadProgressPanelProps {
   uploads: RemoteUploadProgress[];
   minimized: boolean;
@@ -20,7 +33,7 @@ interface RemoteUploadProgressPanelProps {
   onClearCompleted: () => void;
 }
 
-const ROW_HEIGHT = 36;
+const ROW_HEIGHT = 48;
 const MAX_VISIBLE_ROWS = 8;
 
 export function RemoteUploadProgressPanel({
@@ -133,6 +146,12 @@ export function RemoteUploadProgressPanel({
 
 function UploadList({ uploads }: { uploads: RemoteUploadProgress[] }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Per-file speed sampler: last seen (bytes, timestamp) → bytes/sec between
+  // successive progress ticks. Lives in a ref so it survives re-renders without
+  // re-triggering them. Keyed by file_id.
+  const speedRef = useRef<Map<number, { bytes: number; t: number; bps: number }>>(
+    new Map()
+  );
   const virtualizer = useVirtualizer({
     count: uploads.length,
     getScrollElement: () => scrollRef.current,
@@ -151,6 +170,36 @@ function UploadList({ uploads }: { uploads: RemoteUploadProgress[] }) {
         {virtualItems.map((virtualRow) => {
           const u = uploads[virtualRow.index];
           if (!u) return null;
+
+          const hasProgress =
+            u.status === 'uploading' &&
+            u.total_bytes != null &&
+            u.total_bytes > 0 &&
+            u.uploaded_bytes != null;
+          const pct = hasProgress
+            ? Math.min(100, Math.round((u.uploaded_bytes! / u.total_bytes!) * 100))
+            : null;
+
+          // Speed only makes sense for the network upload phase — encrypt/hash
+          // are local disk and their "speed" is misleading. Sample keyed by
+          // file so the rate resets cleanly when the phase rolls over (bytes
+          // jump back to ~0). bps in bytes/sec from successive ticks.
+          let bps = 0;
+          if (hasProgress && u.phase === 'uploading') {
+            const now = performance.now();
+            const prev = speedRef.current.get(u.file_id);
+            if (prev && u.uploaded_bytes! > prev.bytes && now > prev.t) {
+              bps = ((u.uploaded_bytes! - prev.bytes) / (now - prev.t)) * 1000;
+            } else if (prev) {
+              bps = prev.bps; // no new bytes this render — keep last estimate
+            }
+            speedRef.current.set(u.file_id, {
+              bytes: u.uploaded_bytes!,
+              t: now,
+              bps,
+            });
+          }
+
           return (
             <div
               key={u.file_id}
@@ -169,14 +218,26 @@ function UploadList({ uploads }: { uploads: RemoteUploadProgress[] }) {
                 <p className="text-xs truncate" title={u.file_name}>
                   {u.file_name}
                 </p>
-                {u.status === 'error' && u.error && (
+                {u.status === 'error' && u.error ? (
                   <p className="text-[10px] text-destructive truncate" title={u.error}>
                     {u.error}
                   </p>
-                )}
+                ) : hasProgress ? (
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <div className="flex-1 h-1 rounded-full bg-secondary overflow-hidden">
+                      <div
+                        className="h-full bg-primary transition-[width] duration-200"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
+                      {pct}%{bps > 0 ? ` · ${formatBytes(bps)}/s` : ''}
+                    </span>
+                  </div>
+                ) : null}
               </div>
               <span className="text-[10px] text-muted-foreground shrink-0">
-                {labelFor(u.status)}
+                {u.status === 'uploading' ? phaseLabel(u.phase) : labelFor(u.status)}
               </span>
             </div>
           );
@@ -213,5 +274,20 @@ function labelFor(status: RemoteUploadProgress['status']): string {
       return 'Failed';
     case 'skipped':
       return 'Skipped';
+  }
+}
+
+/** Phase-specific label for an in-flight upload. The `uploading` status spans
+ *  three multi-minute phases (encrypt → hash → POST); showing the phase keeps
+ *  a large file from looking stuck on a blank "Uploading…". */
+function phaseLabel(phase: RemoteUploadProgress['phase']): string {
+  switch (phase) {
+    case 'encrypting':
+      return 'Encrypting…';
+    case 'hashing':
+      return 'Hashing…';
+    case 'uploading':
+    case undefined:
+      return 'Uploading…';
   }
 }

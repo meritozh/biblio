@@ -202,7 +202,10 @@ async fn reencrypt_one(app: &AppHandle, item: Downloaded) {
 
     // 1. Upload the encrypted replacement FIRST. If this fails the raw copy
     //    on Baidu is untouched and the row stays legacy (re-runnable).
-    let (relative_path, upload) = match wrap_and_upload(&pool, &app_root, &raw_temp, file_id).await
+    // Re-encryption is a background backfill — no per-slice progress UI, so a
+    // no-op progress sink.
+    let (relative_path, upload) =
+        match wrap_and_upload(&pool, &app_root, &raw_temp, file_id, |_, _, _| {}).await
     {
         Ok(v) => v,
         Err(e) => {

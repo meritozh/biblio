@@ -8,11 +8,15 @@ use super::types::{
     BaiduError, CreateResponse, PrecreateResponse, SliceUploadResponse, UploadResult,
 };
 
-/// Block size for chunked upload. Baidu's free tier caps at 4 MB per
-/// slice; VIP tiers allow 16 MB (and SVIP 32 MB), but detecting the tier
-/// requires an extra `xpan/nas?method=uinfo` round-trip and isn't worth
-/// the complexity for biblio's use case — 4 MB is accepted everywhere.
-const SLICE_SIZE: usize = 4 * 1024 * 1024;
+/// Slice size for chunked upload. We always use 32 MB — the 超级会员 (SVIP)
+/// per-slice maximum. The old fixed 4 MB capped uploads at Baidu's ~2048-slice
+/// block_list limit (an 8 GB file = 2065 slices died at partseq 2048 with errno
+/// 31299), and 32 MB also minimises round-trips (20 GB ÷ 32 MB = 640 slices).
+/// NOTE: this REQUIRES an SVIP account — 普通会员 caps at 16 MB and 普通用户 at
+/// 4 MB, either of which would reject 32 MB slices. The account this app uploads
+/// from is SVIP; revisit (per-tier detection via xpan/nas?method=uinfo) if that
+/// ever changes. See https://pan.baidu.com/union/doc/nksg0s9vi
+const SLICE_SIZE: usize = 32 * 1024 * 1024;
 
 const PRECREATE_URL: &str = "https://pan.baidu.com/rest/2.0/xpan/file";
 const CREATE_URL: &str = "https://pan.baidu.com/rest/2.0/xpan/file";
@@ -52,34 +56,6 @@ const MAX_SESSION_ATTEMPTS: usize = 3;
 /// by re-precreating and re-uploading the missing slices.
 const ERRNO_BLOCK_MISS: i32 = 31363;
 
-/// A slice POST failure, pre-classified and pre-redacted. Built from a
-/// `reqwest::Error` at the point of failure so `retry_loop`'s Display-based
-/// logging never sees the token-bearing slice URL. `transient` drives the
-/// in-place retry; `forbidden` (HTTP 403) signals uploadid expiry to the
-/// session layer.
-struct SliceError {
-    err: BaiduError,
-    transient: bool,
-    forbidden: bool,
-}
-
-impl From<reqwest::Error> for SliceError {
-    fn from(e: reqwest::Error) -> Self {
-        let forbidden = e.status() == Some(reqwest::StatusCode::FORBIDDEN);
-        SliceError {
-            transient: is_transient(&e),
-            forbidden,
-            err: BaiduError::from(e), // strips the access_token-bearing URL
-        }
-    }
-}
-
-impl std::fmt::Display for SliceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.err.0)
-    }
-}
-
 /// Outcome of one precreate→slices→create session attempt that the outer
 /// resume loop branches on. `Expired` is recoverable (re-precreate + resume);
 /// `Fatal` is a hard failure that should surface to the user immediately.
@@ -92,38 +68,126 @@ enum SessionError {
     Fatal(BaiduError),
 }
 
-/// Per-request network timeout. The default reqwest client has no timeout, so
-/// a stalled slice POST could hang the whole upload worker indefinitely.
+/// Per-request network timeout for the small control calls (precreate, create).
+/// The default reqwest client has no timeout, so a stalled call could hang the
+/// whole upload worker indefinitely.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Whether a reqwest failure is worth retrying. Transient transport problems
-/// (timeouts, connection resets mid-send, and HTTP 5xx from Baidu's servers)
-/// are retryable; a 4xx (bad request, auth) is deterministic and is not — it
-/// would just fail again. Errors without a status (connect/send/timeout) are
-/// treated as transient.
-fn is_transient(e: &reqwest::Error) -> bool {
-    if e.is_timeout() || e.is_connect() || e.is_request() {
-        return true;
+/// Total timeout for a single slice POST. Slices are large (up to `SLICE_SIZE`
+/// = 32 MB), so the 120 s control-call timeout would reject a slice on any
+/// uplink slower than ~273 KB/s (32 MB ÷ 120 s) — re-introducing failures on
+/// the slow asymmetric connections the bigger slices were meant to help. 600 s
+/// tolerates down to ~55 KB/s while still bounding a truly stalled transfer.
+const SLICE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// A failed Baidu request, carrying everything the retry/classification logic
+/// and the user-facing error need: the HTTP status (when the failure was a
+/// non-2xx response) and a redacted message. Unlike `error_for_status()`, the
+/// builder for the HTTP-status case READS THE RESPONSE BODY — Baidu returns its
+/// real reason (errno + error_msg) in the 400/403 body, not in the status, so
+/// discarding it leaves "HTTP 400" with no cause. The message never contains
+/// the request URL (which carries `access_token`); only the body, which does
+/// not.
+struct RequestError {
+    /// `Some` when the failure was a non-success HTTP response; `None` for a
+    /// transport-level failure (connect/timeout/send) that never got a status.
+    status: Option<reqwest::StatusCode>,
+    /// Redacted, user-facing message (HTTP status + decoded Baidu body, or the
+    /// transport error with its URL stripped).
+    message: String,
+}
+
+impl RequestError {
+    /// Build from a transport-level reqwest error (no HTTP response arrived).
+    fn from_transport(e: reqwest::Error) -> Self {
+        RequestError {
+            status: e.status(),
+            // `without_url` strips the access_token-bearing URL.
+            message: format!("HTTP error: {}", e.without_url()),
+        }
     }
-    match e.status() {
-        Some(s) => s.is_server_error(), // 5xx retryable, 4xx not
-        None => true,                   // no status → transport-level, retry
+
+    /// Build from a non-success HTTP response, consuming its body so Baidu's
+    /// errno/error_msg surfaces instead of a bare status code.
+    async fn from_response(resp: reqwest::Response) -> Self {
+        let status = resp.status();
+        // Body read can itself fail (connection dropped mid-body); fall back to
+        // the status line in that case.
+        let body = resp.text().await.unwrap_or_default();
+        let body = body.trim();
+        let message = if body.is_empty() {
+            format!("HTTP {status}")
+        } else {
+            // Cap the body so a stray HTML error page can't flood the UI/log.
+            let snippet: String = body.chars().take(300).collect();
+            format!("HTTP {status} — {snippet}")
+        };
+        RequestError {
+            status: Some(status),
+            message,
+        }
+    }
+
+    /// Whether retrying is worth it. Transient transport problems (timeouts,
+    /// connection resets, no status) and HTTP 5xx are retryable; a 4xx is
+    /// deterministic (it would just fail again) and is not.
+    fn is_transient(&self) -> bool {
+        match self.status {
+            Some(s) => s.is_server_error(), // 5xx retryable, 4xx not
+            None => true,                   // transport-level → retry
+        }
+    }
+
+    fn is_forbidden(&self) -> bool {
+        self.status == Some(reqwest::StatusCode::FORBIDDEN)
     }
 }
 
-/// Run `op` up to `MAX_ATTEMPTS` times, retrying only transient reqwest
-/// errors with exponential backoff. `op` is re-invoked from scratch each
-/// attempt (it rebuilds the request/body), so callers must keep their inputs
-/// cloneable. A non-transient error, or exhausting the attempts, returns the
-/// last error mapped to a `BaiduError`. `label` is included in the give-up
-/// log line.
-async fn with_retry<T, F, Fut>(label: &str, op: F) -> Result<T, BaiduError>
+impl std::fmt::Display for RequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<RequestError> for BaiduError {
+    fn from(e: RequestError) -> Self {
+        BaiduError(e.message)
+    }
+}
+
+/// Send a request, and on a non-success status read the body into a
+/// `RequestError` (capturing Baidu's real errno/error_msg) rather than
+/// discarding it via `error_for_status()`. On success, deserialize the JSON
+/// body into `T`.
+async fn send_and_parse<T: serde::de::DeserializeOwned>(
+    req: reqwest::RequestBuilder,
+) -> Result<T, RequestError> {
+    let resp = req.send().await.map_err(RequestError::from_transport)?;
+    if !resp.status().is_success() {
+        return Err(RequestError::from_response(resp).await);
+    }
+    resp.json::<T>().await.map_err(RequestError::from_transport)
+}
+
+/// Run `op` up to `MAX_ATTEMPTS` times, retrying only transient failures with
+/// exponential backoff, and parse a success body into `T`. `op` returns a
+/// fresh `RequestBuilder` each attempt (the body is consumed on send), so
+/// callers keep their inputs cloneable. A non-transient failure, or exhausting
+/// the attempts, returns the last error as a redacted `BaiduError`. `label` is
+/// included in the give-up log line.
+async fn with_retry<T, F>(label: &str, mut op: F) -> Result<T, BaiduError>
 where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, reqwest::Error>>,
+    T: serde::de::DeserializeOwned,
+    F: FnMut() -> reqwest::RequestBuilder,
 {
-    // `BaiduError::from` strips the token-bearing URL before stringifying.
-    retry_loop(label, RETRY_BASE_DELAY, is_transient, BaiduError::from, op).await
+    retry_loop(
+        label,
+        RETRY_BASE_DELAY,
+        RequestError::is_transient,
+        BaiduError::from,
+        || send_and_parse::<T>(op()),
+    )
+    .await
 }
 
 /// Generic retry core: loops `op` up to `MAX_ATTEMPTS`, retrying while
@@ -181,12 +245,38 @@ where
 /// `remote_path` must be absolute (starting with `/`) and must live under
 /// a directory the user's app has write permission to (typically
 /// `/apps/<your-app-name>/`).
+/// Which long-running phase of the upload a progress tick belongs to. The
+/// worker maps these to the upload-list status label ("Hashing…" /
+/// "Uploading…"). Encryption happens in the worker *before* `upload_file`, so
+/// that phase is reported by the worker directly, not through this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadPhase {
+    /// Reading + MD5-ing the (encrypted) file to build Baidu's block_list.
+    Hashing,
+    /// POSTing slices to superfile2.
+    Uploading,
+}
+
+/// `on_progress(phase, done_bytes, total_bytes)` is invoked during the two
+/// long phases: hashing the file (to build the block_list) and uploading
+/// slices. `done`/`total` are byte counts for THIS file (already-present
+/// slices on a resume are counted up front for the upload phase). Called from
+/// the worker to drive the upload-list progress bar; pass a no-op closure when
+/// progress isn't needed.
 pub async fn upload_file(
     access_token: &str,
     local_path: &Path,
     remote_path: &str,
+    mut on_progress: impl FnMut(UploadPhase, i64, i64),
 ) -> Result<UploadResult, BaiduError> {
-    let (slice_md5s, total_size) = hash_file_in_slices(local_path)?;
+    // 32 MB slices (SVIP max) keep the block_list well under Baidu's ~2048-slice
+    // cap — the old fixed 4 MB died at partseq 2048 on files > 8 GB.
+    let slice_size = SLICE_SIZE;
+
+    let (slice_md5s, total_size) =
+        hash_file_in_slices_with_progress(local_path, slice_size, |done, total| {
+            on_progress(UploadPhase::Hashing, done as i64, total as i64);
+        })?;
     let total_slices = slice_md5s.len();
     let block_list_json = serde_json::to_string(&slice_md5s)
         .map_err(|e| BaiduError(format!("Failed to serialize block_list: {e}")))?;
@@ -199,6 +289,12 @@ pub async fn upload_file(
     // 403, or a block-miss at create). On `Expired` we re-precreate — Baidu's
     // precreate returns the slice indices still needed, so we resume rather
     // than re-send everything. `Fatal` and success both exit immediately.
+    // The session/slice layers report raw (done, total); inject the
+    // `Uploading` phase here so they stay phase-agnostic.
+    let mut on_slice_progress = |done: i64, total: i64| {
+        on_progress(UploadPhase::Uploading, done, total);
+    };
+
     let mut last_expired: Option<String> = None;
     for session in 1..=MAX_SESSION_ATTEMPTS {
         match run_upload_session(
@@ -208,7 +304,9 @@ pub async fn upload_file(
             remote_path,
             total_size,
             total_slices,
+            slice_size,
             &block_list_json,
+            &mut on_slice_progress,
         )
         .await
         {
@@ -241,7 +339,9 @@ async fn run_upload_session(
     remote_path: &str,
     total_size: i64,
     total_slices: usize,
+    slice_size: usize,
     block_list_json: &str,
+    on_progress: &mut impl FnMut(i64, i64),
 ) -> Result<UploadResult, SessionError> {
     // ── 1. Precreate ────────────────────────────────────────────────
     let precreate_url = format!("{PRECREATE_URL}?method=precreate&access_token={access_token}");
@@ -255,16 +355,11 @@ async fn run_upload_session(
         ("block_list", block_list_json),
     ];
 
-    let precreate: PrecreateResponse = with_retry("precreate", || async {
+    let precreate: PrecreateResponse = with_retry("precreate", || {
         client
             .post(&precreate_url)
             .timeout(REQUEST_TIMEOUT)
             .form(&precreate_form)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await
     })
     .await
     .map_err(SessionError::Fatal)?;
@@ -294,7 +389,24 @@ async fn run_upload_session(
     let needed = needed_indices(&precreate.block_list, total_slices);
 
     // ── 2. Upload needed slices, bounded-concurrent ─────────────────
-    upload_slices(client, access_token, local_path, remote_path, &uploadid, &needed).await?;
+    // Slices Baidu already has (total − needed) count as done up front, so the
+    // progress bar reflects true completion across a resume rather than
+    // restarting at 0.
+    let already_present = total_slices.saturating_sub(needed.len());
+    upload_slices(
+        client,
+        access_token,
+        local_path,
+        remote_path,
+        &uploadid,
+        &needed,
+        total_size,
+        total_slices,
+        slice_size,
+        already_present,
+        on_progress,
+    )
+    .await?;
 
     // ── 3. Create ───────────────────────────────────────────────────
     let create_url = format!("{CREATE_URL}?method=create&access_token={access_token}");
@@ -307,16 +419,11 @@ async fn run_upload_session(
         ("block_list", block_list_json),
     ];
 
-    let create: CreateResponse = with_retry("create", || async {
+    let create: CreateResponse = with_retry("create", || {
         client
             .post(&create_url)
             .timeout(REQUEST_TIMEOUT)
             .form(&create_form)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await
     })
     .await
     .map_err(SessionError::Fatal)?;
@@ -368,6 +475,7 @@ fn needed_indices(block_list: &[u32], total_slices: usize) -> Vec<usize> {
 /// from disk single-threaded (seek+read by index, which also enables
 /// non-contiguous resume), then dispatches up to `SLICE_CONCURRENCY` POSTs in
 /// parallel. The first `Expired`/`Fatal` aborts the remaining in-flight tasks.
+#[allow(clippy::too_many_arguments)]
 async fn upload_slices(
     client: &reqwest::Client,
     access_token: &str,
@@ -375,19 +483,39 @@ async fn upload_slices(
     remote_path: &str,
     uploadid: &str,
     needed: &[usize],
+    total_size: i64,
+    total_slices: usize,
+    slice_size: usize,
+    already_present: usize,
+    on_progress: &mut impl FnMut(i64, i64),
 ) -> Result<(), SessionError> {
     use tokio::task::JoinSet;
 
+    // Report the resume baseline immediately so the bar jumps to its true
+    // starting point instead of 0 on a re-precreate.
+    let report = |completed: usize, on_progress: &mut dyn FnMut(i64, i64)| {
+        let done_slices = (already_present + completed) as i64;
+        // Cap at total_size — the last slice is partial, so slice-count × size
+        // would overshoot.
+        let uploaded = (done_slices * slice_size as i64).min(total_size);
+        on_progress(uploaded, total_size);
+    };
+
     if needed.is_empty() {
+        // Nothing to send (rapid hit / fully present) — surface 100%.
+        report(0, on_progress);
         return Ok(());
     }
+    report(0, on_progress);
+    let _ = total_slices; // kept for signature symmetry / future per-slice UI
 
     let mut file = std::fs::File::open(local_path)
         .map_err(|e| SessionError::Fatal(BaiduError(format!("I/O error: {e}"))))?;
-    let mut buf = vec![0u8; SLICE_SIZE];
+    let mut buf = vec![0u8; slice_size];
     let mut join_set: JoinSet<Result<(), SessionError>> = JoinSet::new();
     let mut iter = needed.iter().copied();
     let mut next = iter.next();
+    let mut completed = 0usize;
 
     // Dispatch up to SLICE_CONCURRENCY tasks, then top up as each finishes.
     loop {
@@ -398,12 +526,12 @@ async fn upload_slices(
 
             // Read this slice's bytes from its byte offset. Single-threaded
             // here so disk reads stay sequential-ish and memory is bounded to
-            // the in-flight window (≈ SLICE_CONCURRENCY × SLICE_SIZE).
-            let offset = partseq as u64 * SLICE_SIZE as u64;
+            // the in-flight window (≈ SLICE_CONCURRENCY × slice_size).
+            let offset = partseq as u64 * slice_size as u64;
             file.seek(SeekFrom::Start(offset))
                 .map_err(|e| SessionError::Fatal(BaiduError(format!("I/O error: {e}"))))?;
             let mut read_total = 0usize;
-            while read_total < SLICE_SIZE {
+            while read_total < slice_size {
                 let n = file
                     .read(&mut buf[read_total..])
                     .map_err(|e| SessionError::Fatal(BaiduError(format!("I/O error: {e}"))))?;
@@ -432,7 +560,11 @@ async fn upload_slices(
             break;
         };
         match joined {
-            Ok(Ok(())) => {} // slice ok, loop tops up the window
+            Ok(Ok(())) => {
+                // One more slice landed; report cumulative progress.
+                completed += 1;
+                report(completed, on_progress);
+            }
             Ok(Err(e)) => {
                 join_set.abort_all();
                 return Err(e);
@@ -461,43 +593,33 @@ async fn upload_one_slice(
     slice_bytes: Vec<u8>,
     partseq: usize,
 ) -> Result<(), SessionError> {
-    // Map the reqwest error to a redacted `BaiduError` carrying a 403 flag.
-    // Mapping here (not after `retry_loop`) keeps the token-bearing URL out of
-    // the transient-retry log lines `retry_loop` emits via Display — the slice
-    // URL embeds `access_token`, and `BaiduError::from` strips it via
-    // `without_url`. The bool preserves the 403 → re-precreate signal.
+    // `RequestError` carries the HTTP status and a redacted message (the slice
+    // body, not the token-bearing URL). `retry_loop` logs it via Display, so
+    // the access_token never reaches a log line. A 403 isn't transient, so it
+    // propagates out of the retry as the final error; we then map it to
+    // `Expired` (uploadid stale → re-precreate). On a non-success status,
+    // `send_and_parse` reads Baidu's body so a slice errno/msg surfaces.
     let resp: SliceUploadResponse = retry_loop(
         &format!("slice {partseq}"),
         RETRY_BASE_DELAY,
-        |e: &SliceError| e.transient,
-        |se| se,
+        RequestError::is_transient,
+        |e| e,
         || {
             let form = Form::new().part(
                 "file",
                 Part::bytes(slice_bytes.clone()).file_name(format!("part{partseq}")),
             );
-            async {
-                match client
-                    .post(slice_url)
-                    .timeout(REQUEST_TIMEOUT)
-                    .multipart(form)
-                    .send()
-                    .await
-                    .and_then(|r| r.error_for_status())
-                {
-                    Ok(r) => r.json().await.map_err(SliceError::from),
-                    Err(e) => Err(SliceError::from(e)),
-                }
-            }
+            send_and_parse::<SliceUploadResponse>(
+                client.post(slice_url).timeout(SLICE_TIMEOUT).multipart(form),
+            )
         },
     )
     .await
-    .map_err(|se| {
-        // 403 on a slice = uploadid expired → recoverable via re-precreate.
-        if se.forbidden {
+    .map_err(|e| {
+        if e.is_forbidden() {
             SessionError::Expired(format!("slice {partseq} got HTTP 403 (uploadid expired)"))
         } else {
-            SessionError::Fatal(se.err)
+            SessionError::Fatal(BaiduError::from(e))
         }
     })?;
 
@@ -521,15 +643,24 @@ async fn upload_one_slice(
 /// in order and the total byte count. The per-slice MD5s form Baidu's
 /// `block_list`; Baidu recomputes the overall MD5 from them at create
 /// time, so we don't need to send a whole-file MD5 separately.
-pub(super) fn hash_file_in_slices(path: &Path) -> Result<(Vec<String>, i64), BaiduError> {
+/// Hash a file in slices, invoking `on_progress(done, total)` after each
+/// hashed block. Hashing a multi-GB file reads it whole and costs minutes, so
+/// the worker drives a "Hashing… %" bar from this. `total` is stat'd up front
+/// for the denominator. Pass `|_, _| {}` when progress isn't needed.
+pub(super) fn hash_file_in_slices_with_progress(
+    path: &Path,
+    slice_size: usize,
+    mut on_progress: impl FnMut(u64, u64),
+) -> Result<(Vec<String>, i64), BaiduError> {
     let mut file = std::fs::File::open(path)?;
-    let mut buf = vec![0u8; SLICE_SIZE];
+    let total_size = file.metadata()?.len();
+    let mut buf = vec![0u8; slice_size];
     let mut hashes = Vec::new();
     let mut total: i64 = 0;
 
     loop {
         let mut read_total = 0usize;
-        while read_total < SLICE_SIZE {
+        while read_total < slice_size {
             let n = file.read(&mut buf[read_total..])?;
             if n == 0 {
                 break;
@@ -544,8 +675,9 @@ pub(super) fn hash_file_in_slices(path: &Path) -> Result<(Vec<String>, i64), Bai
         let mut hasher = Md5::new();
         hasher.update(&buf[..read_total]);
         hashes.push(hex_encode(&hasher.finalize()));
+        on_progress(total as u64, total_size);
 
-        if read_total < SLICE_SIZE {
+        if read_total < slice_size {
             break;
         }
     }
@@ -573,6 +705,10 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Small slice size for exercising multi-slice hashing on tiny fixtures.
+    /// Production always uploads at `SLICE_SIZE` (32 MB).
+    const SLICE_4MB: usize = 4 * 1024 * 1024;
 
     /// Test double: a transient or permanent error, with a Display impl so it
     /// satisfies `retry_loop`'s `BE: Display` bound. Lets the retry control
@@ -659,6 +795,17 @@ mod tests {
     }
 
     #[test]
+    fn upload_slice_size_is_32mb_and_keeps_block_list_under_cap() {
+        // SVIP 32 MB slices: even the 20 GB tier cap stays far under Baidu's
+        // ~2048-slice block_list limit, and an 8 GB file is 256 slices (was 2065
+        // at 4 MB, which died at partseq 2048).
+        const GB: u64 = 1024 * 1024 * 1024;
+        assert_eq!(SLICE_SIZE, 32 * 1024 * 1024);
+        assert_eq!((8 * GB).div_ceil(SLICE_SIZE as u64), 256);
+        assert!((20 * GB).div_ceil(SLICE_SIZE as u64) <= 2048);
+    }
+
+    #[test]
     fn needed_indices_empty_block_list_means_nothing_to_upload() {
         // Rapid-upload hit / fully-present file: Baidu returns no needed blocks.
         assert_eq!(needed_indices(&[], 10), Vec::<usize>::new());
@@ -686,7 +833,7 @@ mod tests {
     #[test]
     fn hash_empty_file_returns_empty_block_md5() {
         let tmp = tempfile_with_contents(&[]);
-        let (hashes, size) = hash_file_in_slices(&tmp).unwrap();
+        let (hashes, size) = hash_file_in_slices_with_progress(&tmp, SLICE_4MB, |_, _| {}).unwrap();
         assert_eq!(size, 0);
         // MD5 of zero bytes — Baidu accepts this placeholder for empty files.
         assert_eq!(hashes, vec!["d41d8cd98f00b204e9800998ecf8427e".to_string()]);
@@ -695,7 +842,7 @@ mod tests {
     #[test]
     fn hash_small_file_single_block() {
         let tmp = tempfile_with_contents(b"hello world");
-        let (hashes, size) = hash_file_in_slices(&tmp).unwrap();
+        let (hashes, size) = hash_file_in_slices_with_progress(&tmp, SLICE_4MB, |_, _| {}).unwrap();
         assert_eq!(size, 11);
         assert_eq!(hashes.len(), 1);
         assert_eq!(hashes[0], "5eb63bbbe01eeed093cb22bb8f5acdc3");
@@ -706,7 +853,7 @@ mod tests {
         // Generate 10 MB of deterministic bytes (> 2 slices of 4 MB).
         let data: Vec<u8> = (0..10 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
         let tmp = tempfile_with_contents(&data);
-        let (hashes, size) = hash_file_in_slices(&tmp).unwrap();
+        let (hashes, size) = hash_file_in_slices_with_progress(&tmp, SLICE_4MB, |_, _| {}).unwrap();
         assert_eq!(size, data.len() as i64);
         assert_eq!(hashes.len(), 3); // 4 MB + 4 MB + 2 MB
         // All 32-char hex.

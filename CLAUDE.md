@@ -49,6 +49,8 @@ TypeScript 5.x (frontend), Rust 1.75+ (Tauri backend): Follow standard conventio
 
 - **Remote Encryption**: Every file uploaded to remote storage is encrypted client-side via `services::container` — go through `upload_worker::wrap_and_upload`, never call `upload_to_remote` with a raw file. Remote objects use opaque, extension-less names; the real filename lives only in the DB. The `files.remote_container` column (`'bbx1'` vs `NULL`) is the authority for whether a downloaded object must be unwrapped — legacy `NULL` rows are raw. Back-filling legacy raw files goes through `reencrypt_worker`. The encryption key lives in `app_settings`; losing it makes remote files unrecoverable.
 
+- **Baidu Upload Slice Size**: `providers::baidu_netdisk::upload::SLICE_SIZE` is **32 MB** (超级会员/SVIP max). Baidu caps a single upload's `block_list` around 2048 slices, so the old fixed 4 MB died at partseq 2048 on files > 8 GB (errno 31299 "Invalid param part_id"). 32 MB **requires an SVIP account** — 普通会员 caps at 16 MB, 普通用户 at 4 MB. Slice POSTs use the larger `SLICE_TIMEOUT` (600 s), not `REQUEST_TIMEOUT`, because 32 MB over a slow uplink exceeds the 120 s control-call timeout. Slice uploads stay sequential (`SLICE_CONCURRENCY = 1`) regardless of tier — `superfile2` drops bodies under concurrent POSTs.
+
 - **React useEffect**: Avoid circular dependencies between effects. Don't sync internal state with props in one effect and call `onChange` in another - this causes infinite loops. Derive values from props directly.
 
 - **New Tauri Commands**: Must be (1) created in `src-tauri/src/commands/`, (2) exported in `mod.rs`, (3) registered in `lib.rs` invoke_handler.

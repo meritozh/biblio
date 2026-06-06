@@ -288,6 +288,16 @@ export interface RemoteUploadProgress {
    *  worker. The backend emits `uploading` once the worker picks the job up. */
   status: 'pending' | 'uploading' | 'success' | 'error' | 'skipped';
   error?: string;
+  /** Bytes done so far / total for this file. Present on progress ticks; the
+   *  panel derives percent + speed from them. Omitted on status-only events,
+   *  so the store preserves the last known values. */
+  uploaded_bytes?: number;
+  total_bytes?: number;
+  /** Which long phase the byte counts belong to. The `status` stays
+   *  `uploading` for all three (same spinner); this drives the row label so
+   *  the user sees the multi-minute encrypt/hash phases instead of a blank
+   *  "Uploading…". Omitted on status-only events. */
+  phase?: 'encrypting' | 'hashing' | 'uploading';
 }
 
 /** Mirrors the upload progress shape; emitted by the download_worker as it

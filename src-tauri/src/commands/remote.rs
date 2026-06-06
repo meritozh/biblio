@@ -184,9 +184,10 @@ pub async fn upload_to_remote(
     pool: &sqlx::SqlitePool,
     local_path: &std::path::Path,
     remote_path: &str,
+    on_progress: impl FnMut(crate::providers::baidu_netdisk::UploadPhase, i64, i64),
 ) -> Result<UploadResult, String> {
     let access_token = ensure_access_token(pool).await?;
-    upload_file(&access_token, local_path, remote_path)
+    upload_file(&access_token, local_path, remote_path, on_progress)
         .await
         .map_err(|e: BaiduError| e.0)
 }
