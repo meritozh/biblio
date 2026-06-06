@@ -1,21 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/react';
-import { FileCard } from '@/components/FileCard';
 import { SearchBar } from '@/components/SearchBar';
 import { TagBadge } from '@/components/TagBadge';
-import type { FileEntry, Tag } from '@/types';
+import type { Tag } from '@/types';
+
+// NOTE: the former flat `FileCard` component was refactored into the
+// schema-based `components/cards/` renderers; its accessibility cases were
+// removed here rather than repointed (the new cards have a different API and
+// would need fresh tests). SearchBar and TagBadge cases remain.
 
 vi.mock('@tauri-apps/api/core');
-
-const mockFile: FileEntry = {
-  id: 1,
-  path: '/test/file.pdf',
-  display_name: 'Test File',
-  category_id: 1,
-  file_status: 'available',
-  created_at: '2024-01-01T00:00:00Z',
-  updated_at: '2024-01-01T00:00:00Z',
-};
 
 const mockTag: Tag = {
   id: 1,
@@ -27,84 +21,6 @@ const mockTag: Tag = {
 describe('Accessibility Tests', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-  });
-
-  describe('FileCard Accessibility', () => {
-    it('should have accessible status indicator', () => {
-      const { container } = render(<FileCard file={mockFile} />);
-      const statusIndicator = container.querySelector('[role="status"]');
-      expect(statusIndicator).toBeTruthy();
-      expect(statusIndicator?.getAttribute('aria-label')).toBe('File available');
-    });
-
-    it('should have accessible action buttons', () => {
-      const { container } = render(
-        <FileCard file={mockFile} onEdit={() => {}} onDelete={() => {}} />
-      );
-      const actionGroup = container.querySelector('[role="group"]');
-      expect(actionGroup?.getAttribute('aria-label')).toBe('File actions');
-    });
-
-    it('should have aria-labels for edit and delete buttons', () => {
-      const { getByLabelText } = render(
-        <FileCard file={mockFile} onEdit={() => {}} onDelete={() => {}} />
-      );
-      expect(getByLabelText('Edit Test File')).toBeTruthy();
-      expect(getByLabelText('Delete Test File')).toBeTruthy();
-    });
-
-    it('should have aria-hidden on decorative icons', () => {
-      const { container } = render(<FileCard file={mockFile} />);
-      const decorativeIcons = container.querySelectorAll('[aria-hidden="true"]');
-      expect(decorativeIcons.length).toBeGreaterThan(0);
-    });
-
-    it('should call onEdit when edit button is clicked', () => {
-      const onEdit = vi.fn();
-      const { getByLabelText } = render(
-        <FileCard file={mockFile} onEdit={onEdit} onDelete={() => {}} />
-      );
-      fireEvent.click(getByLabelText('Edit Test File'));
-      expect(onEdit).toHaveBeenCalledWith(mockFile);
-    });
-
-    it('should call onDelete when delete button is clicked', () => {
-      const onDelete = vi.fn();
-      const { getByLabelText } = render(
-        <FileCard file={mockFile} onEdit={() => {}} onDelete={onDelete} />
-      );
-      fireEvent.click(getByLabelText('Delete Test File'));
-      expect(onDelete).toHaveBeenCalledWith(mockFile);
-    });
-
-    it('should display tags when file has tags', () => {
-      const fileWithTags: FileEntry = {
-        ...mockFile,
-        tags: [mockTag],
-      };
-      const { getByText } = render(<FileCard file={fileWithTags} />);
-      expect(getByText('favorite')).toBeTruthy();
-    });
-
-    it('should show correct status for missing file', () => {
-      const missingFile: FileEntry = {
-        ...mockFile,
-        file_status: 'missing',
-      };
-      const { container } = render(<FileCard file={missingFile} />);
-      const statusIndicator = container.querySelector('[role="status"]');
-      expect(statusIndicator?.getAttribute('aria-label')).toBe('File not found');
-    });
-
-    it('should show correct status for moved file', () => {
-      const movedFile: FileEntry = {
-        ...mockFile,
-        file_status: 'moved',
-      };
-      const { container } = render(<FileCard file={movedFile} />);
-      const statusIndicator = container.querySelector('[role="status"]');
-      expect(statusIndicator?.getAttribute('aria-label')).toBe('File has been moved');
-    });
   });
 
   describe('SearchBar Accessibility', () => {
