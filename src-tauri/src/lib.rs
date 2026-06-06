@@ -61,6 +61,11 @@ pub fn run() {
         .manage(ProcessingCancelled(Arc::new(ProcessingCancel::new())))
         .manage(commands::processing::PreparedCoverCache::new())
         .setup(|app| {
+            // Reclaim any full-size encrypted upload temps orphaned by a prior
+            // hard kill (force-quit / crash) mid-upload — these are multi-GB
+            // each and otherwise accumulate until the disk fills.
+            services::upload_worker::sweep_stale_upload_temps();
+
             // Long-running worker queues: spawn early so commands can push
             // jobs to the channels via the senders stashed in app state.
             use tauri::Manager;

@@ -70,6 +70,7 @@ opt-level = 3
 # returned to the frontend, not abort the whole app.
 [profile.release]
 opt-level = 3
-lto = "fat"          # link-time optimization across all crates
-codegen-units = 1    # optimize the whole program as one unit (slower build)
-strip = true         # drop symbols: smaller binary + faster load (no runtime cost)
+lto = "fat"           # link-time optimization across all crates
+codegen-units = 1     # optimize the whole program as one unit (slower build)
+strip = "debuginfo"   # drop heavy DWARF but KEEP the symbol table, so crash reports
+                      # show function names instead of `??? (biblio + offset)`

@@ -18,6 +18,56 @@ use crate::commands::remote::{load_config, upload_to_remote};
 use crate::providers::baidu_netdisk::UploadResult;
 use crate::services::container;
 
+/// Filename prefix for the per-upload encrypted temp container, shared between
+/// temp creation and the startup sweep so the two can't drift.
+const WRAP_TEMP_PREFIX: &str = "biblio-wrap-";
+
+/// Delete leftover multi-GB remote-operation temps (`biblio-wrap-*.bbx` from the
+/// upload pipeline, `biblio-reenc-*.raw` from reencrypt) in the temp dir. Each is
+/// removed on the normal return path, but a hard kill (force-quit / crash) during
+/// the multi-minute operation on a large file orphans a full-size container —
+/// these accumulate and eat the disk. Called once at startup: no operation is in
+/// flight then and the app is single-instance, so every match is provably stale.
+pub(crate) fn sweep_stale_upload_temps() {
+    let dir = std::env::temp_dir();
+    let removed = sweep_dir(&dir);
+    if removed > 0 {
+        eprintln!(
+            "[upload_worker] swept {removed} stale upload temp(s) from {}",
+            dir.display()
+        );
+    }
+}
+
+/// (filename prefix, extension) for every multi-GB temp a remote operation
+/// leaves in the shared temp dir. Each is removed on the normal return path but
+/// orphaned by a hard kill mid-operation; the startup sweep reclaims them.
+const STALE_TEMP_PATTERNS: &[(&str, &str)] = &[
+    (WRAP_TEMP_PREFIX, ".bbx"), // upload: encrypted container (upload_worker)
+    ("biblio-reenc-", ".raw"),  // reencrypt: downloaded raw original (reencrypt_worker)
+];
+
+/// Remove our temp files directly inside `dir`; returns the count deleted.
+/// Matches strictly on a known prefix + extension so it can never touch an
+/// unrelated file in the shared temp directory.
+fn sweep_dir(dir: &std::path::Path) -> u32 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0u32;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let ours = STALE_TEMP_PATTERNS
+            .iter()
+            .any(|(prefix, ext)| name.starts_with(prefix) && name.ends_with(ext));
+        if ours && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// One queued upload. Carries only what the worker needs to identify the
 /// file; everything else is fetched from the DB at processing time so the
 /// queue doesn't pin stale row data.
@@ -283,7 +333,8 @@ pub(crate) async fn wrap_and_upload(
     }
     let remote_path = format!("{app_root}/{relative_path}");
 
-    let tmp = std::env::temp_dir().join(format!("biblio-wrap-{}.bbx", container::random_token()));
+    let tmp = std::env::temp_dir()
+        .join(format!("{WRAP_TEMP_PREFIX}{}.bbx", container::random_token()));
     // A failed wrap can still leave a partial container behind; clean up the
     // temp before propagating so it isn't leaked on this early-return path.
     // `wrap_with_progress` is blocking + CPU-heavy; offload to the blocking
@@ -370,4 +421,39 @@ fn emit_progress(
             phase: Some(phase_str.to_string()),
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn sweep_removes_only_wrap_temps() {
+        // Isolated scratch dir so we never touch the real temp dir.
+        let dir = std::env::temp_dir().join(format!("biblio-sweep-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // Real orphans (upload + reencrypt), plus files the sweep must NOT
+        // delete: an unrelated `.bbx`/`.raw` and a wrap-prefixed file with a
+        // different extension.
+        fs::write(dir.join("biblio-wrap-aaa.bbx"), b"x").unwrap();
+        fs::write(dir.join("biblio-wrap-bbb.bbx"), b"y").unwrap();
+        fs::write(dir.join("biblio-reenc-ddd.raw"), b"r").unwrap();
+        fs::write(dir.join("someone-elses.bbx"), b"z").unwrap();
+        fs::write(dir.join("someone-elses.raw"), b"q").unwrap();
+        fs::write(dir.join("biblio-wrap-ccc.tmp"), b"w").unwrap();
+
+        let removed = sweep_dir(&dir);
+
+        assert_eq!(removed, 3, "the wrap + reenc temps should be removed");
+        assert!(!dir.join("biblio-wrap-aaa.bbx").exists());
+        assert!(!dir.join("biblio-wrap-bbb.bbx").exists());
+        assert!(!dir.join("biblio-reenc-ddd.raw").exists());
+        assert!(dir.join("someone-elses.bbx").exists(), "unrelated .bbx must survive");
+        assert!(dir.join("someone-elses.raw").exists(), "unrelated .raw must survive");
+        assert!(dir.join("biblio-wrap-ccc.tmp").exists(), "non-.bbx must survive");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
