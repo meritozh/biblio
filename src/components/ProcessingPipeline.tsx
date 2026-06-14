@@ -230,6 +230,10 @@ function needsDuplicateDecision(item: FileItemState): boolean {
   return !!item.preparedImport?.duplicate_of && item.duplicateAction == null;
 }
 
+function normalizeCatalogName(name: string): string {
+  return name.normalize('NFC').trim().toLowerCase();
+}
+
 type TabKey = 'review' | 'ready' | 'failed';
 
 export function ProcessingPipeline({
@@ -557,10 +561,10 @@ export function ProcessingPipeline({
   // row instead of creating a duplicate.
   const findExistingId = useCallback(
     (name: string, snapshot: ReadonlyArray<{ id: number; name: string }>): number | null => {
-      const key = name.normalize('NFC').trim().toLowerCase();
+      const key = normalizeCatalogName(name);
       if (!key) return null;
       const hit = snapshot.find(
-        (row) => row.name.normalize('NFC').trim().toLowerCase() === key
+        (row) => normalizeCatalogName(row.name) === key
       );
       return hit?.id ?? null;
     },
@@ -636,6 +640,9 @@ export function ProcessingPipeline({
 
   const handleApproveSuggestedAuthor = useCallback(
     async (path: string, authorName: string) => {
+      const approvedKey = normalizeCatalogName(authorName);
+      if (!approvedKey) return;
+
       let id = findExistingId(authorName, authorsRef.current);
       if (id == null) {
         try {
@@ -666,11 +673,18 @@ export function ProcessingPipeline({
       const resolvedId = id;
       setFileItems((prev) =>
         prev.map((item) => {
-          if (item.path !== path) return item;
+          const hasMatchingHint = item.suggestedAuthors.some(
+            (name) => normalizeCatalogName(name) === approvedKey
+          );
+          if (item.path !== path && !hasMatchingHint) return item;
+
           const alreadyHas = item.formValues.author_ids.includes(resolvedId);
           return {
             ...item,
-            suggestedAuthors: item.suggestedAuthors.filter((n) => n !== authorName),
+            userEdited: true,
+            suggestedAuthors: item.suggestedAuthors.filter(
+              (name) => normalizeCatalogName(name) !== approvedKey
+            ),
             formValues: alreadyHas
               ? item.formValues
               : {
