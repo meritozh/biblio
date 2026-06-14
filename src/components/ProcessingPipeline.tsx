@@ -226,6 +226,10 @@ function bucketOf(item: FileItemState): Bucket {
   return 'ready';
 }
 
+function needsDuplicateDecision(item: FileItemState): boolean {
+  return !!item.preparedImport?.duplicate_of && item.duplicateAction == null;
+}
+
 type TabKey = 'review' | 'ready' | 'failed';
 
 export function ProcessingPipeline({
@@ -392,10 +396,10 @@ export function ProcessingPipeline({
                 formValues,
                 suggestedTags: result.suggested_tags ?? [],
                 suggestedAuthors: result.unresolved_author_names ?? [],
-                duplicateAction:
-                  item.duplicateAction ??
-                  result.duplicate_of?.recommendation ??
-                  null,
+                // Backend recommendations are hints, not consent. Leave
+                // duplicate rows undecided until the user picks Delete,
+                // Replace, or Import anyway in the review panel.
+                duplicateAction: item.duplicateAction,
               };
             })
           );
@@ -758,8 +762,19 @@ export function ProcessingPipeline({
     const toProcess = fileItems.filter(
       (item) =>
         item.selected &&
-        (item.status === 'ready' || item.status === 'partial')
+        (item.status === 'ready' || item.status === 'partial') &&
+        !needsDuplicateDecision(item)
     );
+    if (
+      fileItems.some(
+        (item) =>
+          item.selected &&
+          (item.status === 'ready' || item.status === 'partial') &&
+          needsDuplicateDecision(item)
+      )
+    ) {
+      return;
+    }
     if (toProcess.length === 0) return;
 
     // Clicking Import is a commitment to the current snapshot — stop the
@@ -887,6 +902,7 @@ export function ProcessingPipeline({
     (item) =>
       item.selected &&
       (item.status === 'ready' || item.status === 'partial') &&
+      !needsDuplicateDecision(item) &&
       item.duplicateAction !== 'Delete'
   ).length;
   const selectedToDelete = fileItems.filter(
@@ -894,6 +910,12 @@ export function ProcessingPipeline({
       item.selected &&
       (item.status === 'ready' || item.status === 'partial') &&
       item.duplicateAction === 'Delete'
+  ).length;
+  const selectedNeedingDecision = fileItems.filter(
+    (item) =>
+      item.selected &&
+      (item.status === 'ready' || item.status === 'partial') &&
+      needsDuplicateDecision(item)
   ).length;
 
   // Minimized pill — analysis keeps running in the background (the
@@ -1054,7 +1076,13 @@ export function ProcessingPipeline({
 
         <DialogFooter className="flex-col gap-3 sm:flex-row sm:justify-between">
           <div className="text-xs text-muted-foreground">
-            {selectedToImport > 0 && (
+            {selectedNeedingDecision > 0 && (
+              <span>
+                {selectedNeedingDecision} duplicate decision
+                {selectedNeedingDecision !== 1 ? 's' : ''} needed
+              </span>
+            )}
+            {selectedNeedingDecision === 0 && selectedToImport > 0 && (
               <span>
                 {selectedToImport} selected to import
                 {selectedToDelete > 0 && (
@@ -1062,10 +1090,10 @@ export function ProcessingPipeline({
                 )}
               </span>
             )}
-            {selectedToImport === 0 && selectedToDelete > 0 && (
+            {selectedNeedingDecision === 0 && selectedToImport === 0 && selectedToDelete > 0 && (
               <span>{selectedToDelete} to delete</span>
             )}
-            {selectedToImport === 0 && selectedToDelete === 0 && (
+            {selectedNeedingDecision === 0 && selectedToImport === 0 && selectedToDelete === 0 && (
               <span>Nothing selected.</span>
             )}
           </div>
@@ -1081,6 +1109,7 @@ export function ProcessingPipeline({
               onClick={handleImport}
               disabled={
                 importing ||
+                selectedNeedingDecision > 0 ||
                 (selectedToImport === 0 && selectedToDelete === 0)
               }
             >
@@ -1089,6 +1118,10 @@ export function ProcessingPipeline({
                   <Loader2 className="h-4 w-4 animate-spin" />
                   Importing…
                 </>
+              ) : selectedNeedingDecision > 0 ? (
+                `Choose ${selectedNeedingDecision} duplicate action${
+                  selectedNeedingDecision !== 1 ? 's' : ''
+                }`
               ) : selectedToImport > 0 ? (
                 `Import ${selectedToImport}${
                   selectedToDelete > 0 ? ` (${selectedToDelete} delete)` : ''
@@ -1586,9 +1619,7 @@ function FileCardRow({
                 newCoverData={item.formValues.cover_data}
                 newCoverMimeType={item.formValues.cover_mime_type}
                 newStagedCoverPath={item.formValues.staged_cover_path}
-                selectedAction={
-                  item.duplicateAction ?? item.preparedImport.duplicate_of.recommendation
-                }
+                selectedAction={item.duplicateAction}
                 onActionChange={(action) => onDuplicateAction(item.path, action)}
               />
             )}

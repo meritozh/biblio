@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import {
   CoverPlaceholder,
@@ -34,7 +35,7 @@ interface DuplicateWarningProps {
   newCoverData?: string;
   newCoverMimeType?: string;
   newStagedCoverPath?: string;
-  selectedAction: DuplicateAction;
+  selectedAction: DuplicateAction | null;
   onActionChange: (action: DuplicateAction) => void;
 }
 
@@ -146,6 +147,7 @@ export function DuplicateWarning({
   selectedAction,
   onActionChange,
 }: DuplicateWarningProps) {
+  const radioGroupName = `duplicate-action-${useId()}`;
   const existingName = duplicateInfo.existing_display_name;
   const existingAuthors = formatAuthors(duplicateInfo.existing_author_names);
   const nextAuthors = formatAuthors(newAuthorNames);
@@ -210,7 +212,7 @@ export function DuplicateWarning({
           >
             <input
               type="radio"
-              name={`duplicate-action-${duplicateInfo.existing_file_id}`}
+              name={radioGroupName}
               checked={selectedAction === action}
               onChange={() => onActionChange(action)}
               className="mt-0.5 accent-primary"
