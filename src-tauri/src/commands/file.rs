@@ -3054,6 +3054,87 @@ pub async fn file_search(
 }
 
 #[tauri::command]
+pub async fn file_lucky(
+    app: AppHandle,
+    category_id: Option<i64>,
+    query: Option<String>,
+    conditions: Option<Vec<FilterCondition>>,
+    limit: Option<i32>,
+) -> Result<Vec<FileListItem>, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    let limit = limit.unwrap_or(3).clamp(1, 12);
+    let (filter_sql, filter_binds) = build_filter_sql(
+        conditions.as_deref().unwrap_or(&[]),
+        "f",
+    );
+
+    let mut where_tail = String::new();
+    if let Some(cat_id) = category_id {
+        where_tail.push_str(&format!(" AND f.category_id = {}", cat_id));
+    }
+    where_tail.push_str(&filter_sql);
+
+    let trimmed_query = query
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty());
+
+    let files: Vec<FileEntry> = if let Some(q) = trimmed_query {
+        let Some(search_filter) = prepare_search_filter(q) else {
+            return Ok(Vec::new());
+        };
+        let (row_query, bind_value) = match &search_filter {
+            SearchFilter::Fts(expr) => (
+                format!(
+                    "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at \
+                     FROM files f \
+                     JOIN files_fts ON files_fts.rowid = f.id \
+                     WHERE files_fts MATCH ?{} \
+                     ORDER BY RANDOM() LIMIT {}",
+                    where_tail, limit
+                ),
+                expr.clone(),
+            ),
+            SearchFilter::Like(pattern) => (
+                format!(
+                    "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at \
+                     FROM files f \
+                     WHERE (f.display_name LIKE ? ESCAPE '\\' OR f.path LIKE ? ESCAPE '\\'){} \
+                     ORDER BY RANDOM() LIMIT {}",
+                    where_tail, limit
+                ),
+                pattern.clone(),
+            ),
+        };
+
+        let mut row_stmt = sqlx::query_as::<_, FileEntry>(&row_query).bind(&bind_value);
+        if matches!(search_filter, SearchFilter::Like(_)) {
+            row_stmt = row_stmt.bind(&bind_value);
+        }
+        for b in &filter_binds {
+            row_stmt = row_stmt.bind(b);
+        }
+        row_stmt.fetch_all(&pool).await.map_err(|e| e.to_string())?
+    } else {
+        let row_query = format!(
+            "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at \
+             FROM files f \
+             WHERE 1=1{} \
+             ORDER BY RANDOM() LIMIT {}",
+            where_tail, limit
+        );
+        let mut row_stmt = sqlx::query_as::<_, FileEntry>(&row_query);
+        for b in &filter_binds {
+            row_stmt = row_stmt.bind(b);
+        }
+        row_stmt.fetch_all(&pool).await.map_err(|e| e.to_string())?
+    };
+
+    hydrate_file_items(&pool, files).await
+}
+
+#[tauri::command]
 pub async fn file_check_status(
     app: AppHandle,
     file_ids: Option<Vec<i64>>,
