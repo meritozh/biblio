@@ -102,6 +102,7 @@ pub fn run() {
             commands::file::import_finalize,
             commands::file::file_move_category,
             commands::file::file_search,
+            commands::file::file_lucky,
             commands::file::file_check_status,
             commands::file::file_replace,
             commands::file::file_list_by_ids,

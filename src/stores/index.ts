@@ -90,6 +90,24 @@ export async function fetchFiles(params?: {
   }
 }
 
+export async function fetchLuckyFiles(params: {
+  category_id: number | null;
+  query?: string;
+  conditions?: ReadonlyArray<Condition>;
+  limit?: number;
+}): Promise<FileEntry[]> {
+  const query = params.query?.trim();
+  const conditions = params.conditions && params.conditions.length > 0
+    ? serializeConditions(params.conditions)
+    : undefined;
+  return await invoke<FileEntry[]>('file_lucky', {
+    categoryId: params.category_id,
+    query: query || undefined,
+    conditions,
+    limit: params.limit,
+  });
+}
+
 export async function fetchCategories(): Promise<Category[]> {
   try {
     return await invoke('category_list');

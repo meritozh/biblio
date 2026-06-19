@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
+import { useStore } from '@tanstack/react-store';
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { FilePicker } from '@/components/FilePicker';
@@ -6,7 +7,7 @@ import { SearchBar } from '@/components/SearchBar';
 import { FileList } from '@/components/FileList';
 import { ProcessingPipeline } from '@/components/ProcessingPipeline';
 import { RemoteUploadProgressPanel } from '@/components/RemoteUploadProgress';
-import { fetchFiles, type SortKey } from '@/stores';
+import { fetchFiles, fetchLuckyFiles, type SortKey } from '@/stores';
 import type { Condition } from '@/lib/filters';
 import { fileStore } from '@/stores/fileStore';
 import { setSettingsOpen, useAppState } from '@/stores/appStore';
@@ -50,11 +51,25 @@ import {
 import { hydrateFiles, patchFile } from '@/stores/fileStore';
 import type { Collection, ViewMode } from '@/types';
 import { Button } from '@/components/ui/button';
-import { AlertCircle } from 'lucide-react';
+import {
+  AlertCircle,
+  Dices,
+  Loader2,
+  RefreshCw,
+} from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { EditFileDialog } from '@/components/EditFileDialog';
 import { ConfirmDeleteDialog } from '@/components/ConfirmDeleteDialog';
 import { schemaForCategoryId, isImportable } from '@/lib/categorySchema';
 import { resolveViewConfig } from '@/lib/categoryViewConfig';
+import { filterCollectionsForQuery } from '@/lib/collectionSearch';
 import { useFileActions } from '@/hooks/useFileActions';
 import type { FileEntry } from '@/types';
 
@@ -72,6 +87,7 @@ function HomePage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const selectedCategoryId = useAppState((s) => s.selectedCategoryId);
   const settingsOpen = useAppState((s) => s.settingsOpen);
+  const byId = useStore(fileStore, (s) => s.byId);
   // Categories come from the shared appStore — the same source the sidebar's
   // `selectedCategoryId` lives in. Pulling them from `useFileActions` too
   // would fire a second `category_list` IPC and keep a divergent copy.
@@ -113,6 +129,10 @@ function HomePage() {
   const uploadState = useRemoteUploadStore();
   const downloadState = useRemoteDownloadStore();
   const deleteState = useRemoteDeleteStore();
+  const [luckyOpen, setLuckyOpen] = useState(false);
+  const [luckyLoading, setLuckyLoading] = useState(false);
+  const [luckyFiles, setLuckyFiles] = useState<FileEntry[]>([]);
+  const [luckyError, setLuckyError] = useState<string | null>(null);
 
   // Single owner of `debouncedQuery`: SearchBar already debounces typing
   // (its internal timer) and fires synchronously on Enter / clear, so it is
@@ -259,15 +279,40 @@ function HomePage() {
   // Search filter for collections view. Flat view continues to search
   // via the FTS-backed `file_search` (driven by `debouncedQuery` →
   // `viewKey` → `useView` → `fetchFiles`); but in 'author' / 'name_prefix'
-  // mode the grid renders collection cards, not files, so the user's
-  // query has to filter that array client-side instead. Match is a
-  // case-insensitive substring on the collection title — matches the
-  // user's mental model of "find the collection by name".
-  const visibleCollections = useMemo(() => {
-    if (!collections || !debouncedQuery) return collections;
-    const q = debouncedQuery.toLowerCase();
-    return collections.filter((c) => c.title.toLowerCase().includes(q));
-  }, [collections, debouncedQuery]);
+  // mode the grid renders collection cards, not files. Keep a collection
+  // visible when either its title or any hydrated member row matches.
+  const visibleCollections = useMemo(
+    () => filterCollectionsForQuery(collections, debouncedQuery, byId),
+    [collections, debouncedQuery, byId]
+  );
+
+  const collectionSearchMemberIds = useMemo(() => {
+    if (!collections || viewMode === 'flat' || debouncedQuery.trim().length === 0) {
+      return [];
+    }
+    const seen = new Set<number>();
+    for (const collection of collections) {
+      for (const id of collection.file_ids) {
+        if (!byId.has(id)) seen.add(id);
+      }
+    }
+    return Array.from(seen);
+  }, [collections, viewMode, debouncedQuery, byId]);
+
+  useEffect(() => {
+    if (collectionSearchMemberIds.length === 0) return;
+    let cancelled = false;
+    fileListByIds(collectionSearchMemberIds)
+      .then((files) => {
+        if (!cancelled) hydrateFiles(files);
+      })
+      .catch((err) => {
+        console.error('collection search hydration failed:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [collectionSearchMemberIds]);
 
   // FileList ids: pass the drill-down's `file_ids` when one is expanded,
   // otherwise the normal page of ids from `useView`. `byId` is hydrated by
@@ -525,6 +570,29 @@ function HomePage() {
     []
   );
 
+  const handleLucky = useCallback(async () => {
+    if (selectedCategoryId == null) return;
+    setLuckyOpen(true);
+    setLuckyLoading(true);
+    setLuckyError(null);
+    try {
+      const files = await fetchLuckyFiles({
+        category_id: selectedCategoryId,
+        query: debouncedQuery || undefined,
+        conditions,
+        limit: 3,
+      });
+      hydrateFiles(files);
+      setLuckyFiles(files);
+    } catch (error) {
+      console.error('file_lucky failed:', error);
+      setLuckyFiles([]);
+      setLuckyError(String(error));
+    } finally {
+      setLuckyLoading(false);
+    }
+  }, [selectedCategoryId, debouncedQuery, conditions]);
+
   return (
     <>
       {isDraggingFiles && (
@@ -559,6 +627,16 @@ function HomePage() {
               placeholder="Search title, path…"
             />
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 gap-1.5"
+            onClick={handleLucky}
+            disabled={selectedCategoryId == null || luckyLoading}
+          >
+            <Dices className="h-4 w-4" aria-hidden="true" />
+            Lucky
+          </Button>
           <FilePicker
             onFilesSelected={handleFilesSelected}
             schemaSlug={selectedCategorySchema.slug}
@@ -715,6 +793,69 @@ function HomePage() {
         fileName={deletingFile?.display_name ?? ''}
         onConfirm={handleFileDeleteConfirm}
       />
+
+      <Dialog open={luckyOpen} onOpenChange={setLuckyOpen}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Lucky</DialogTitle>
+            <DialogDescription>
+              Three random picks from the current category and active filters.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="min-h-24 space-y-2">
+            {luckyLoading ? (
+              <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                Picking...
+              </div>
+            ) : luckyError ? (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                {luckyError}
+              </div>
+            ) : luckyFiles.length === 0 ? (
+              <div className="rounded-lg border bg-secondary/30 p-4 text-sm text-muted-foreground">
+                No files match the current scope.
+              </div>
+            ) : (
+              luckyFiles.map((file) => {
+                const authors = file.authors?.map((a) => a.name).join(', ');
+                const tags = file.tags?.map((t) => t.name).slice(0, 3).join(', ');
+                return (
+                  <button
+                    key={file.id}
+                    type="button"
+                    onClick={() => handleFileClick(file)}
+                    className="w-full rounded-lg border bg-background p-3 text-left transition-colors hover:bg-secondary/40 focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <div className="font-medium text-sm text-foreground">
+                      {file.display_name}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      {file.progress && <span>{file.progress}</span>}
+                      {authors && <span>{authors}</span>}
+                      {tags && <span>{tags}</span>}
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleLucky}
+              disabled={selectedCategoryId == null || luckyLoading}
+              className="gap-1.5"
+            >
+              <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+              Shuffle again
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ProcessingPipeline
         open={pipelineOpen}
