@@ -5,6 +5,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { FilePicker } from '@/components/FilePicker';
 import { SearchBar } from '@/components/SearchBar';
 import { FileList } from '@/components/FileList';
+import { LuckyDialog } from '@/components/LuckyDialog';
 import { ProcessingPipeline } from '@/components/ProcessingPipeline';
 import { RemoteUploadProgressPanel } from '@/components/RemoteUploadProgress';
 import { fetchFiles, fetchLuckyFiles, type SortKey } from '@/stores';
@@ -54,17 +55,7 @@ import { Button } from '@/components/ui/button';
 import {
   AlertCircle,
   Dices,
-  Loader2,
-  RefreshCw,
 } from 'lucide-react';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { EditFileDialog } from '@/components/EditFileDialog';
 import { ConfirmDeleteDialog } from '@/components/ConfirmDeleteDialog';
 import { schemaForCategoryId, isImportable } from '@/lib/categorySchema';
@@ -131,6 +122,7 @@ function HomePage() {
   const deleteState = useRemoteDeleteStore();
   const [luckyOpen, setLuckyOpen] = useState(false);
   const [luckyLoading, setLuckyLoading] = useState(false);
+  const [luckyRefreshing, setLuckyRefreshing] = useState(false);
   const [luckyFiles, setLuckyFiles] = useState<FileEntry[]>([]);
   const [luckyError, setLuckyError] = useState<string | null>(null);
 
@@ -572,9 +564,15 @@ function HomePage() {
 
   const handleLucky = useCallback(async () => {
     if (selectedCategoryId == null) return;
+    const refreshInPlace = luckyOpen && luckyFiles.length > 0;
     setLuckyOpen(true);
-    setLuckyLoading(true);
     setLuckyError(null);
+    if (refreshInPlace) {
+      setLuckyRefreshing(true);
+    } else {
+      setLuckyFiles([]);
+      setLuckyLoading(true);
+    }
     try {
       const files = await fetchLuckyFiles({
         category_id: selectedCategoryId,
@@ -586,12 +584,16 @@ function HomePage() {
       setLuckyFiles(files);
     } catch (error) {
       console.error('file_lucky failed:', error);
-      setLuckyFiles([]);
+      if (!refreshInPlace) setLuckyFiles([]);
       setLuckyError(String(error));
     } finally {
-      setLuckyLoading(false);
+      if (refreshInPlace) {
+        setLuckyRefreshing(false);
+      } else {
+        setLuckyLoading(false);
+      }
     }
-  }, [selectedCategoryId, debouncedQuery, conditions]);
+  }, [selectedCategoryId, debouncedQuery, conditions, luckyOpen, luckyFiles.length]);
 
   return (
     <>
@@ -632,7 +634,7 @@ function HomePage() {
             size="sm"
             className="h-9 gap-1.5"
             onClick={handleLucky}
-            disabled={selectedCategoryId == null || luckyLoading}
+            disabled={selectedCategoryId == null || luckyLoading || luckyRefreshing}
           >
             <Dices className="h-4 w-4" aria-hidden="true" />
             Lucky
@@ -794,68 +796,20 @@ function HomePage() {
         onConfirm={handleFileDeleteConfirm}
       />
 
-      <Dialog open={luckyOpen} onOpenChange={setLuckyOpen}>
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Lucky</DialogTitle>
-            <DialogDescription>
-              Three random picks from the current category and active filters.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="min-h-24 space-y-2">
-            {luckyLoading ? (
-              <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                Picking...
-              </div>
-            ) : luckyError ? (
-              <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-                {luckyError}
-              </div>
-            ) : luckyFiles.length === 0 ? (
-              <div className="rounded-lg border bg-secondary/30 p-4 text-sm text-muted-foreground">
-                No files match the current scope.
-              </div>
-            ) : (
-              luckyFiles.map((file) => {
-                const authors = file.authors?.map((a) => a.name).join(', ');
-                const tags = file.tags?.map((t) => t.name).slice(0, 3).join(', ');
-                return (
-                  <button
-                    key={file.id}
-                    type="button"
-                    onClick={() => handleFileClick(file)}
-                    className="w-full rounded-lg border bg-background p-3 text-left transition-colors hover:bg-secondary/40 focus:outline-none focus:ring-2 focus:ring-ring"
-                  >
-                    <div className="font-medium text-sm text-foreground">
-                      {file.display_name}
-                    </div>
-                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                      {file.progress && <span>{file.progress}</span>}
-                      {authors && <span>{authors}</span>}
-                      {tags && <span>{tags}</span>}
-                    </div>
-                  </button>
-                );
-              })
-            )}
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleLucky}
-              disabled={selectedCategoryId == null || luckyLoading}
-              className="gap-1.5"
-            >
-              <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-              Shuffle again
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <LuckyDialog
+        open={luckyOpen}
+        onOpenChange={setLuckyOpen}
+        files={luckyFiles}
+        loading={luckyLoading}
+        refreshing={luckyRefreshing}
+        error={luckyError}
+        canShuffle={selectedCategoryId != null}
+        onShuffle={handleLucky}
+        onFileClick={handleFileClick}
+        onFileEdit={handleFileEdit}
+        onFileDelete={handleFileDeleteClick}
+        remoteEnabled={remoteEnabled}
+      />
 
       <ProcessingPipeline
         open={pipelineOpen}
