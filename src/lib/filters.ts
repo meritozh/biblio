@@ -14,7 +14,8 @@ export type Field =
   | 'display_name'
   | 'file_status'
   | 'storage_kind'
-  | 'local_cache';
+  | 'local_cache'
+  | 'favorite';
 
 export type Condition =
   | { id: string; field: 'authors'; op: 'empty' }
@@ -54,7 +55,8 @@ export type Condition =
   // cached. Compose with `storage_kind is remote` to narrow to "remote
   // and cached" / "remote and not cached".
   | { id: string; field: 'local_cache'; op: 'empty' }
-  | { id: string; field: 'local_cache'; op: 'not_empty' };
+  | { id: string; field: 'local_cache'; op: 'not_empty' }
+  | { id: string; field: 'favorite'; op: 'is'; value?: boolean };
 
 export type Op = Condition['op'];
 
@@ -68,6 +70,7 @@ export const FIELD_LABELS: Record<Field, string> = {
   file_status: 'Status',
   storage_kind: 'Storage',
   local_cache: 'Cached',
+  favorite: 'Favorite',
 };
 
 export const OP_LABELS: Record<Op, string> = {
@@ -102,6 +105,7 @@ export const OPS_BY_FIELD: Record<Field, ReadonlyArray<Op>> = {
   file_status: ['is'],
   storage_kind: ['is'],
   local_cache: ['empty', 'not_empty'],
+  favorite: ['is'],
 };
 
 export const FILE_STATUS_OPTIONS: ReadonlyArray<{ value: FileStatus; label: string }> = [
@@ -113,6 +117,11 @@ export const FILE_STATUS_OPTIONS: ReadonlyArray<{ value: FileStatus; label: stri
 export const STORAGE_KIND_OPTIONS: ReadonlyArray<{ value: StorageKind; label: string }> = [
   { value: 'local', label: 'Local' },
   { value: 'remote', label: 'Remote' },
+];
+
+export const FAVORITE_OPTIONS: ReadonlyArray<{ value: boolean; label: string }> = [
+  { value: true, label: 'Favorited' },
+  { value: false, label: 'Not favorited' },
 ];
 
 // ── Builders ─────────────────────────────────────────────────────────────────
@@ -145,6 +154,8 @@ export function newCondition(field: Field): Condition {
       return { id, field, op: 'is' };
     case 'local_cache':
       return { id, field, op: 'not_empty' };
+    case 'favorite':
+      return { id, field, op: 'is', value: true };
   }
 }
 
@@ -246,6 +257,8 @@ export function withOp(c: Condition, op: Op): Condition {
       // value-less, so we can swap them freely without preserving any
       // value field.
       return { id: c.id, field: 'local_cache', op: op as 'empty' | 'not_empty' };
+    case 'favorite':
+      return { id: c.id, field: 'favorite', op: 'is', value: c.value };
   }
 }
 
@@ -352,6 +365,13 @@ function matchLocalCache(
   }
 }
 
+function matchFavorite(
+  c: Extract<Condition, { field: 'favorite' }>,
+  file: FileEntry
+): boolean {
+  return c.value === undefined ? true : file.is_favorite === c.value;
+}
+
 function matches(c: Condition, file: FileEntry): boolean {
   switch (c.field) {
     case 'authors':
@@ -368,6 +388,8 @@ function matches(c: Condition, file: FileEntry): boolean {
       return c.value === undefined ? true : (file.storage_kind ?? 'local') === c.value;
     case 'local_cache':
       return matchLocalCache(c, file);
+    case 'favorite':
+      return matchFavorite(c, file);
   }
 }
 
@@ -477,6 +499,11 @@ function describeLocalCache(
   }
 }
 
+function describeFavorite(c: Extract<Condition, { field: 'favorite' }>): string {
+  if (c.value === false) return 'Not favorited';
+  return 'Favorites only';
+}
+
 /** One-line summary used in chips and aria-labels. The `authorsById`
  *  map is optional — chip text falls back to "…" when an author lookup
  *  table isn't available (e.g. test fixtures), matching how the tag
@@ -501,5 +528,7 @@ export function describeCondition(
       return `${FIELD_LABELS.storage_kind}: ${c.value ?? '…'}`;
     case 'local_cache':
       return describeLocalCache(c);
+    case 'favorite':
+      return describeFavorite(c);
   }
 }

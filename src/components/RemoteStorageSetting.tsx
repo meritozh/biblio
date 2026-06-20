@@ -45,6 +45,7 @@ export function RemoteStorageSetting() {
   const [tokenInput, setTokenInput] = useState('');
   const [appRoot, setAppRoot] = useState(DEFAULT_APP_ROOT);
   const [showToken, setShowToken] = useState(false);
+  const [currentEpochSecs, setCurrentEpochSecs] = useState(0);
 
   useEffect(() => {
     remoteConfigGet()
@@ -55,6 +56,15 @@ export function RemoteStorageSetting() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    const updateCurrentTime = () => setCurrentEpochSecs(Math.floor(Date.now() / 1000));
+
+    updateCurrentTime();
+    const intervalId = window.setInterval(updateCurrentTime, 60_000);
+
+    return () => window.clearInterval(intervalId);
   }, []);
 
   const handleOpenAuthUrl = async () => {
@@ -126,9 +136,12 @@ export function RemoteStorageSetting() {
   }
 
   const isConnected = config?.enabled ?? false;
-  const expiresInSecs = config ? config.access_token_expires_at - Math.floor(Date.now() / 1000) : 0;
+  const hasCurrentTime = currentEpochSecs > 0;
+  const expiresInSecs = config && hasCurrentTime ? config.access_token_expires_at - currentEpochSecs : 0;
   const expiresHumanReadable =
-    expiresInSecs > 0
+    !hasCurrentTime
+      ? 'checking...'
+      : expiresInSecs > 0
       ? expiresInSecs > 86400
         ? `${Math.floor(expiresInSecs / 86400)}d ${Math.floor((expiresInSecs % 86400) / 3600)}h`
         : `${Math.floor(expiresInSecs / 3600)}h ${Math.floor((expiresInSecs % 3600) / 60)}m`
@@ -155,12 +168,12 @@ export function RemoteStorageSetting() {
               </Badge>
             </div>
             <div className="flex items-center gap-2">
-              {expiresInSecs > 0 && expiresInSecs < 604800 && (
+              {hasCurrentTime && expiresInSecs > 0 && expiresInSecs < 604800 && (
                 <span className="text-xs text-amber-500 flex items-center gap-1">
                   <AlertCircle className="h-3 w-3" /> Expires soon
                 </span>
               )}
-              {expiresInSecs <= 0 && (
+              {hasCurrentTime && expiresInSecs <= 0 && (
                 <span className="text-xs text-destructive">Token expired — please re-authenticate</span>
               )}
               <Button variant="outline" size="sm" onClick={handleLogout} disabled={busy}>

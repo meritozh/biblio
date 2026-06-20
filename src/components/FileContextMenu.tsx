@@ -13,11 +13,13 @@ import {
   MoreHorizontal,
   Pencil,
   Play,
+  Star,
+  StarOff,
   Trash2,
   Upload,
   XCircle,
 } from 'lucide-react';
-import { cacheClear, cacheOpen, revealItemInDir } from '@/lib/tauri';
+import { cacheClear, cacheOpen, fileSetFavorite, revealItemInDir } from '@/lib/tauri';
 import { patchFile } from '@/stores/fileStore';
 import {
   enqueueUpload,
@@ -132,6 +134,17 @@ export function FileContextMenu({
     }
   };
 
+  const handleToggleFavorite = async () => {
+    const next = !file.is_favorite;
+    try {
+      await fileSetFavorite(file.id, next);
+      patchFile(file.id, { is_favorite: next });
+    } catch (error) {
+      console.error('Failed to update favorite:', error);
+      alert(`Failed to update favorite: ${error}`);
+    }
+  };
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -157,6 +170,14 @@ export function FileContextMenu({
         <DropdownMenuItem onClick={() => onEdit(file)}>
           <Pencil className="h-4 w-4 mr-2" />
           Edit
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={handleToggleFavorite}>
+          {file.is_favorite ? (
+            <StarOff className="h-4 w-4 mr-2" />
+          ) : (
+            <Star className="h-4 w-4 mr-2" />
+          )}
+          {file.is_favorite ? 'Remove favorite' : 'Add favorite'}
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={() => onDelete(file)}

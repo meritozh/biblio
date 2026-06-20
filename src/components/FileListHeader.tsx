@@ -25,11 +25,12 @@ import {
   Eraser,
   Filter as FilterIcon,
   Layers,
+  Star,
   Trash2,
   X,
 } from 'lucide-react';
 import { FilterEditor } from '@/components/FilterEditor';
-import { describeCondition, type Condition } from '@/lib/filters';
+import { describeCondition, makeId as makeConditionId, type Condition } from '@/lib/filters';
 import type { SortKey } from '@/stores';
 import type { Author, ViewMode, Tag } from '@/types';
 
@@ -129,6 +130,20 @@ export function FileListHeader({
   selection,
   bulk,
 }: FileListHeaderProps) {
+  const favoriteCondition = filter.conditions.find(
+    (c) => c.field === 'favorite' && c.op === 'is' && c.value === true
+  );
+  const toggleFavoriteFilter = () => {
+    if (favoriteCondition) {
+      filter.setConditions((prev) => prev.filter((c) => c.id !== favoriteCondition.id));
+      return;
+    }
+    filter.setConditions((prev) => [
+      ...prev,
+      { id: makeConditionId(), field: 'favorite', op: 'is', value: true },
+    ]);
+  };
+
   if (selection.selectionMode) {
     return (
       <div className="flex items-center gap-3 pb-3 shrink-0">
@@ -290,6 +305,21 @@ export function FileListHeader({
             )}
           </Button>
           <span className="h-5 w-px bg-border mx-1" aria-hidden="true" />
+          <Button
+            variant={favoriteCondition ? 'default' : 'outline'}
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            aria-label={favoriteCondition ? 'Show all files' : 'Show favorites only'}
+            aria-pressed={!!favoriteCondition}
+            title={favoriteCondition ? 'Show all files' : 'Show favorites only'}
+            onClick={toggleFavoriteFilter}
+          >
+            <Star
+              className="h-3.5 w-3.5"
+              fill={favoriteCondition ? 'currentColor' : 'none'}
+              aria-hidden="true"
+            />
+          </Button>
           <Popover open={filter.filterOpen} onOpenChange={filter.setFilterOpen}>
             <PopoverTrigger asChild>
               <Button

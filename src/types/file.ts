@@ -8,6 +8,7 @@ export interface FileEntry {
   fileStatus: FileStatus;
   createdAt: string;
   updatedAt: string;
+  isFavorite: boolean;
   category?: Category | null;
   tags?: Tag[];
   metadata?: Metadata[];
@@ -21,6 +22,7 @@ export interface FileWithDetails {
   fileStatus: FileStatus;
   createdAt: string;
   updatedAt: string;
+  isFavorite: boolean;
   category: Category | null;
   tags: Tag[];
   metadata: Metadata[];

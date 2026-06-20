@@ -9,6 +9,7 @@ import { MiddleEllipsis } from '@/components/MiddleEllipsis';
 import { CARD_HEIGHT, CARD_WIDTH } from './constants';
 import { CardField } from './CardField';
 import { CardStatus } from './CardStatus';
+import { FavoriteToggleButton } from './FavoriteToggleButton';
 import type { FileCardProps } from './types';
 
 /** Lazy-fetches stored cover art; falls back to a book icon while
@@ -110,6 +111,17 @@ export const ComicFileCard = memo(function ComicFileCard({
           ))}
         </div>
       </button>
+      {!selectionMode && (
+        <div
+          className={`absolute top-3.5 left-3.5 z-10 transition-opacity ${
+            file.is_favorite
+              ? 'opacity-100'
+              : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'
+          }`}
+        >
+          <FavoriteToggleButton file={file} />
+        </div>
+      )}
       {!selectionMode && onEdit && onDelete && (
         <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity z-10">
           <FileContextMenu

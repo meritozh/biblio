@@ -16,6 +16,7 @@ import {
 import { Plus, X } from 'lucide-react';
 import {
   FIELD_LABELS,
+  FAVORITE_OPTIONS,
   FILE_STATUS_OPTIONS,
   OPS_BY_FIELD,
   OP_LABELS,
@@ -400,6 +401,26 @@ function ValueEditor({ condition: c, onChange, tags, authors }: ValueEditorProps
     );
   }
 
+  if (c.field === 'favorite') {
+    return (
+      <Select
+        value={c.value === undefined ? undefined : String(c.value)}
+        onValueChange={(v) => onChange({ ...c, value: v === 'true' })}
+      >
+        <SelectTrigger className="h-8 flex-1 text-xs">
+          <SelectValue placeholder="pick…" />
+        </SelectTrigger>
+        <SelectContent>
+          {FAVORITE_OPTIONS.map((opt) => (
+            <SelectItem key={String(opt.value)} value={String(opt.value)} className="text-xs">
+              {opt.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  }
+
   return <div className="flex-1" aria-hidden="true" />;
 }
 
@@ -542,4 +563,3 @@ function MultiTagPicker({ tagIds, previewName, onChange }: MultiTagPickerProps) 
     </Popover>
   );
 }
-

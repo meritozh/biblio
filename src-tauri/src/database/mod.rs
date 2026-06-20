@@ -62,5 +62,12 @@ pub fn get_migrations() -> Vec<Migration> {
                   );",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 5,
+            description: "favorite file marker",
+            sql: "ALTER TABLE files ADD COLUMN is_favorite BOOLEAN NOT NULL DEFAULT 0;\
+                  CREATE INDEX IF NOT EXISTS idx_files_favorite ON files(is_favorite);",
+            kind: MigrationKind::Up,
+        },
     ]
 }

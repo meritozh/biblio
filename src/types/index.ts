@@ -45,6 +45,7 @@ export interface FileEntry {
   /** Set when a remote file has been pulled to the local cache directory.
    *  Drives the "cached locally" badge and the cleanup path on delete. */
   local_cache_path?: string | null;
+  is_favorite: boolean;
 }
 
 export interface Tag {
@@ -88,6 +89,7 @@ export interface FileWithDetails {
   storage_kind?: StorageKind;
   remote_provider?: string | null;
   local_cache_path?: string | null;
+  is_favorite: boolean;
   created_at: string;
   updated_at: string;
   category: Category | null;

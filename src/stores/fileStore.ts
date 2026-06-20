@@ -1,4 +1,5 @@
 import { Store, useStore } from '@tanstack/react-store';
+import { applyConditions, type Condition } from '@/lib/filters';
 import type { FileEntry } from '@/types';
 
 interface ViewState {
@@ -40,6 +41,43 @@ function mergeRows(
   const next = new Map(byId);
   for (const f of files) next.set(f.id, f);
   return next;
+}
+
+function filterConditionsFromViewKey(key: string): Condition[] | null {
+  const marker = '::filters=';
+  const index = key.lastIndexOf(marker);
+  if (index === -1) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(key.slice(index + marker.length));
+    return Array.isArray(parsed) ? (parsed as Condition[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function syncFilteredViewsAfterPatch(
+  views: Map<string, ViewState>,
+  id: number,
+  updated: FileEntry
+): Map<string, ViewState> {
+  let nextViews: Map<string, ViewState> | null = null;
+
+  for (const [key, view] of views) {
+    if (!view.ids.includes(id)) continue;
+    const conditions = filterConditionsFromViewKey(key);
+    if (conditions == null || conditions.length === 0) continue;
+    if (applyConditions([updated], conditions).length > 0) continue;
+
+    nextViews ??= new Map(views);
+    nextViews.set(key, {
+      ids: view.ids.filter((x) => x !== id),
+      total: Math.max(0, view.total - 1),
+      loading: view.loading,
+    });
+  }
+
+  return nextViews ?? views;
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────
@@ -96,9 +134,11 @@ export function patchFile(id: number, partial: Partial<FileEntry>): void {
   fileStore.setState((s) => {
     const existing = s.byId.get(id);
     if (!existing) return s;
+    const updated = { ...existing, ...partial };
     const byId = new Map(s.byId);
-    byId.set(id, { ...existing, ...partial });
-    return { ...s, byId };
+    byId.set(id, updated);
+    const views = syncFilteredViewsAfterPatch(s.views, id, updated);
+    return { ...s, byId, views };
   });
 }
 

@@ -43,6 +43,9 @@ function serializeConditions(conditions: ReadonlyArray<Condition>): unknown[] {
     if (c.field === 'storage_kind' && c.op === 'is') {
       return { ...base, value: c.value };
     }
+    if (c.field === 'favorite' && c.op === 'is') {
+      return { ...base, value: c.value };
+    }
     return base;
   });
 }

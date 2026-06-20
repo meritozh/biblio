@@ -196,6 +196,13 @@ export async function fileUpdate(
   });
 }
 
+export async function fileSetFavorite(
+  id: number,
+  isFavorite: boolean
+): Promise<{ success: boolean }> {
+  return invoke('file_set_favorite', { id, isFavorite });
+}
+
 export async function fileDelete(id: number): Promise<{ success: boolean }> {
   return invoke('file_delete', { id });
 }

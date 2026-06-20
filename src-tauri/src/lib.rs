@@ -95,6 +95,7 @@ pub fn run() {
             commands::file::file_get,
             commands::file::file_create,
             commands::file::file_update,
+            commands::file::file_set_favorite,
             commands::file::file_delete,
             commands::file::file_delete_source,
             commands::file::list_files_in_folder,

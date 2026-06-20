@@ -1,6 +1,7 @@
 use crate::commands::*;
 use crate::commands::validation::{validate_display_name, sanitize_folder_name};
 use serde::Serialize;
+use serde_json::Value;
 use tauri::AppHandle;
 use tauri::{Emitter, Manager};
 use tauri_plugin_sql::{DbPool, DbInstances};
@@ -59,7 +60,28 @@ pub struct FilterCondition {
     /// names the entity it refers to.
     pub author_id: Option<i64>,
     pub text: Option<String>,
-    pub value: Option<String>,
+    pub value: Option<Value>,
+}
+
+fn condition_value_as_str(value: Option<&Value>) -> Option<&str> {
+    value.and_then(Value::as_str)
+}
+
+fn condition_value_as_bool(value: Option<&Value>) -> Option<bool> {
+    match value? {
+        Value::Bool(v) => Some(*v),
+        Value::String(s) => match s.as_str() {
+            "true" | "1" => Some(true),
+            "false" | "0" => Some(false),
+            _ => None,
+        },
+        Value::Number(n) => n.as_i64().and_then(|v| match v {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }),
+        _ => None,
+    }
 }
 
 /// Translate a list of `FilterCondition`s into a SQL fragment plus an ordered
@@ -256,7 +278,7 @@ fn build_filter_sql(
             },
             "file_status" => {
                 if c.op == "is" {
-                    if let Some(v) = c.value.as_deref() {
+                    if let Some(v) = condition_value_as_str(c.value.as_ref()) {
                         if matches!(v, "available" | "missing" | "moved") {
                             sql.push_str(&format!(
                                 " AND {p}file_status = '{v}'",
@@ -269,7 +291,7 @@ fn build_filter_sql(
             }
             "storage_kind" => {
                 if c.op == "is" {
-                    if let Some(v) = c.value.as_deref() {
+                    if let Some(v) = condition_value_as_str(c.value.as_ref()) {
                         if matches!(v, "local" | "remote") {
                             sql.push_str(&format!(
                                 " AND {p}storage_kind = '{v}'",
@@ -295,6 +317,17 @@ fn build_filter_sql(
                 )),
                 _ => {}
             },
+            "favorite" => {
+                if c.op == "is" {
+                    if let Some(v) = condition_value_as_bool(c.value.as_ref()) {
+                        sql.push_str(&format!(
+                            " AND {p}is_favorite = {}",
+                            if v { 1 } else { 0 },
+                            p = prefix
+                        ));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -598,7 +631,7 @@ pub async fn file_list(
     where_clause.push_str(&filter_sql);
 
     let row_query = format!(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, created_at, updated_at FROM files{} {} LIMIT {} OFFSET {}",
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, is_favorite, created_at, updated_at FROM files{} {} LIMIT {} OFFSET {}",
         where_clause, order_by, limit, offset
     );
     let mut row_stmt = sqlx::query_as::<_, FileEntry>(&row_query);
@@ -669,6 +702,7 @@ pub async fn file_list(
             storage_kind: file.storage_kind,
             remote_provider: file.remote_provider,
             local_cache_path: abs_cache,
+            is_favorite: file.is_favorite,
             created_at: file.created_at,
             updated_at: file.updated_at,
             tags,
@@ -742,6 +776,7 @@ async fn hydrate_file_items(
             storage_kind: file.storage_kind,
             remote_provider: file.remote_provider,
             local_cache_path: abs_cache,
+            is_favorite: file.is_favorite,
             created_at: file.created_at,
             updated_at: file.updated_at,
             tags,
@@ -779,7 +814,7 @@ pub async fn file_list_by_ids(
         let placeholders = std::iter::repeat("?").take(chunk.len()).collect::<Vec<_>>().join(",");
         let query = format!(
             "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status,
-                    f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at
+                    f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.is_favorite, f.created_at, f.updated_at
              FROM files f WHERE f.id IN ({placeholders})",
         );
         let mut q = sqlx::query_as::<_, FileEntry>(&query);
@@ -891,14 +926,14 @@ pub async fn file_duplicate_groups(
 
     let mut files: Vec<FileEntry> = if let Some(cid) = category_id {
         sqlx::query_as(
-            "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, created_at, updated_at FROM files WHERE category_id = ?"
+            "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, is_favorite, created_at, updated_at FROM files WHERE category_id = ?"
         )
         .bind(cid)
         .fetch_all(&pool)
         .await
     } else {
         sqlx::query_as(
-            "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, created_at, updated_at FROM files"
+            "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, is_favorite, created_at, updated_at FROM files"
         )
         .fetch_all(&pool)
         .await
@@ -1608,7 +1643,7 @@ pub async fn file_get(
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
     let file: FileEntry = sqlx::query_as(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, created_at, updated_at FROM files WHERE id = ?"
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, is_favorite, created_at, updated_at FROM files WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(&pool)
@@ -1678,6 +1713,7 @@ pub async fn file_get(
         storage_kind: file.storage_kind,
         remote_provider: file.remote_provider,
         local_cache_path: abs_cache,
+        is_favorite: file.is_favorite,
         created_at: file.created_at,
         updated_at: file.updated_at,
         category,
@@ -2329,6 +2365,29 @@ pub async fn file_update(
 #[derive(Serialize)]
 pub struct FileUpdateResponse {
     pub success: bool,
+}
+
+#[tauri::command]
+pub async fn file_set_favorite(
+    app: AppHandle,
+    id: i64,
+    is_favorite: bool,
+) -> Result<FileUpdateResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    let result = sqlx::query("UPDATE files SET is_favorite = ? WHERE id = ?")
+        .bind(is_favorite)
+        .bind(id)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if result.rows_affected() == 0 {
+        return Err("File not found".to_string());
+    }
+
+    Ok(FileUpdateResponse { success: true })
 }
 
 /// Recursively enumerate every non-hidden file under `path`. Used by the
@@ -2995,7 +3054,7 @@ pub async fn file_search(
     let (row_query, count_query, bind_value) = match &filter {
         SearchFilter::Fts(expr) => (
             format!(
-                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at \
+                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.is_favorite, f.created_at, f.updated_at \
                  FROM files f \
                  JOIN files_fts ON files_fts.rowid = f.id \
                  WHERE files_fts MATCH ?{} \
@@ -3012,7 +3071,7 @@ pub async fn file_search(
         ),
         SearchFilter::Like(pattern) => (
             format!(
-                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at \
+                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.is_favorite, f.created_at, f.updated_at \
                  FROM files f \
                  WHERE (f.display_name LIKE ? ESCAPE '\\' OR f.path LIKE ? ESCAPE '\\'){} \
                  {} LIMIT {} OFFSET {}",
@@ -3087,7 +3146,7 @@ pub async fn file_lucky(
         let (row_query, bind_value) = match &search_filter {
             SearchFilter::Fts(expr) => (
                 format!(
-                    "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at \
+                    "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.is_favorite, f.created_at, f.updated_at \
                      FROM files f \
                      JOIN files_fts ON files_fts.rowid = f.id \
                      WHERE files_fts MATCH ?{} \
@@ -3098,7 +3157,7 @@ pub async fn file_lucky(
             ),
             SearchFilter::Like(pattern) => (
                 format!(
-                    "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at \
+                    "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.is_favorite, f.created_at, f.updated_at \
                      FROM files f \
                      WHERE (f.display_name LIKE ? ESCAPE '\\' OR f.path LIKE ? ESCAPE '\\'){} \
                      ORDER BY RANDOM() LIMIT {}",
@@ -3118,7 +3177,7 @@ pub async fn file_lucky(
         row_stmt.fetch_all(&pool).await.map_err(|e| e.to_string())?
     } else {
         let row_query = format!(
-            "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.created_at, f.updated_at \
+            "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.is_favorite, f.created_at, f.updated_at \
              FROM files f \
              WHERE 1=1{} \
              ORDER BY RANDOM() LIMIT {}",
@@ -3146,7 +3205,7 @@ pub async fn file_check_status(
         Some(ids) => {
             let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let query = format!(
-                "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, created_at, updated_at FROM files WHERE id IN ({})",
+                "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, is_favorite, created_at, updated_at FROM files WHERE id IN ({})",
                 placeholders
             );
             sqlx::query_as(&query)
@@ -3155,7 +3214,7 @@ pub async fn file_check_status(
                 .map_err(|e| e.to_string())?
         }
         None => {
-            sqlx::query_as("SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, created_at, updated_at FROM files")
+            sqlx::query_as("SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, is_favorite, created_at, updated_at FROM files")
                 .fetch_all(&pool)
                 .await
                 .map_err(|e| e.to_string())?
@@ -3664,4 +3723,39 @@ mod reverse_index_tests {
         assert_eq!(count, 0);
     }
 
+}
+
+#[cfg(test)]
+mod filter_sql_tests {
+    use super::*;
+
+    #[test]
+    fn favorite_filter_true_uses_boolean_column() {
+        let conditions = vec![FilterCondition {
+            field: "favorite".to_string(),
+            op: "is".to_string(),
+            value: Some(Value::Bool(true)),
+            ..Default::default()
+        }];
+
+        let (sql, binds) = build_filter_sql(&conditions, "f");
+
+        assert_eq!(sql, " AND f.is_favorite = 1");
+        assert!(binds.is_empty());
+    }
+
+    #[test]
+    fn favorite_filter_false_uses_boolean_column() {
+        let conditions = vec![FilterCondition {
+            field: "favorite".to_string(),
+            op: "is".to_string(),
+            value: Some(Value::Bool(false)),
+            ..Default::default()
+        }];
+
+        let (sql, binds) = build_filter_sql(&conditions, "");
+
+        assert_eq!(sql, " AND is_favorite = 0");
+        assert!(binds.is_empty());
+    }
 }

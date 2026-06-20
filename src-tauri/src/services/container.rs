@@ -32,7 +32,7 @@ use chacha20poly1305::{
     Key, KeyInit, XChaCha20Poly1305,
     aead::stream::{DecryptorBE32, EncryptorBE32},
 };
-use rand::{RngCore, rngs::OsRng};
+use rand::{rngs::OsRng, TryRngCore};
 
 /// Plaintext bytes per AEAD frame. Matches the Baidu uploader's slice size.
 const CHUNK: usize = 4 * 1024 * 1024;
@@ -43,6 +43,12 @@ const NONCE_LEN: usize = 19;
 const TAG_LEN: usize = 16;
 /// app_settings key holding the base64-encoded 32-byte container key.
 const KEY_SETTING: &str = "remote_container_key";
+
+fn fill_random_bytes(dest: &mut [u8]) -> io::Result<()> {
+    OsRng
+        .try_fill_bytes(dest)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("OS RNG failed: {e}")))
+}
 
 /// Encrypt `src` into the container at `dst`, invoking `on_progress(done,
 /// total)` after each chunk so a long encryption of a multi-GB file can drive
@@ -56,7 +62,7 @@ pub fn wrap_with_progress(
     on_progress: impl FnMut(u64, u64),
 ) -> io::Result<()> {
     let mut nonce = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce);
+    fill_random_bytes(&mut nonce)?;
 
     let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
     let enc = EncryptorBE32::from_aead(cipher, nonce.as_ref().into());
@@ -91,7 +97,7 @@ pub fn wrap_range_with_progress(
     on_progress: impl FnMut(u64, u64),
 ) -> io::Result<()> {
     let mut nonce = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce);
+    fill_random_bytes(&mut nonce)?;
 
     let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
     let enc = EncryptorBE32::from_aead(cipher, nonce.as_ref().into());
@@ -238,7 +244,7 @@ fn read_fill(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
 /// the remote filename leaks neither the real name nor the format.
 pub fn random_token() -> String {
     let mut b = [0u8; 16];
-    OsRng.fill_bytes(&mut b);
+    fill_random_bytes(&mut b).expect("OS RNG failed");
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
@@ -264,7 +270,7 @@ pub async fn get_or_create_key(pool: &sqlx::SqlitePool) -> Result<[u8; 32], Stri
     // DO NOTHING makes this safe against a concurrent creator: whoever loses
     // the race leaves the existing row untouched.
     let mut key = [0u8; 32];
-    OsRng.fill_bytes(&mut key);
+    fill_random_bytes(&mut key).map_err(|e| e.to_string())?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(key);
     sqlx::query("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING")
         .bind(KEY_SETTING)
