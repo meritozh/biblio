@@ -5,40 +5,14 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { FilePicker } from '@/components/FilePicker';
 import { SearchBar } from '@/components/SearchBar';
 import { FileList } from '@/components/FileList';
-import { LuckyDialog } from '@/components/LuckyDialog';
-import { ProcessingPipeline } from '@/components/ProcessingPipeline';
-import { RemoteUploadProgressPanel } from '@/components/RemoteUploadProgress';
 import { fetchFiles, fetchLuckyFiles, type SortKey } from '@/stores';
 import type { Condition } from '@/lib/filters';
 import { fileStore } from '@/stores/fileStore';
 import { setSettingsOpen, useAppState } from '@/stores/appStore';
 import { useView, type ViewFetcherResult } from '@/hooks/useView';
-import {
-  useRemoteUploadStore,
-  enqueueUpload,
-  dismissPanel,
-  clearCompleted,
-  minimizePanel,
-  expandPanel,
-} from '@/stores/remoteUploadStore';
-import {
-  useRemoteDownloadStore,
-  enqueueDownload,
-  dismissDownloadPanel,
-  clearCompletedDownloads,
-  minimizeDownloadPanel,
-  expandDownloadPanel,
-} from '@/stores/remoteDownloadStore';
-import {
-  useRemoteDeleteStore,
-  enqueueDelete,
-  dismissDeletePanel,
-  clearCompletedDeletes,
-  minimizeDeletePanel,
-  expandDeletePanel,
-} from '@/stores/remoteDeleteStore';
-import { RemoteDownloadProgressPanel } from '@/components/RemoteDownloadProgress';
-import { RemoteDeleteProgressPanel } from '@/components/RemoteDeleteProgress';
+import { useRemoteUploadStore, enqueueUpload } from '@/stores/remoteUploadStore';
+import { useRemoteDownloadStore, enqueueDownload } from '@/stores/remoteDownloadStore';
+import { useRemoteDeleteStore, enqueueDelete } from '@/stores/remoteDeleteStore';
 import {
   cacheClear,
   storageGetPath,
@@ -52,16 +26,12 @@ import {
 import { hydrateFiles, patchFile } from '@/stores/fileStore';
 import type { Collection, ViewMode } from '@/types';
 import { Button } from '@/components/ui/button';
-import {
-  AlertCircle,
-  Dices,
-} from 'lucide-react';
-import { EditFileDialog } from '@/components/EditFileDialog';
-import { ConfirmDeleteDialog } from '@/components/ConfirmDeleteDialog';
+import { AlertCircle, Dices } from 'lucide-react';
 import { schemaForCategoryId, isImportable } from '@/lib/categorySchema';
 import { resolveViewConfig } from '@/lib/categoryViewConfig';
 import { filterCollectionsForQuery } from '@/lib/collectionSearch';
 import { useFileActions } from '@/hooks/useFileActions';
+import { HomeOverlays } from '@/routes/home/-HomeOverlays';
 import type { FileEntry } from '@/types';
 
 // First fetch fills the viewport (a few rows worth), then the virtualizer's
@@ -106,7 +76,9 @@ function HomePage() {
   // Map of every imported path → the folder the user picked it from. Empty
   // for plain file picks. Used to drive per-comic author hints and the
   // post-import empty-dir cleanup, both of which are scoped per root.
-  const [selectedPathFolderRoots, setSelectedPathFolderRoots] = useState<Record<string, string>>({});
+  const [selectedPathFolderRoots, setSelectedPathFolderRoots] = useState<Record<string, string>>(
+    {}
+  );
   const [storagePathConfigured, setStoragePathConfigured] = useState<boolean | null>(null);
   const [storagePathAccessible, setStoragePathAccessible] = useState(true);
   const [pipelineOpen, setPipelineOpen] = useState(false);
@@ -180,7 +152,16 @@ function HomePage() {
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, selectedCategoryId, debouncedQuery, sortBy, sortDesc, conditions, ids.length, appendMore]);
+  }, [
+    loadingMore,
+    selectedCategoryId,
+    debouncedQuery,
+    sortBy,
+    sortDesc,
+    conditions,
+    ids.length,
+    appendMore,
+  ]);
 
   // Shared dialog state + edit/delete handlers + supporting relation state.
   // The hook drives store mutations directly — it no longer needs a reload
@@ -375,7 +356,9 @@ function HomePage() {
 
   useEffect(() => {
     void checkStoragePath();
-    remoteConfigGet().then(cfg => setRemoteEnabled(cfg.enabled)).catch(() => {});
+    remoteConfigGet()
+      .then((cfg) => setRemoteEnabled(cfg.enabled))
+      .catch(() => {});
   }, [checkStoragePath]);
 
   // The Settings dialog now lives in the app shell, so we react to its
@@ -389,10 +372,7 @@ function HomePage() {
     prevSettingsOpenRef.current = settingsOpen;
   }, [settingsOpen, checkStoragePath]);
 
-  const handleFilesSelected = (
-    paths: string[],
-    pathFolderRoots?: Record<string, string>
-  ) => {
+  const handleFilesSelected = (paths: string[], pathFolderRoots?: Record<string, string>) => {
     // Folder-scanned paths trust the backend's own filtering:
     // `list_files_in_folder` / `expand_drop_paths` already drop dotfiles
     // and collapse image-only sub-trees into directory paths (which
@@ -546,21 +526,18 @@ function HomePage() {
   // Clear-cache: per-file IPC is cheap (disk unlink + UPDATE). Parallel
   // via Promise.allSettled and patch each row's `local_cache_path` to
   // null on success so the grid badges flip without a full reload.
-  const handleBulkClearCache = useCallback(
-    async (fileIds: number[]) => {
-      await Promise.allSettled(
-        fileIds.map(async (id) => {
-          try {
-            await cacheClear(id);
-            patchFile(id, { local_cache_path: null });
-          } catch (err) {
-            console.error(`Failed to clear cache for file ${id}:`, err);
-          }
-        })
-      );
-    },
-    []
-  );
+  const handleBulkClearCache = useCallback(async (fileIds: number[]) => {
+    await Promise.allSettled(
+      fileIds.map(async (id) => {
+        try {
+          await cacheClear(id);
+          patchFile(id, { local_cache_path: null });
+        } catch (err) {
+          console.error(`Failed to clear cache for file ${id}:`, err);
+        }
+      })
+    );
+  }, []);
 
   const handleLucky = useCallback(async () => {
     if (selectedCategoryId == null) return;
@@ -602,9 +579,7 @@ function HomePage() {
           className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-primary/5 border-2 border-dashed border-primary rounded-lg m-4"
           aria-hidden="true"
         >
-          <p className="text-sm font-medium text-primary">
-            Drop files to import
-          </p>
+          <p className="text-sm font-medium text-primary">Drop files to import</p>
         </div>
       )}
       <div
@@ -681,12 +656,10 @@ function HomePage() {
         {categories.length === 0 ? (
           <div className="flex-1 flex items-center justify-center">
             <div className="max-w-sm text-center space-y-3">
-              <p className="text-sm font-medium text-foreground">
-                No categories yet
-              </p>
+              <p className="text-sm font-medium text-foreground">No categories yet</p>
               <p className="text-xs text-muted-foreground">
-                Create a category to start organizing your library — comics,
-                novels, or anything else.
+                Create a category to start organizing your library — comics, novels, or anything
+                else.
               </p>
               <Link to="/categories">
                 <Button size="sm" variant="secondary">
@@ -744,76 +717,37 @@ function HomePage() {
         )}
       </div>
 
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col-reverse gap-2 items-end">
-        {uploadState.showPanel && (
-          <RemoteUploadProgressPanel
-            uploads={uploadState.uploads}
-            minimized={uploadState.minimized}
-            onMinimize={minimizePanel}
-            onExpand={expandPanel}
-            onDismiss={dismissPanel}
-            onClearCompleted={clearCompleted}
-          />
-        )}
-        {downloadState.showPanel && (
-          <RemoteDownloadProgressPanel
-            downloads={downloadState.downloads}
-            minimized={downloadState.minimized}
-            onMinimize={minimizeDownloadPanel}
-            onExpand={expandDownloadPanel}
-            onDismiss={dismissDownloadPanel}
-            onClearCompleted={clearCompletedDownloads}
-          />
-        )}
-        {deleteState.showPanel && (
-          <RemoteDeleteProgressPanel
-            deletes={deleteState.deletes}
-            minimized={deleteState.minimized}
-            onMinimize={minimizeDeletePanel}
-            onExpand={expandDeletePanel}
-            onDismiss={dismissDeletePanel}
-            onClearCompleted={clearCompletedDeletes}
-          />
-        )}
-      </div>
-
-      <EditFileDialog
-        open={editDialogOpen}
-        onOpenChange={setEditDialogOpen}
-        file={editingFile}
+      <HomeOverlays
+        uploadState={uploadState}
+        downloadState={downloadState}
+        deleteState={deleteState}
+        editDialogOpen={editDialogOpen}
+        setEditDialogOpen={setEditDialogOpen}
+        editingFile={editingFile}
+        deleteDialogOpen={deleteDialogOpen}
+        setDeleteDialogOpen={setDeleteDialogOpen}
+        deletingFile={deletingFile}
         categories={categories}
         tags={tags}
         authors={authors}
-        onTagCreate={handleTagCreate}
-        onAuthorCreate={handleAuthorCreate}
-        onSave={handleFileSave}
-      />
-
-      <ConfirmDeleteDialog
-        open={deleteDialogOpen}
-        onOpenChange={setDeleteDialogOpen}
-        fileName={deletingFile?.display_name ?? ''}
-        onConfirm={handleFileDeleteConfirm}
-      />
-
-      <LuckyDialog
-        open={luckyOpen}
-        onOpenChange={setLuckyOpen}
-        files={luckyFiles}
-        loading={luckyLoading}
-        refreshing={luckyRefreshing}
-        error={luckyError}
-        canShuffle={selectedCategoryId != null}
-        onShuffle={handleLucky}
-        onFileClick={handleFileClick}
-        onFileEdit={handleFileEdit}
-        onFileDelete={handleFileDeleteClick}
+        handleTagCreate={handleTagCreate}
+        handleAuthorCreate={handleAuthorCreate}
+        handleFileSave={handleFileSave}
+        handleFileDeleteConfirm={handleFileDeleteConfirm}
+        luckyOpen={luckyOpen}
+        setLuckyOpen={setLuckyOpen}
+        luckyFiles={luckyFiles}
+        luckyLoading={luckyLoading}
+        luckyRefreshing={luckyRefreshing}
+        luckyError={luckyError}
+        canLuckyShuffle={selectedCategoryId != null}
+        handleLucky={handleLucky}
+        handleFileClick={handleFileClick}
+        handleFileEdit={handleFileEdit}
+        handleFileDeleteClick={handleFileDeleteClick}
         remoteEnabled={remoteEnabled}
-      />
-
-      <ProcessingPipeline
-        open={pipelineOpen}
-        onOpenChange={(open) => {
+        pipelineOpen={pipelineOpen}
+        onPipelineOpenChange={(open) => {
           setPipelineOpen(open);
           if (!open) {
             // Clearing on close ensures the next open starts fresh — without
@@ -823,17 +757,12 @@ function HomePage() {
             setPipelineMinimized(false);
           }
         }}
-        minimized={pipelineMinimized}
-        onMinimize={() => setPipelineMinimized(true)}
-        onExpand={() => setPipelineMinimized(false)}
-        paths={selectedFiles}
-        pathFolderRoots={selectedPathFolderRoots}
-        targetCategoryId={selectedCategoryId}
-        categories={categories}
-        tags={tags}
-        authors={authors}
-        onTagCreate={handleTagCreate}
-        onAuthorCreate={handleAuthorCreate}
+        pipelineMinimized={pipelineMinimized}
+        onPipelineMinimize={() => setPipelineMinimized(true)}
+        onPipelineExpand={() => setPipelineMinimized(false)}
+        selectedFiles={selectedFiles}
+        selectedPathFolderRoots={selectedPathFolderRoots}
+        selectedCategoryId={selectedCategoryId}
         onImportComplete={() => {
           setPipelineOpen(false);
           setPipelineMinimized(false);
@@ -842,7 +771,6 @@ function HomePage() {
           void reload();
         }}
       />
-
     </>
   );
 }

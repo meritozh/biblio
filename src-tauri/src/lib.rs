@@ -38,7 +38,10 @@ impl ProcessingCancel {
     /// Cancel every batch claimed so far. Work claimed by a later `begin()`
     /// is unaffected, so a cancel can't defeat a subsequently-enqueued batch.
     pub fn cancel_all(&self) {
-        let latest = self.next_generation.load(Ordering::SeqCst).saturating_sub(1);
+        let latest = self
+            .next_generation
+            .load(Ordering::SeqCst)
+            .saturating_sub(1);
         self.cancelled_through.fetch_max(latest, Ordering::SeqCst);
     }
 
@@ -78,7 +81,9 @@ pub fn run() {
             app.manage(services::upload_worker::UploadQueueSender(upload_tx));
             app.manage(services::download_worker::DownloadQueueSender(download_tx));
             app.manage(services::delete_worker::DeleteQueueSender(delete_tx));
-            app.manage(services::reencrypt_worker::ReencryptQueueSender(reencrypt_tx));
+            app.manage(services::reencrypt_worker::ReencryptQueueSender(
+                reencrypt_tx,
+            ));
             app.manage(services::import_worker::ImportQueueSender(import_tx));
             Ok(())
         })
@@ -91,30 +96,30 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
-            commands::file::file_list,
-            commands::file::file_get,
-            commands::file::file_create,
-            commands::file::file_update,
-            commands::file::file_set_favorite,
-            commands::file::file_delete,
-            commands::file::file_delete_source,
-            commands::file::list_files_in_folder,
-            commands::file::expand_drop_paths,
-            commands::file::import_finalize,
-            commands::file::file_move_category,
-            commands::file::file_search,
-            commands::file::file_lucky,
-            commands::file::file_check_status,
-            commands::file::file_replace,
-            commands::file::file_list_by_ids,
-            commands::file::file_duplicate_groups,
-            commands::file::file_count_novels_missing_tags,
-            commands::file::file_reanalyze_missing_tags,
-            commands::file::file_count_authorless_in_category,
-            commands::file::file_assign_author_to_authorless,
-            commands::file::file_count_comics_missing_covers,
-            commands::file::file_regenerate_missing_covers,
-            commands::file::collection_list,
+            commands::file::listing::file_list,
+            commands::file::create_replace::file_get,
+            commands::file::create_replace::file_create,
+            commands::file::update_favorite::file_update,
+            commands::file::update_favorite::file_set_favorite,
+            commands::file::delete_move::file_delete,
+            commands::file::delete_move::file_delete_source,
+            commands::file::folder_import::list_files_in_folder,
+            commands::file::folder_import::expand_drop_paths,
+            commands::file::folder_import::import_finalize,
+            commands::file::delete_move::file_move_category,
+            commands::file::search_lucky_status::file_search,
+            commands::file::search_lucky_status::file_lucky,
+            commands::file::search_lucky_status::file_check_status,
+            commands::file::search_lucky_status::file_replace,
+            commands::file::listing::file_list_by_ids,
+            commands::file::duplicates::file_duplicate_groups,
+            commands::file::reanalyze::file_count_novels_missing_tags,
+            commands::file::reanalyze::file_reanalyze_missing_tags,
+            commands::file::reanalyze::file_count_authorless_in_category,
+            commands::file::reanalyze::file_assign_author_to_authorless,
+            commands::file::reanalyze::file_count_comics_missing_covers,
+            commands::file::reanalyze::file_regenerate_missing_covers,
+            commands::file::collections::collection_list,
             commands::category::category_list,
             commands::category::category_get,
             commands::category::category_create,

@@ -6,11 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
+  ArrowLeft,
   ArrowDown,
   ArrowUp,
   ChevronDown,
@@ -114,6 +111,7 @@ interface FileListHeaderProps {
   filter: FilterControls;
   selection: SelectionControls;
   bulk: BulkActions;
+  breadcrumb?: { label: string; onBack: () => void } | null;
 }
 
 /** Header bar above the file grid. Two modes:
@@ -129,6 +127,7 @@ export function FileListHeader({
   filter,
   selection,
   bulk,
+  breadcrumb = null,
 }: FileListHeaderProps) {
   const favoriteCondition = filter.conditions.find(
     (c) => c.field === 'favorite' && c.op === 'is' && c.value === true
@@ -144,248 +143,265 @@ export function FileListHeader({
     ]);
   };
 
+  const breadcrumbSlot = breadcrumb ? (
+    <div className="flex items-center pb-3 shrink-0">
+      <button
+        type="button"
+        onClick={breadcrumb.onBack}
+        className="inline-flex items-center gap-1.5 rounded-full border bg-secondary/40 hover:bg-secondary transition-colors h-8 px-3 text-xs"
+        aria-label="Back to collections"
+      >
+        <ArrowLeft className="h-3 w-3" aria-hidden="true" />
+        <span className="text-muted-foreground">Collection</span>
+        <span className="font-medium text-foreground truncate max-w-[200px]">
+          {breadcrumb.label}
+        </span>
+      </button>
+    </div>
+  ) : null;
+
   if (selection.selectionMode) {
     return (
-      <div className="flex items-center gap-3 pb-3 shrink-0">
-        <span className="text-sm font-medium text-foreground">
-          {selection.selectedCount === 0
-            ? 'Select files'
-            : `${selection.selectedCount} file${selection.selectedCount === 1 ? '' : 's'} selected`}
-        </span>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5">
-              Select first
-              <ChevronDown className="h-3 w-3" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            {[10, 25, 50, 100].map((n) => (
+      <>
+        <div className="flex items-center gap-3 pb-3 shrink-0">
+          <span className="text-sm font-medium text-foreground">
+            {selection.selectedCount === 0
+              ? 'Select files'
+              : `${selection.selectedCount} file${selection.selectedCount === 1 ? '' : 's'} selected`}
+          </span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5">
+                Select first
+                <ChevronDown className="h-3 w-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {[10, 25, 50, 100].map((n) => (
+                <DropdownMenuItem
+                  key={n}
+                  className="text-xs"
+                  onClick={() => selection.selectFirstN(n)}
+                >
+                  First {n}
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
               <DropdownMenuItem
-                key={n}
                 className="text-xs"
-                onClick={() => selection.selectFirstN(n)}
+                onClick={() => selection.selectFirstN(selection.visibleCount)}
               >
-                First {n}
+                All eligible
               </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="text-xs"
-              onClick={() => selection.selectFirstN(selection.visibleCount)}
-            >
-              All eligible
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <div className="flex-1" />
-        {selection.selectedCount > 0 && (
-          <>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 text-xs"
-              onClick={selection.clearSelection}
-            >
-              Clear
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 text-xs"
-              disabled={!bulk.remoteEnabled}
-              onClick={bulk.onUpload}
-            >
-              ☁ Upload
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 text-xs"
-              disabled={!bulk.remoteEnabled || !bulk.canDownload}
-              onClick={bulk.onDownload}
-            >
-              ⬇ Download
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 text-xs"
-              disabled={!bulk.canClearCache || !bulk.hasCacheableSelection}
-              onClick={bulk.onClearCache}
-            >
-              <Eraser className="h-3.5 w-3.5 mr-1" />
-              Clear cache
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              className="h-8 text-xs"
-              disabled={!bulk.canDelete}
-              onClick={bulk.onDelete}
-            >
-              <Trash2 className="h-3.5 w-3.5 mr-1" />
-              Delete
-            </Button>
-          </>
-        )}
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-8 text-xs"
-          onClick={selection.exitSelectionMode}
-          aria-label="Cancel selection"
-        >
-          <X className="h-3.5 w-3.5 mr-1" />
-          Cancel
-        </Button>
-      </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <div className="flex-1" />
+          {selection.selectedCount > 0 && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                onClick={selection.clearSelection}
+              >
+                Clear
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+                disabled={!bulk.remoteEnabled}
+                onClick={bulk.onUpload}
+              >
+                ☁ Upload
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+                disabled={!bulk.remoteEnabled || !bulk.canDownload}
+                onClick={bulk.onDownload}
+              >
+                ⬇ Download
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+                disabled={!bulk.canClearCache || !bulk.hasCacheableSelection}
+                onClick={bulk.onClearCache}
+              >
+                <Eraser className="h-3.5 w-3.5 mr-1" />
+                Clear cache
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-8 text-xs"
+                disabled={!bulk.canDelete}
+                onClick={bulk.onDelete}
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1" />
+                Delete
+              </Button>
+            </>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={selection.exitSelectionMode}
+            aria-label="Cancel selection"
+          >
+            <X className="h-3.5 w-3.5 mr-1" />
+            Cancel
+          </Button>
+        </div>
+        {breadcrumbSlot}
+      </>
     );
   }
 
   return (
-    <div className="flex items-center gap-2 pb-3 shrink-0 flex-wrap">
-      {view.available && view.onViewModeChange && (
-        <>
-          <Select
-            value={view.viewMode}
-            onValueChange={(v) => view.onViewModeChange!(v as ViewMode)}
-          >
-            <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
-              <Layers
-                className="h-3.5 w-3.5 text-muted-foreground"
+    <>
+      <div className="flex items-center gap-2 pb-3 shrink-0 flex-wrap">
+        {view.available && view.onViewModeChange && (
+          <>
+            <Select
+              value={view.viewMode}
+              onValueChange={(v) => view.onViewModeChange!(v as ViewMode)}
+            >
+              <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
+                <Layers className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                <span className="text-muted-foreground">View</span>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {VIEW_MODE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className="h-5 w-px bg-border mx-1" aria-hidden="true" />
+          </>
+        )}
+        {/* Sort + Filter operate on file rows; the collections grid renders
+         *  Collection cards directly, so these controls have no effect
+         *  there. Hide them when grouped — they reappear after drill-down. */}
+        {!showCollections && (
+          <>
+            <Select value={sort.sortBy} onValueChange={(v) => sort.setSortBy(v as SortKey)}>
+              <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
+                <span className="text-muted-foreground">Sort</span>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SORT_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              aria-label={sort.sortDesc ? 'Sort descending' : 'Sort ascending'}
+              onClick={() => sort.setSortDesc(!sort.sortDesc)}
+            >
+              {sort.sortDesc ? (
+                <ArrowDown className="h-3.5 w-3.5" />
+              ) : (
+                <ArrowUp className="h-3.5 w-3.5" />
+              )}
+            </Button>
+            <span className="h-5 w-px bg-border mx-1" aria-hidden="true" />
+            <Button
+              variant={favoriteCondition ? 'default' : 'outline'}
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              aria-label={favoriteCondition ? 'Show all files' : 'Show favorites only'}
+              aria-pressed={!!favoriteCondition}
+              title={favoriteCondition ? 'Show all files' : 'Show favorites only'}
+              onClick={toggleFavoriteFilter}
+            >
+              <Star
+                className="h-3.5 w-3.5"
+                fill={favoriteCondition ? 'currentColor' : 'none'}
                 aria-hidden="true"
               />
-              <span className="text-muted-foreground">View</span>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {VIEW_MODE_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value} className="text-xs">
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <span className="h-5 w-px bg-border mx-1" aria-hidden="true" />
-        </>
-      )}
-      {/* Sort + Filter operate on file rows; the collections grid renders
-       *  Collection cards directly, so these controls have no effect
-       *  there. Hide them when grouped — they reappear after drill-down. */}
-      {!showCollections && (
-        <>
-          <Select
-            value={sort.sortBy}
-            onValueChange={(v) => sort.setSortBy(v as SortKey)}
-          >
-            <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
-              <span className="text-muted-foreground">Sort</span>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {SORT_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value} className="text-xs">
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            </Button>
+            <Popover open={filter.filterOpen} onOpenChange={filter.setFilterOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant={filter.conditions.length > 0 ? 'default' : 'outline'}
+                  size="sm"
+                  className="h-8 text-xs gap-1.5"
+                >
+                  <FilterIcon className="h-3.5 w-3.5" />
+                  Filter
+                  {filter.conditions.length > 0 && (
+                    <span className="ml-0.5 rounded-full bg-background/30 px-1.5 text-[10px] leading-tight">
+                      {filter.conditions.length}
+                    </span>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" sideOffset={6} className="w-auto p-3">
+                <FilterEditor
+                  conditions={filter.conditions}
+                  onConditionsChange={filter.setConditions}
+                  tags={filter.availableTags}
+                  authors={filter.availableAuthors}
+                  bufferUntilApply
+                  onClose={() => filter.setFilterOpen(false)}
+                />
+              </PopoverContent>
+            </Popover>
+            {filter.conditions.map((c) => (
+              <div
+                key={c.id}
+                className="inline-flex items-center rounded-full border bg-secondary/50 hover:bg-secondary transition-colors h-8"
+              >
+                <button
+                  type="button"
+                  onClick={() => filter.setFilterOpen(true)}
+                  className="text-xs pl-3 pr-1.5 h-full text-foreground/80 focus:outline-none"
+                  aria-label={`Edit condition: ${describeCondition(c, filter.tagsById, filter.authorsById)}`}
+                >
+                  {describeCondition(c, filter.tagsById, filter.authorsById)}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => filter.removeCondition(c.id)}
+                  className="px-1.5 h-full text-muted-foreground hover:text-foreground rounded-r-full focus:outline-none"
+                  aria-label="Remove condition"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </>
+        )}
+        <div className="flex-1" />
+        {/* Selection mode operates on file rows. Collections grid has no
+         *  per-card checkbox, so the button would toggle into a dead state. */}
+        {!showCollections && (
           <Button
             variant="outline"
-            size="icon"
-            className="h-8 w-8 shrink-0"
-            aria-label={sort.sortDesc ? 'Sort descending' : 'Sort ascending'}
-            onClick={() => sort.setSortDesc(!sort.sortDesc)}
+            size="sm"
+            className="h-8 text-xs"
+            onClick={selection.enterSelectionMode}
+            disabled={selection.visibleCount === 0}
           >
-            {sort.sortDesc ? (
-              <ArrowDown className="h-3.5 w-3.5" />
-            ) : (
-              <ArrowUp className="h-3.5 w-3.5" />
-            )}
+            Select
           </Button>
-          <span className="h-5 w-px bg-border mx-1" aria-hidden="true" />
-          <Button
-            variant={favoriteCondition ? 'default' : 'outline'}
-            size="icon"
-            className="h-8 w-8 shrink-0"
-            aria-label={favoriteCondition ? 'Show all files' : 'Show favorites only'}
-            aria-pressed={!!favoriteCondition}
-            title={favoriteCondition ? 'Show all files' : 'Show favorites only'}
-            onClick={toggleFavoriteFilter}
-          >
-            <Star
-              className="h-3.5 w-3.5"
-              fill={favoriteCondition ? 'currentColor' : 'none'}
-              aria-hidden="true"
-            />
-          </Button>
-          <Popover open={filter.filterOpen} onOpenChange={filter.setFilterOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                variant={filter.conditions.length > 0 ? 'default' : 'outline'}
-                size="sm"
-                className="h-8 text-xs gap-1.5"
-              >
-                <FilterIcon className="h-3.5 w-3.5" />
-                Filter
-                {filter.conditions.length > 0 && (
-                  <span className="ml-0.5 rounded-full bg-background/30 px-1.5 text-[10px] leading-tight">
-                    {filter.conditions.length}
-                  </span>
-                )}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="start" sideOffset={6} className="w-auto p-3">
-              <FilterEditor
-                conditions={filter.conditions}
-                onConditionsChange={filter.setConditions}
-                tags={filter.availableTags}
-                authors={filter.availableAuthors}
-                bufferUntilApply
-                onClose={() => filter.setFilterOpen(false)}
-              />
-            </PopoverContent>
-          </Popover>
-          {filter.conditions.map((c) => (
-            <div
-              key={c.id}
-              className="inline-flex items-center rounded-full border bg-secondary/50 hover:bg-secondary transition-colors h-8"
-            >
-              <button
-                type="button"
-                onClick={() => filter.setFilterOpen(true)}
-                className="text-xs pl-3 pr-1.5 h-full text-foreground/80 focus:outline-none"
-                aria-label={`Edit condition: ${describeCondition(c, filter.tagsById, filter.authorsById)}`}
-              >
-                {describeCondition(c, filter.tagsById, filter.authorsById)}
-              </button>
-              <button
-                type="button"
-                onClick={() => filter.removeCondition(c.id)}
-                className="px-1.5 h-full text-muted-foreground hover:text-foreground rounded-r-full focus:outline-none"
-                aria-label="Remove condition"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
-        </>
-      )}
-      <div className="flex-1" />
-      {/* Selection mode operates on file rows. Collections grid has no
-       *  per-card checkbox, so the button would toggle into a dead state. */}
-      {!showCollections && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-8 text-xs"
-          onClick={selection.enterSelectionMode}
-          disabled={selection.visibleCount === 0}
-        >
-          Select
-        </Button>
-      )}
-    </div>
+        )}
+      </div>
+      {breadcrumbSlot}
+    </>
   );
 }
