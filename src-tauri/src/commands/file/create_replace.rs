@@ -97,6 +97,7 @@ pub async fn file_create(
     author_ids: Option<Vec<i64>>,
     metadata: Option<Vec<MetadataInput>>,
     progress: Option<String>,
+    is_favorite: Option<bool>,
     cover_data: Option<Vec<u8>>,
     cover_mime_type: Option<String>,
     staged_cover_path: Option<String>,
@@ -316,13 +317,14 @@ pub async fn file_create(
         let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
 
         let result = sqlx::query(
-            "INSERT INTO files (path, display_name, category_id, in_storage, original_path, file_status, progress) VALUES (?, ?, ?, 1, ?, 'available', ?)"
+            "INSERT INTO files (path, display_name, category_id, in_storage, original_path, file_status, progress, is_favorite) VALUES (?, ?, ?, 1, ?, 'available', ?, ?)"
         )
         .bind(&stored_path)
         .bind(&validated_name)
         .bind(category_id)
         .bind(&path)  // original_path is the source path
         .bind(&progress)
+        .bind(is_favorite.unwrap_or(false))
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;

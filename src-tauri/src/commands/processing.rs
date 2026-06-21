@@ -139,6 +139,8 @@ struct ProcessingProgressEvent {
     status: String,
 }
 
+const EXISTING_FILES_SELECT: &str = "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, is_favorite, created_at, updated_at FROM files";
+
 fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::SqlitePool, String> {
     let instances_lock = instances.0.try_read().map_err(|e| e.to_string())?;
     let db_pool = instances_lock.get(db_url).ok_or("Database not found")?;
@@ -327,12 +329,10 @@ pub(crate) async fn build_pipeline_env(
         .await
         .map_err(|e| format!("Failed to load tags: {e}"))?;
 
-    let existing_files: Vec<FileEntry> = sqlx::query_as(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, created_at, updated_at FROM files",
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| format!("Failed to load existing files: {e}"))?;
+    let existing_files: Vec<FileEntry> = sqlx::query_as(EXISTING_FILES_SELECT)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("Failed to load existing files: {e}"))?;
 
     let category_map: HashMap<String, i64> = categories
         .iter()
@@ -564,5 +564,52 @@ mod tests {
     fn clean_folder_author_ignores_unbalanced_or_nested() {
         assert_eq!(clean_folder_author_name("[unterminated"), "[unterminated");
         assert_eq!(clean_folder_author_name("title [extra]"), "title [extra]");
+    }
+
+    #[tokio::test]
+    async fn existing_files_select_hydrates_file_entry_with_favorite() {
+        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE files (\
+                id INTEGER PRIMARY KEY, \
+                path TEXT NOT NULL, \
+                display_name TEXT NOT NULL, \
+                category_id INTEGER, \
+                file_status TEXT NOT NULL, \
+                in_storage BOOLEAN NOT NULL, \
+                original_path TEXT, \
+                progress TEXT, \
+                storage_kind TEXT, \
+                remote_provider TEXT, \
+                local_cache_path TEXT, \
+                is_favorite BOOLEAN NOT NULL DEFAULT 0, \
+                created_at TEXT NOT NULL, \
+                updated_at TEXT NOT NULL\
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO files (\
+                id, path, display_name, category_id, file_status, in_storage, \
+                original_path, progress, storage_kind, remote_provider, \
+                local_cache_path, is_favorite, created_at, updated_at\
+            ) VALUES (\
+                1, '/tmp/book.txt', 'Book', NULL, 'available', 0, \
+                NULL, NULL, 'local', NULL, NULL, 1, 'now', 'now'\
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let files: Vec<crate::commands::FileEntry> = sqlx::query_as(EXISTING_FILES_SELECT)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert!(files[0].is_favorite);
     }
 }

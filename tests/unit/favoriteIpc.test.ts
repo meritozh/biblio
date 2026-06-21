@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mockInvoke } from '../setup';
 import { fetchFiles } from '@/stores';
-import { fileSetFavorite } from '@/lib/tauri';
+import { fileReplace, fileSetFavorite } from '@/lib/tauri';
 import type { Condition } from '@/lib/filters';
 
 describe('favorite IPC contracts', () => {
@@ -35,6 +35,34 @@ describe('favorite IPC contracts', () => {
     expect(mockInvoke).toHaveBeenCalledWith('file_set_favorite', {
       id: 42,
       isFavorite: true,
+    });
+  });
+
+  it('sends favorite state through replace imports', async () => {
+    mockInvoke.mockResolvedValue({ id: 9 });
+
+    await expect(
+      fileReplace(7, {
+        path: '/tmp/new.epub',
+        display_name: 'New',
+        category_id: 1,
+        is_favorite: true,
+      })
+    ).resolves.toEqual({ id: 9 });
+
+    expect(mockInvoke).toHaveBeenCalledWith('file_replace', {
+      existingFileId: 7,
+      path: '/tmp/new.epub',
+      displayName: 'New',
+      categoryId: 1,
+      tagIds: undefined,
+      authorIds: undefined,
+      metadata: undefined,
+      progress: undefined,
+      isFavorite: true,
+      coverData: null,
+      coverMimeType: null,
+      stagedCoverPath: null,
     });
   });
 });

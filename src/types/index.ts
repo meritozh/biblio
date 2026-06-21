@@ -150,6 +150,7 @@ export interface FileCreateRequest extends Record<string, unknown> {
   author_ids?: number[];
   metadata?: Array<{ key: string; value: string; data_type: MetadataType }>;
   progress?: string;
+  is_favorite?: boolean;
   cover_data?: string;
   cover_mime_type?: string;
   /** Token (the original import path) for a cover staged by the Phase-2

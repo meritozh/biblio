@@ -54,6 +54,9 @@ export async function mergeReplaceParams<T extends FileCreateRequest>(
   if (!newParams.progress || !newParams.progress.trim()) {
     merged.progress = existing.progress ?? undefined;
   }
+  if (newParams.is_favorite == null) {
+    merged.is_favorite = existing.is_favorite;
+  }
   if (!newParams.cover_removed && !newParams.cover_data && !newParams.staged_cover_path) {
     try {
       const c = await coverGet(existingId);

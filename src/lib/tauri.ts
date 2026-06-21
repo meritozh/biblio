@@ -19,6 +19,8 @@ import type {
   RemoteReencryptProgress,
 } from '@/types';
 
+export { fileSetFavorite } from './tauriFavorite';
+
 export async function fileGet(id: number): Promise<FileWithDetails> {
   return invoke('file_get', { id });
 }
@@ -32,6 +34,7 @@ export async function fileCreate(params: FileCreateRequest): Promise<{ id: numbe
     authorIds: params.author_ids,
     metadata: params.metadata,
     progress: params.progress,
+    isFavorite: params.is_favorite ?? null,
     coverData: params.cover_data
       ? Array.from(atob(params.cover_data), (c) => c.charCodeAt(0))
       : null,
@@ -53,6 +56,7 @@ export async function fileReplace(
     authorIds: params.author_ids,
     metadata: params.metadata,
     progress: params.progress,
+    isFavorite: params.is_favorite ?? null,
     coverData: params.cover_data
       ? Array.from(atob(params.cover_data), (c) => c.charCodeAt(0))
       : null,
@@ -194,13 +198,6 @@ export async function fileUpdate(
     categoryId: params.category_id,
     progress: params.progress,
   });
-}
-
-export async function fileSetFavorite(
-  id: number,
-  isFavorite: boolean
-): Promise<{ success: boolean }> {
-  return invoke('file_set_favorite', { id, isFavorite });
 }
 
 export async function fileDelete(id: number): Promise<{ success: boolean }> {
