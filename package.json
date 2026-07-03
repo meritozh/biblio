@@ -44,7 +44,7 @@
     "@tanstack/react-store": "^0.9.1",
     "@tanstack/react-table": "^8.21.3",
     "@tanstack/react-virtual": "^3.13.24",
-    "@tanstack/router-vite-plugin": "^1.164.0",
+    "@tanstack/router-vite-plugin": "^1.167.19",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-opener": "^2.5.3",
