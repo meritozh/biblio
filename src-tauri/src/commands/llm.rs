@@ -221,6 +221,13 @@ pub async fn llm_test_connection(app: tauri::AppHandle) -> Result<String, String
 /// on this file and let Phase 2 continue with its error handling.
 const LLM_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+const FILENAME_EXTRACTION_MAX_TOKENS: u64 = 1024;
+
+/// Content classification needs enough completion budget for local reasoning
+/// models to think and still finish the required structured tool call.
+const CONTENT_ANALYSIS_MAX_TOKENS: u64 = 2048;
+const CONTENT_ANALYSIS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Upper bound on how many tags we accept from a single content-analysis
 /// response. The model sometimes returns a long tail of low-confidence tags;
 /// trimming to the top few keeps suggestions focused and the library tidy.
@@ -254,7 +261,7 @@ pub async fn extract_filename_metadata(
     let extractor = client
         .extractor::<LlmFilenameMetadata>(&config.model)
         .preamble(&preamble)
-        .max_tokens(512)
+        .max_tokens(FILENAME_EXTRACTION_MAX_TOKENS)
         .build();
 
     match tokio::time::timeout(LLM_REQUEST_TIMEOUT, extractor.extract(&input)).await {
@@ -316,10 +323,10 @@ pub async fn extract_content_metadata(
     let extractor = client
         .extractor::<LlmContentMetadata>(&config.model)
         .preamble(&preamble)
-        .max_tokens(1024)
+        .max_tokens(CONTENT_ANALYSIS_MAX_TOKENS)
         .build();
 
-    match tokio::time::timeout(LLM_REQUEST_TIMEOUT, extractor.extract(&input)).await {
+    match tokio::time::timeout(CONTENT_ANALYSIS_TIMEOUT, extractor.extract(&input)).await {
         Ok(result) => {
             let mut meta = result.map_err(|e| format!("LLM content analysis failed: {e}"))?;
             // Accept at most MAX_CONTENT_TAGS tags from the model; drop the rest.
@@ -328,7 +335,7 @@ pub async fn extract_content_metadata(
         }
         Err(_) => Err(format!(
             "LLM content analysis timed out after {}s",
-            LLM_REQUEST_TIMEOUT.as_secs()
+            CONTENT_ANALYSIS_TIMEOUT.as_secs()
         )),
     }
 }
@@ -503,5 +510,25 @@ mod tests {
         assert!(meta.display_name.is_none());
         assert!(meta.progress.is_none());
         assert_eq!(meta.authors, vec!["作者".to_string()]);
+    }
+
+    #[test]
+    fn content_analysis_leaves_room_after_model_reasoning() {
+        assert!(
+            CONTENT_ANALYSIS_MAX_TOKENS >= 2048,
+            "reasoning models can consume the old 1024-token budget before emitting the tool call"
+        );
+        assert!(
+            CONTENT_ANALYSIS_TIMEOUT.as_secs() >= 60,
+            "reasoning models can need more than the generic 30-second request timeout"
+        );
+    }
+
+    #[test]
+    fn filename_extraction_leaves_room_after_model_reasoning() {
+        assert!(
+            FILENAME_EXTRACTION_MAX_TOKENS >= 1024,
+            "reasoning models can consume the old 512-token budget before emitting the tool call"
+        );
     }
 }
