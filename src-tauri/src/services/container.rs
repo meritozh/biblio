@@ -32,7 +32,7 @@ use chacha20poly1305::{
     Key, KeyInit, XChaCha20Poly1305,
     aead::stream::{DecryptorBE32, EncryptorBE32},
 };
-use rand::{rngs::OsRng, TryRngCore};
+use rand::{rngs::SysRng, TryRng};
 
 /// Plaintext bytes per AEAD frame. Matches the Baidu uploader's slice size.
 const CHUNK: usize = 4 * 1024 * 1024;
@@ -45,7 +45,7 @@ const TAG_LEN: usize = 16;
 const KEY_SETTING: &str = "remote_container_key";
 
 fn fill_random_bytes(dest: &mut [u8]) -> io::Result<()> {
-    OsRng
+    SysRng
         .try_fill_bytes(dest)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("OS RNG failed: {e}")))
 }
