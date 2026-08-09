@@ -245,7 +245,7 @@ pub(crate) async fn process_import_path(
     // validator (so "Novel category + dropped .zip" surfaces as an error
     // instead of silently running the comic pipeline). When no category was
     // supplied (legacy callers), fall back to extension-based routing.
-    let env = build_pipeline_env(app, generation).await?;
+    let env = build_pipeline_env(app, generation, category_id).await?;
 
     let kind = if let Some(cat_id) = category_id {
         let row: Option<(String,)> =
@@ -304,6 +304,7 @@ pub(crate) async fn process_import_path(
 pub(crate) async fn build_pipeline_env(
     app: &tauri::AppHandle,
     generation: u64,
+    requested_category_id: Option<i64>,
 ) -> Result<Arc<PipelineEnv>, String> {
     use super::{Author, Category, FileEntry, Tag};
 
@@ -377,6 +378,7 @@ pub(crate) async fn build_pipeline_env(
         category_names,
         tag_names,
         existing_files,
+        requested_category_id,
         storage_path: roots.storage_path,
         app_root: roots.app_root,
         settings: PipelineSettings { analyze_content },

@@ -32,6 +32,12 @@ pub struct PipelineEnv {
     pub tag_names: Vec<String>,
     pub existing_files: Vec<FileEntry>,
 
+    /// Category explicitly selected by the import caller. This remains
+    /// authoritative for duplicate matching even if content analysis later
+    /// proposes a different category in `FileContext`. `None` for internal
+    /// maintenance pipelines that did not originate from an import target.
+    pub requested_category_id: Option<i64>,
+
     /// Path roots used by duplicate detection (and any future node that
     /// needs to stat existing rows on disk). Each `existing_files` row's
     /// `path` is relative to one of these; resolve via `path_resolve`.

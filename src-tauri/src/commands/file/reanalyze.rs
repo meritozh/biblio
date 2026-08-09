@@ -552,7 +552,7 @@ pub async fn file_regenerate_missing_covers(
         .add_phase2(crate::pipeline::nodes::CoverCompressNode)
         .build();
 
-    let env = crate::commands::processing::build_pipeline_env(&app, generation).await?;
+    let env = crate::commands::processing::build_pipeline_env(&app, generation, None).await?;
     let paths: Vec<PathBuf> = runnable.iter().map(|(p, _, _)| p.clone()).collect();
 
     // run_batch caps Phase-1 fan-out internally (PHASE1_CONCURRENCY=8)
