@@ -91,7 +91,7 @@ export function FileListContent({
   const loadingMoreSlot =
     loadingMore && !showCollections ? (
       <div
-        className="flex items-center justify-center py-3 gap-2 text-xs text-muted-foreground font-serif-italic"
+        className="flex items-center justify-center py-3 gap-2 text-xs text-muted-foreground"
         aria-live="polite"
       >
         <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />

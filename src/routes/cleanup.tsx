@@ -225,7 +225,7 @@ function CleanupPage() {
               Scanning…
             </div>
           ) : !hasUnused ? (
-            <p className="text-sm text-muted-foreground font-serif-italic">
+            <p className="text-sm text-muted-foreground">
               No unused tags or authors — everything is in use.
             </p>
           ) : (
@@ -301,7 +301,7 @@ function CleanupPage() {
               Looking for similar file names…
             </div>
           ) : visibleGroups.length === 0 ? (
-            <p className="text-sm text-muted-foreground font-serif-italic">
+            <p className="text-sm text-muted-foreground">
               {groups.length === 0
                 ? "No groups found. Looking only at shared name beginnings — files whose names start the same."
                 : 'All groups dismissed for this session.'}

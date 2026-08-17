@@ -40,7 +40,7 @@ export function FavoriteToggleButton({ file }: FavoriteToggleButtonProps) {
       className={cn(
         'flex h-6 w-6 items-center justify-center rounded-md border border-border/40 bg-background/90 shadow-sm backdrop-blur-sm transition-colors',
         'hover:bg-background focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-wait disabled:opacity-70',
-        file.is_favorite ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'
+        file.is_favorite ? 'text-primary' : 'text-muted-foreground'
       )}
     >
       {saving ? (

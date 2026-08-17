@@ -365,7 +365,7 @@ function TagsManagementPage() {
               className="flex-1 overflow-auto"
               loadingMoreSlot={
                 loadingMore ? (
-                  <div className="flex items-center justify-center py-3 text-xs text-muted-foreground font-serif-italic">
+                  <div className="flex items-center justify-center py-3 text-xs text-muted-foreground">
                     Loading more…
                   </div>
                 ) : null
@@ -409,7 +409,7 @@ function TagsManagementPage() {
                         >
                           {tag.name}
                           {tag.usageCount > 0 && (
-                            <span className="ml-2 text-xs text-muted-foreground font-serif-italic">
+                            <span className="ml-2 text-xs text-muted-foreground">
                               — {tag.usageCount}
                             </span>
                           )}

@@ -20,7 +20,7 @@ export function CardField({ field, file }: CardFieldProps) {
     case 'progress':
       if (!file.progress) return null;
       return (
-        <p className="text-[11px] text-muted-foreground/80 line-clamp-1 font-serif-italic">
+        <p className="text-[11px] text-muted-foreground/80 line-clamp-1">
           {file.progress}
         </p>
       );

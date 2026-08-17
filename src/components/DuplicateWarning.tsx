@@ -176,10 +176,10 @@ export function DuplicateWarning({
 
   return (
     <div
-      className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 space-y-3"
+      className="rounded-lg border border-warning/30 bg-warning-muted dark:bg-warning/10 p-3 space-y-3"
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="flex items-center gap-2 text-amber-700">
+      <div className="flex items-center gap-2 text-warning">
         <AlertTriangle className="h-4 w-4 shrink-0" />
         <span className="text-sm font-medium">
           Duplicate of &ldquo;{existingName}&rdquo;

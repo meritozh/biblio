@@ -16,7 +16,7 @@ export function CardStatus({ storageKind, isUploading, hasLocalCache }: CardStat
   if (isUploading) {
     return (
       <div className={wrapper} title="Uploading…" aria-label="Uploading">
-        <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600 dark:text-amber-400" />
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-warning" />
       </div>
     );
   }

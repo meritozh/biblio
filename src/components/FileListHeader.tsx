@@ -19,6 +19,8 @@ import {
   ArrowDown,
   ArrowUp,
   ChevronDown,
+  Cloud,
+  Download,
   Eraser,
   Filter as FilterIcon,
   Layers,
@@ -213,7 +215,8 @@ export function FileListHeader({
                 disabled={!bulk.remoteEnabled}
                 onClick={bulk.onUpload}
               >
-                ☁ Upload
+                <Cloud className="h-3.5 w-3.5 mr-1" />
+                Upload
               </Button>
               <Button
                 size="sm"
@@ -222,7 +225,8 @@ export function FileListHeader({
                 disabled={!bulk.remoteEnabled || !bulk.canDownload}
                 onClick={bulk.onDownload}
               >
-                ⬇ Download
+                <Download className="h-3.5 w-3.5 mr-1" />
+                Download
               </Button>
               <Button
                 size="sm"

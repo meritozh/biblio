@@ -158,7 +158,7 @@ function CategoryFormFields({
       <div className="pt-2 border-t">
         <div className="flex items-baseline justify-between mb-3">
           <h3 className="text-sm font-medium">View defaults</h3>
-          <span className="text-xs text-muted-foreground font-serif-italic">
+          <span className="text-xs text-muted-foreground">
             Applied when you open this category in Library
           </span>
         </div>
@@ -255,7 +255,7 @@ function CategoryFormFields({
       <div className="pt-2 border-t">
         <div className="flex items-baseline justify-between mb-3">
           <h3 className="text-sm font-medium">Open behavior</h3>
-          <span className="text-xs text-muted-foreground font-serif-italic">
+          <span className="text-xs text-muted-foreground">
             Used by the Open action on file cards
           </span>
         </div>

@@ -292,7 +292,7 @@ export function PaginatedPicker({
         )}
         {loadingMore && (
           <div
-            className="flex items-center justify-center gap-2 py-2 text-xs text-muted-foreground font-serif-italic"
+            className="flex items-center justify-center gap-2 py-2 text-xs text-muted-foreground"
             aria-live="polite"
           >
             <Loader2 className="h-3 w-3 animate-spin" />

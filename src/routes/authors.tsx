@@ -313,7 +313,7 @@ function AuthorsManagementPage() {
                       >
                         {author.name}
                         {author.usageCount > 0 && (
-                          <span className="ml-2 text-xs text-muted-foreground font-serif-italic">
+                          <span className="ml-2 text-xs text-muted-foreground">
                             — {author.usageCount}
                           </span>
                         )}
@@ -363,7 +363,7 @@ function AuthorsManagementPage() {
               )}
               loadingMoreSlot={
                 loadingMore ? (
-                  <div className="flex items-center justify-center py-3 text-xs text-muted-foreground font-serif-italic">
+                  <div className="flex items-center justify-center py-3 text-xs text-muted-foreground">
                     Loading more…
                   </div>
                 ) : null

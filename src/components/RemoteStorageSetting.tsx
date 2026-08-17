@@ -169,7 +169,7 @@ export function RemoteStorageSetting() {
             </div>
             <div className="flex items-center gap-2">
               {hasCurrentTime && expiresInSecs > 0 && expiresInSecs < 604800 && (
-                <span className="text-xs text-amber-500 flex items-center gap-1">
+                <span className="text-xs text-warning flex items-center gap-1">
                   <AlertCircle className="h-3 w-3" /> Expires soon
                 </span>
               )}
@@ -420,7 +420,7 @@ function EncryptionTools() {
             {recoveryKey}
           </code>
         )}
-        <p className="flex items-start gap-1 text-xs text-amber-600 dark:text-amber-500">
+        <p className="flex items-start gap-1 text-xs text-warning">
           <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
           <span>
             Copy this key and back it up somewhere safe and offline. Without it, encrypted cloud

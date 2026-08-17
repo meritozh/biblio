@@ -101,7 +101,7 @@ export function ProcessingPipelineDialog({
         <DialogHeader>
           <DialogTitle className="flex items-baseline gap-3">
             <span>Import</span>
-            <span className="font-serif-italic text-sm text-muted-foreground">
+            <span className="text-sm text-muted-foreground">
               - {totalFiles} {totalFiles === 1 ? 'file' : 'files'}
             </span>
           </DialogTitle>

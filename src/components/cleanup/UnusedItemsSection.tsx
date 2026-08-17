@@ -96,7 +96,7 @@ export function UnusedItemsSection({
           </span>
         ))}
         {overflow > 0 && (
-          <span className="inline-flex items-center px-2 py-0.5 text-[11px] text-muted-foreground/80 font-serif-italic">
+          <span className="inline-flex items-center px-2 py-0.5 text-[11px] text-muted-foreground/80">
             +{overflow} more
           </span>
         )}

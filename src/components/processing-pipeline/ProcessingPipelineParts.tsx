@@ -132,7 +132,7 @@ export function TabPanel({
       )}
       <div ref={parentRef} className="flex-1 min-h-0 -mx-6 overflow-y-auto">
         {items.length === 0 ? (
-          <div className="py-10 text-center text-sm text-muted-foreground font-serif-italic">
+          <div className="py-10 text-center text-sm text-muted-foreground">
             {emptyLabel}
           </div>
         ) : (
@@ -609,7 +609,7 @@ function StatusSubtitle({ item }: { item: FileItemState }) {
     const d = item.preparedImport.duplicate_of;
     return (
       <p className="text-xs text-muted-foreground">
-        Duplicate of <span className="font-serif-italic">{d.existing_display_name}</span>
+        Duplicate of {d.existing_display_name}
         {d.existing_progress ? ` (${d.existing_progress})` : ''}
       </p>
     );
