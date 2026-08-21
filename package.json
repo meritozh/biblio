@@ -72,7 +72,7 @@
     "axe-core": "^4.11.1",
     "eslint": "^10.0.2",
     "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.5.2",
+    "eslint-plugin-react-refresh": "^0.5.4",
     "globals": "^17.4.0",
     "jsdom": "^28.1.0",
     "prettier": "^3.9.6",
