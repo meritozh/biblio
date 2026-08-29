@@ -248,7 +248,7 @@ pub async fn extract_filename_metadata(
     config: &LlmConfig,
     pool: &sqlx::SqlitePool,
     file_name: &str,
-    schema_slug: crate::schema::SchemaSlug,
+    schema_slug: &str,
     step: &str,
 ) -> Result<LlmFilenameMetadata, String> {
     let client = build_client(config)?;
@@ -288,7 +288,7 @@ pub async fn extract_content_metadata(
     let client = build_client(config)?;
     let rules = crate::commands::prompts::prompt_get_active(
         pool,
-        crate::schema::SchemaSlug::Novel,
+        crate::schema::NOVEL,
         "content",
     )
     .await?;
@@ -352,7 +352,7 @@ pub async fn extract_cover_candidates(
     let client = build_client(config)?;
     let user_preamble = crate::commands::prompts::prompt_get_active(
         pool,
-        crate::schema::SchemaSlug::Comic,
+        crate::schema::COMIC,
         "cover_pick",
     )
     .await?;

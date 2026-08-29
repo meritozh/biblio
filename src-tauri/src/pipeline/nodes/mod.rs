@@ -62,16 +62,16 @@ const NOVEL_EXTS: &[&str] = &["txt"];
 const GALGAME_EXTS: &[&str] = &["zip", "7z", "rar"];
 
 impl FileKind {
-    /// The pipeline kind a category's schema expects. Category-first import
-    /// uses this to pick the pipeline and to validate that the dropped input
-    /// matches the chosen category. Exhaustive over `SchemaSlug` so a new
-    /// schema variant forces a decision here.
-    pub fn for_schema(slug: crate::schema::SchemaSlug) -> Self {
-        use crate::schema::SchemaSlug;
-        match slug {
-            SchemaSlug::Novel => FileKind::Novel,
-            SchemaSlug::Comic => FileKind::Comic,
-            SchemaSlug::Galgame => FileKind::Galgame,
+    /// The pipeline kind a category's schema expects, resolved from the
+    /// schema's `pipeline_template` column (`schemas` table). Category-
+    /// first import uses this to pick the pipeline and to validate that
+    /// the dropped input matches the chosen category. Unknown templates
+    /// fall back to Novel, mirroring the historical slug fallback.
+    pub fn for_template(template: &str) -> Self {
+        match template {
+            "comic" => FileKind::Comic,
+            "galgame" => FileKind::Galgame,
+            _ => FileKind::Novel,
         }
     }
 

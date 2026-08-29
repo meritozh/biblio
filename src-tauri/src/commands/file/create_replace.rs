@@ -183,10 +183,10 @@ pub async fn file_create(
             .map_err(|e| e.to_string())?;
 
     let (folder_name, schema_slug) = match cat_result {
-        Some((Some(folder), _, slug)) => (folder, crate::schema::SchemaSlug::from_str(&slug)),
+        Some((Some(folder), _, slug)) => (folder, slug.to_ascii_lowercase()),
         Some((None, name, slug)) => (
             sanitize_folder_name(&name),
-            crate::schema::SchemaSlug::from_str(&slug),
+            slug.to_ascii_lowercase(),
         ),
         None => return Err("CATEGORY_NOT_FOUND".to_string()),
     };
@@ -274,7 +274,7 @@ pub async fn file_create(
         // directory tree verbatim (`zip_dir`) since a game is more than its
         // images. Other schemas don't accept directory inputs (validated at
         // import time), so this binary split is exhaustive in practice.
-        if schema_slug == crate::schema::SchemaSlug::Galgame {
+        if schema_slug == crate::schema::GALGAME {
             zip_dir(&source_canonical, &dest_path)?
         } else {
             zip_image_dir(&source_canonical, &dest_path)?

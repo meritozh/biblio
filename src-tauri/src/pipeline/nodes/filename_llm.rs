@@ -3,7 +3,6 @@ use async_trait::async_trait;
 use super::content_sample::is_novel_file;
 use crate::pipeline::runner::emit_progress;
 use crate::pipeline::{FileContext, NodeError, Phase2Node, PipelineEnv};
-use crate::schema::SchemaSlug;
 
 /// Which input shape this node is responsible for. Drives the
 /// `applies()` gate so a single comic pipeline can carry both an
@@ -36,7 +35,7 @@ enum FilenameSource {
 /// The actual network call is gated by `LLM_REQUEST_TIMEOUT` inside
 /// `extract_filename_metadata`.
 pub struct FilenameLlmNode {
-    schema_slug: SchemaSlug,
+    schema_slug: &'static str,
     step: &'static str,
     source: FilenameSource,
 }
@@ -44,28 +43,28 @@ pub struct FilenameLlmNode {
 impl FilenameLlmNode {
     pub fn text() -> Self {
         Self {
-            schema_slug: SchemaSlug::Novel,
+            schema_slug: crate::schema::NOVEL,
             step: "filename",
             source: FilenameSource::Text,
         }
     }
     pub fn archive() -> Self {
         Self {
-            schema_slug: SchemaSlug::Comic,
+            schema_slug: crate::schema::COMIC,
             step: "filename",
             source: FilenameSource::Archive,
         }
     }
     pub fn folder() -> Self {
         Self {
-            schema_slug: SchemaSlug::Comic,
+            schema_slug: crate::schema::COMIC,
             step: "filename_folder",
             source: FilenameSource::Folder,
         }
     }
     pub fn galgame() -> Self {
         Self {
-            schema_slug: SchemaSlug::Galgame,
+            schema_slug: crate::schema::GALGAME,
             step: "filename",
             source: FilenameSource::Galgame,
         }

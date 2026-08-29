@@ -69,5 +69,81 @@ pub fn get_migrations() -> Vec<Migration> {
                   CREATE INDEX IF NOT EXISTS idx_files_favorite ON files(is_favorite);",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 6,
+            description: "runtime-defined schemas",
+            // Schemas (resource types) become first-class rows instead of a
+            // hard-coded enum + TS registry. `pipeline_template` picks the
+            // built-in node composition (novel/comic/galgame) so behavior is
+            // unchanged for the three seeded schemas; custom schemas added
+            // later reuse a template. `semantic` on schema_fields marks the
+            // fields code behavior attaches to (authors/cover/progress/...);
+            // custom fields carry NULL and are pure data (metadata EAV).
+            // Seeds mirror exactly the former frontend REGISTRY and
+            // PROMPT_STEPS_BY_SCHEMA in src/lib/categorySchema.ts.
+            sql: "CREATE TABLE IF NOT EXISTS schemas (\
+                      id TEXT PRIMARY KEY,\
+                      name TEXT NOT NULL,\
+                      icon TEXT,\
+                      description TEXT,\
+                      accepted_extensions TEXT NOT NULL DEFAULT '[]',\
+                      pipeline_template TEXT NOT NULL DEFAULT 'novel',\
+                      is_builtin BOOLEAN NOT NULL DEFAULT 0,\
+                      sort_order INTEGER NOT NULL DEFAULT 0,\
+                      created_at TEXT NOT NULL DEFAULT (datetime('now')),\
+                      updated_at TEXT NOT NULL DEFAULT (datetime('now'))\
+                  );\
+                  CREATE TABLE IF NOT EXISTS schema_fields (\
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                      schema_id TEXT NOT NULL REFERENCES schemas(id) ON DELETE CASCADE,\
+                      field_key TEXT NOT NULL,\
+                      semantic TEXT,\
+                      field_type TEXT NOT NULL DEFAULT 'builtin',\
+                      label TEXT NOT NULL,\
+                      options TEXT,\
+                      form_visible BOOLEAN NOT NULL DEFAULT 1,\
+                      card_visible BOOLEAN NOT NULL DEFAULT 0,\
+                      sortable BOOLEAN NOT NULL DEFAULT 0,\
+                      filterable BOOLEAN NOT NULL DEFAULT 0,\
+                      required BOOLEAN NOT NULL DEFAULT 0,\
+                      order_index INTEGER NOT NULL DEFAULT 0,\
+                      UNIQUE(schema_id, field_key)\
+                  );\
+                  CREATE TABLE IF NOT EXISTS schema_pipeline_steps (\
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                      schema_id TEXT NOT NULL REFERENCES schemas(id) ON DELETE CASCADE,\
+                      step_key TEXT NOT NULL,\
+                      label TEXT NOT NULL,\
+                      enabled BOOLEAN NOT NULL DEFAULT 1,\
+                      order_index INTEGER NOT NULL DEFAULT 0,\
+                      UNIQUE(schema_id, step_key)\
+                  );\
+                  INSERT INTO schemas (id, name, accepted_extensions, pipeline_template, is_builtin, sort_order) VALUES \
+                      ('novel', 'Novel', '[\"txt\"]', 'novel', 1, 0),\
+                      ('comic', 'Comic', '[\"cbz\",\"zip\",\"cbr\",\"rar\"]', 'comic', 1, 1),\
+                      ('galgame', 'Galgame', '[\"zip\",\"7z\",\"rar\"]', 'galgame', 1, 2);\
+                  INSERT INTO schema_fields (schema_id, field_key, semantic, field_type, label, form_visible, card_visible, order_index) VALUES \
+                      ('novel', 'display_name', 'display_name', 'builtin', 'Display Name', 1, 0, 0),\
+                      ('novel', 'category', 'category', 'builtin', 'Category', 1, 0, 1),\
+                      ('novel', 'authors', 'authors', 'builtin', 'Authors', 1, 1, 2),\
+                      ('novel', 'tags', 'tags', 'builtin', 'Tags', 1, 0, 3),\
+                      ('novel', 'progress', 'progress', 'builtin', 'Progress', 1, 0, 4),\
+                      ('comic', 'display_name', 'display_name', 'builtin', 'Display Name', 1, 0, 0),\
+                      ('comic', 'category', 'category', 'builtin', 'Category', 1, 0, 1),\
+                      ('comic', 'authors', 'authors', 'builtin', 'Authors', 1, 1, 2),\
+                      ('comic', 'cover', 'cover', 'builtin', 'Cover', 1, 0, 3),\
+                      ('galgame', 'display_name', 'display_name', 'builtin', 'Display Name', 1, 0, 0),\
+                      ('galgame', 'category', 'category', 'builtin', 'Category', 1, 0, 1),\
+                      ('galgame', 'authors', 'authors', 'builtin', 'Authors', 1, 1, 2),\
+                      ('galgame', 'cover', 'cover', 'builtin', 'Cover', 1, 0, 3);\
+                  INSERT INTO schema_pipeline_steps (schema_id, step_key, label, enabled, order_index) VALUES \
+                      ('novel', 'filename', 'Filename extraction', 1, 0),\
+                      ('novel', 'content', 'Content analysis', 1, 1),\
+                      ('comic', 'filename', 'Filename extraction', 1, 0),\
+                      ('comic', 'cover_pick', 'Cover detection', 1, 1),\
+                      ('comic', 'filename_folder', 'Folder filename extraction', 1, 2),\
+                      ('galgame', 'filename', 'Filename extraction', 1, 0);",
+            kind: MigrationKind::Up,
+        },
     ]
 }

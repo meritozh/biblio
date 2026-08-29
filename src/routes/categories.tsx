@@ -28,7 +28,8 @@ import {
 import { ArrowDown, ArrowUp, Pencil, FolderOpen, Plus } from 'lucide-react';
 import { categoryCreate, categoryUpdate, tagList } from '@/lib/tauri';
 import { loadCategories, useAppState } from '@/stores/appStore';
-import { SCHEMA_LABELS, coerceSchemaSlug } from '@/lib/categorySchema';
+import { useSchemas } from '@/stores/schemaStore';
+import { coerceSchemaSlug, schemaLabel } from '@/lib/categorySchema';
 import {
   parseViewConfig,
   resolveViewConfig,
@@ -84,6 +85,7 @@ function CategoryFormFields({
   onChange: (next: CategoryFormState) => void;
   availableTags: ReadonlyArray<Tag>;
 }) {
+  const schemas = useSchemas();
   // Resolve the effective sort + view mode so the form always shows a
   // concrete current value, even when fields in `viewConfig` are absent
   // (meaning "fall back to the hard-coded defaults from the resolver").
@@ -142,9 +144,9 @@ function CategoryFormFields({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {(Object.keys(SCHEMA_LABELS) as SchemaSlug[]).map((slug) => (
-              <SelectItem key={slug} value={slug}>
-                {SCHEMA_LABELS[slug]}
+            {schemas.map((def) => (
+              <SelectItem key={def.id} value={def.id}>
+                {def.name}
               </SelectItem>
             ))}
           </SelectContent>
@@ -435,7 +437,7 @@ function CategoriesPage() {
                     </TableCell>
                     <TableCell>
                       <Badge variant="gray" className="text-xs">
-                        {SCHEMA_LABELS[coerceSchemaSlug(category.schema_slug)]}
+                        {schemaLabel(coerceSchemaSlug(category.schema_slug))}
                       </Badge>
                     </TableCell>
                     <TableCell>

@@ -71,9 +71,9 @@ fn folder_walk(dir: &std::path::Path, out: &mut Vec<String>) -> std::io::Result<
 /// Comic/novel keep the image-leaf collapse + recursive walk.
 fn scan_folder_root(
     root: &std::path::Path,
-    schema: crate::schema::SchemaSlug,
+    schema: &str,
 ) -> std::io::Result<Vec<String>> {
-    if schema == crate::schema::SchemaSlug::Galgame {
+    if schema == crate::schema::GALGAME {
         // The picked folder is the game. Don't descend — there's no
         // filesystem signal that would make walking it correct, and the
         // commit step archives the whole tree.
@@ -118,8 +118,11 @@ pub async fn list_files_in_folder(
     if !root.is_dir() {
         return Err("NOT_A_DIRECTORY".to_string());
     }
-    let schema = crate::schema::SchemaSlug::from_str(schema_slug.as_deref().unwrap_or("novel"));
-    scan_folder_root(root, schema).map_err(|e| format!("Failed to scan folder: {e}"))
+    let schema = schema_slug
+        .as_deref()
+        .unwrap_or(crate::schema::NOVEL)
+        .to_ascii_lowercase();
+    scan_folder_root(root, &schema).map_err(|e| format!("Failed to scan folder: {e}"))
 }
 
 #[derive(Serialize)]
@@ -151,7 +154,10 @@ pub async fn expand_drop_paths(
     let mut files = Vec::new();
     let mut path_folder_roots = std::collections::HashMap::new();
     let mut empty_folders = Vec::new();
-    let schema = crate::schema::SchemaSlug::from_str(schema_slug.as_deref().unwrap_or("novel"));
+    let schema = schema_slug
+        .as_deref()
+        .unwrap_or(crate::schema::NOVEL)
+        .to_ascii_lowercase();
 
     for raw in paths {
         let p = std::path::Path::new(&raw);
@@ -161,7 +167,7 @@ pub async fn expand_drop_paths(
         if p.is_file() {
             files.push(raw);
         } else if p.is_dir() {
-            let scanned = scan_folder_root(p, schema)
+            let scanned = scan_folder_root(p, &schema)
                 .map_err(|e| format!("Failed to scan folder {raw}: {e}"))?;
             if scanned.is_empty() {
                 empty_folders.push(raw);

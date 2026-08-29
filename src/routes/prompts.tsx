@@ -29,9 +29,10 @@ import {
   promptSetDefault,
 } from '@/lib/tauri';
 import type { Prompt, PromptStep, SchemaSlug } from '@/types';
+import { useSchemas } from '@/stores/schemaStore';
 import {
-  PROMPT_STEPS_BY_SCHEMA,
-  SCHEMA_LABELS,
+  promptStepsFor,
+  schemaLabel,
   coerceSchemaSlug,
 } from '@/lib/categorySchema';
 
@@ -48,7 +49,7 @@ const STEP_LABEL: Record<PromptStep, string> = {
 };
 
 function isValidStep(slug: SchemaSlug, step: PromptStep): boolean {
-  return PROMPT_STEPS_BY_SCHEMA[slug].some((s) => s.step === step);
+  return promptStepsFor(slug).some((s) => s.step === step);
 }
 
 function promptHelpText(slug: SchemaSlug, step: PromptStep): string {
@@ -72,6 +73,7 @@ export const Route = createFileRoute('/prompts')({
 });
 
 function PromptsPage() {
+  const schemas = useSchemas();
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [loading, setLoading] = useState(true);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -245,7 +247,7 @@ function PromptsPage() {
                           {prompt.name}
                         </h3>
                         <Badge variant="gray" className="text-xs">
-                          {SCHEMA_LABELS[coerceSchemaSlug(prompt.schema_slug)]} · {STEP_LABEL[prompt.step]}
+                          {schemaLabel(coerceSchemaSlug(prompt.schema_slug))} · {STEP_LABEL[prompt.step]}
                         </Badge>
                         {prompt.is_default && (
                           <Badge variant="green" className="text-xs">
@@ -303,20 +305,22 @@ function PromptsPage() {
               <div>
                 <label className="text-sm font-medium mb-2 block">Schema</label>
                 <div className="flex flex-col gap-2">
-                  {(Object.keys(SCHEMA_LABELS) as SchemaSlug[]).map((slug) => (
-                    <label key={slug} className="flex items-center gap-2 cursor-pointer">
+                  {schemas.map((def) => (
+                    <label key={def.id} className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="radio"
                         name="new-prompt-schema-slug"
-                        checked={newPromptForm.schemaSlug === slug}
+                        checked={newPromptForm.schemaSlug === def.id}
                         onChange={() => {
                           // Reset step to the first valid one for the new schema.
-                          const firstStep = PROMPT_STEPS_BY_SCHEMA[slug][0]!.step;
-                          setNewPromptForm({ schemaSlug: slug, step: firstStep });
+                          const firstStep = promptStepsFor(def.id)[0]?.step;
+                          if (firstStep) {
+                            setNewPromptForm({ schemaSlug: def.id, step: firstStep });
+                          }
                         }}
                         className="accent-primary"
                       />
-                      <span className="text-sm">{SCHEMA_LABELS[slug]}</span>
+                      <span className="text-sm">{def.name}</span>
                     </label>
                   ))}
                 </div>
@@ -324,7 +328,7 @@ function PromptsPage() {
               <div>
                 <label className="text-sm font-medium mb-2 block">Step</label>
                 <div className="flex flex-col gap-2">
-                  {PROMPT_STEPS_BY_SCHEMA[newPromptForm.schemaSlug].map(({ step, label }) => (
+                  {promptStepsFor(newPromptForm.schemaSlug).map(({ step, label }) => (
                     <label key={step} className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="radio"
@@ -394,10 +398,10 @@ function PromptsPage() {
                   ? (() => {
                       const slug = coerceSchemaSlug(editingPrompt.schema_slug);
                       const stepLabel =
-                        PROMPT_STEPS_BY_SCHEMA[slug].find(
+                        promptStepsFor(slug).find(
                           (s) => s.step === editingPrompt.step
                         )?.label ?? editingPrompt.step;
-                      return `${SCHEMA_LABELS[slug]} · ${stepLabel}`;
+                      return `${schemaLabel(slug)} · ${stepLabel}`;
                     })()
                   : ''}
               </p>

@@ -1,5 +1,6 @@
 pub mod file;
 pub mod category;
+pub mod schemas;
 pub mod tag;
 pub mod metadata;
 pub mod validation;
@@ -26,9 +27,9 @@ pub struct Category {
     pub icon: Option<String>,
     pub is_default: bool,
     pub folder_name: Option<String>,
-    /// Drives form sections, card layout, and prompt resolution. See
-    /// `crate::schema::SchemaSlug` for the parsed view; the frontend
-    /// mirrors the registry in `src/lib/categorySchema.ts`.
+    /// Drives form sections, card layout, and prompt resolution. Values
+    /// are rows in the `schemas` table (see `commands::schemas`); the
+    /// frontend resolves them via the `schema_list` command.
     pub schema_slug: String,
     /// User-tuned view defaults: which view mode the file list opens in,
     /// the default sort, the default filter conditions, the default

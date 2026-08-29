@@ -12,7 +12,7 @@ import {
 import { SuggestedTagChip } from '@/components/SuggestedTagChip';
 import { DuplicateWarning } from '@/components/DuplicateWarning';
 import { vndbFetchCover, vndbSearch, type VndbCandidate } from '@/lib/tauri';
-import { REGISTRY, defaultSchema, schemaForCategoryId, schemaForPath } from '@/lib/categorySchema';
+import { defaultSchema, schemaBySlug, schemaForCategoryId, schemaForPath } from '@/lib/categorySchema';
 import {
   AlertCircle,
   AlertTriangle,
@@ -469,7 +469,7 @@ function FileCardRow({
               item.formValues.category_id != null
                 ? schemaForCategoryId(item.formValues.category_id, categories)
                 : (schemaForPath(item.path) ??
-                  (item.preparedImport?.source_is_directory ? REGISTRY.comic : defaultSchema()));
+                  (item.preparedImport?.source_is_directory ? schemaBySlug('comic') : defaultSchema()));
             // Resolve the new-side author ids → names via the parent's
             // `authors` snapshot so the dupe panel can render the row
             // without a follow-up fetch. Ids that don't match anything

@@ -258,8 +258,9 @@ pub(crate) async fn process_import_path(
             emit_error("target category not found");
             return Ok(());
         };
-        let schema = crate::schema::SchemaSlug::from_str(&slug);
-        let want = FileKind::for_schema(schema);
+        let template =
+            crate::commands::schemas::pipeline_template_for(&env.pool, &slug).await?;
+        let want = FileKind::for_template(&template);
         // Validate the input *fits* the chosen category's schema. A mismatch
         // (e.g. a .txt dropped into a comic category) is a user error, not a
         // silent reroute. `accepts_path` (not `kind_for_path` equality)

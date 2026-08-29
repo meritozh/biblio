@@ -3,7 +3,7 @@ use sqlx::FromRow;
 use tauri::Manager;
 use tauri_plugin_sql::{DbInstances, DbPool};
 
-use crate::schema::SchemaSlug;
+use crate::commands::schemas::schema_step_exists;
 
 #[derive(Debug, Serialize, Deserialize, FromRow, Clone)]
 pub struct Prompt {
@@ -48,49 +48,48 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
 const PROMPT_SELECT: &str =
     "SELECT id, name, content, category, mime_group, schema_slug, step, is_default, created_at, updated_at FROM prompts";
 
-/// Validate that a (schema_slug, step) pair is one we know about.
-/// Pairs:
-///   `(novel, filename)`, `(novel, content)`,
-///   `(comic, filename)`, `(comic, cover_pick)`, `(comic, filename_folder)`.
+/// Validate that a (schema_slug, step) pair exists as an enabled
+/// pipeline step in the DB (seeded pairs: `(novel, filename)`,
+/// `(novel, content)`, `(comic, filename)`, `(comic, cover_pick)`,
+/// `(comic, filename_folder)`, `(galgame, filename)`).
 /// `filename_folder` exists because the comic pipeline picks between
 /// archive and image-folder ingestion at runtime, and the two need
 /// different filename-extraction rules (folder names already encode the
 /// author, archive names don't).
-fn validate_slug_step(slug: &str, step: &str) -> Result<(), String> {
-    if !SchemaSlug::is_known(slug) {
-        return Err("INVALID_PROMPT_SCHEMA_STEP".to_string());
-    }
-    let canonical = SchemaSlug::from_str(slug);
-    match (canonical, step) {
-        (SchemaSlug::Novel, "filename")
-        | (SchemaSlug::Novel, "content")
-        | (SchemaSlug::Comic, "filename")
-        | (SchemaSlug::Comic, "cover_pick")
-        | (SchemaSlug::Comic, "filename_folder")
-        | (SchemaSlug::Galgame, "filename") => Ok(()),
-        _ => Err("INVALID_PROMPT_SCHEMA_STEP".to_string()),
+async fn validate_slug_step(
+    pool: &sqlx::SqlitePool,
+    slug: &str,
+    step: &str,
+) -> Result<(), String> {
+    if schema_step_exists(pool, slug, step).await? {
+        Ok(())
+    } else {
+        Err("INVALID_PROMPT_SCHEMA_STEP".to_string())
     }
 }
 
 /// Map a schema slug back to a legacy mime_group value. Used during
 /// INSERT/UPDATE so the legacy column we keep around for one release
-/// stays consistent with the new row.
-fn legacy_mime_group(slug: SchemaSlug, step: &str) -> &'static str {
+/// stays consistent with the new row. Custom schemas store their own
+/// slug — the column is read by nothing on this build, it just needs
+/// to be non-NULL and stable.
+fn legacy_mime_group(slug: &str, step: &str) -> String {
     match (slug, step) {
-        (SchemaSlug::Novel, _) => "text",
-        (SchemaSlug::Comic, "filename_folder") => "image_folder",
-        (SchemaSlug::Comic, _) => "archive",
-        (SchemaSlug::Galgame, _) => "game",
+        ("novel", _) => "text".to_string(),
+        ("comic", "filename_folder") => "image_folder".to_string(),
+        ("comic", _) => "archive".to_string(),
+        ("galgame", _) => "game".to_string(),
+        (other, _) => other.to_string(),
     }
 }
 
-fn legacy_category_label(slug: SchemaSlug, step: &str) -> String {
+fn legacy_category_label(slug: &str, step: &str) -> String {
     // Pre-v3 callers stored 'filename' / 'content' in `category` for
     // novel/text steps; preserve that exact token there. Comic and
     // image_folder rows use `<group>_<step>` to avoid collision.
-    match (slug, step) {
-        (SchemaSlug::Novel, s) => s.to_string(),
-        (slug, s) => format!("{}_{}", legacy_mime_group(slug, s), s),
+    match slug {
+        "novel" => step.to_string(),
+        other => format!("{}_{}", legacy_mime_group(other, step), step),
     }
 }
 
@@ -98,20 +97,20 @@ fn legacy_category_label(slug: SchemaSlug, step: &str) -> String {
 /// (schema_slug, step) pair. Used by `llm.rs` to build preambles.
 pub async fn prompt_get_active(
     pool: &sqlx::SqlitePool,
-    schema_slug: SchemaSlug,
+    schema_slug: &str,
     step: &str,
 ) -> Result<String, String> {
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT content FROM prompts WHERE schema_slug = ? AND step = ? AND is_default = 1 LIMIT 1",
     )
-    .bind(schema_slug.as_str())
+    .bind(schema_slug)
     .bind(step)
     .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;
 
     row.map(|(c,)| c)
-        .ok_or_else(|| format!("NO_ACTIVE_PROMPT: {}/{}", schema_slug.as_str(), step))
+        .ok_or_else(|| format!("NO_ACTIVE_PROMPT: {}/{}", schema_slug, step))
 }
 
 #[tauri::command]
@@ -158,10 +157,10 @@ pub async fn prompt_create(
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    validate_slug_step(&payload.schema_slug, &payload.step)?;
-    let slug = SchemaSlug::from_str(&payload.schema_slug);
-    let legacy_group = legacy_mime_group(slug, &payload.step);
-    let legacy_category = legacy_category_label(slug, &payload.step);
+    validate_slug_step(&pool, &payload.schema_slug, &payload.step).await?;
+    let slug = payload.schema_slug.trim().to_ascii_lowercase();
+    let legacy_group = legacy_mime_group(&slug, &payload.step);
+    let legacy_category = legacy_category_label(&slug, &payload.step);
 
     let id = sqlx::query(
         "INSERT INTO prompts (name, content, category, mime_group, schema_slug, step, is_default) VALUES (?, ?, ?, ?, ?, ?, 0)",
@@ -169,8 +168,8 @@ pub async fn prompt_create(
     .bind(&payload.name)
     .bind(&payload.content)
     .bind(&legacy_category)
-    .bind(legacy_group)
-    .bind(slug.as_str())
+    .bind(&legacy_group)
+    .bind(&slug)
     .bind(&payload.step)
     .execute(&pool)
     .await
@@ -197,10 +196,10 @@ pub async fn prompt_update(
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    validate_slug_step(&payload.schema_slug, &payload.step)?;
-    let slug = SchemaSlug::from_str(&payload.schema_slug);
-    let legacy_group = legacy_mime_group(slug, &payload.step);
-    let legacy_category = legacy_category_label(slug, &payload.step);
+    validate_slug_step(&pool, &payload.schema_slug, &payload.step).await?;
+    let slug = payload.schema_slug.trim().to_ascii_lowercase();
+    let legacy_group = legacy_mime_group(&slug, &payload.step);
+    let legacy_category = legacy_category_label(&slug, &payload.step);
 
     sqlx::query(
         "UPDATE prompts SET name = ?, content = ?, category = ?, mime_group = ?, schema_slug = ?, step = ?, updated_at = datetime('now') WHERE id = ?",
@@ -208,8 +207,8 @@ pub async fn prompt_update(
     .bind(&payload.name)
     .bind(&payload.content)
     .bind(&legacy_category)
-    .bind(legacy_group)
-    .bind(slug.as_str())
+    .bind(&legacy_group)
+    .bind(&slug)
     .bind(&payload.step)
     .bind(id)
     .execute(&pool)
@@ -272,7 +271,7 @@ pub async fn set_default_impl(
     // to flip the active prompt for those — they need to be edited (the
     // update path will populate the column) before they can be activated.
     let slug = slug_opt.ok_or_else(|| "PROMPT_MISSING_SCHEMA_SLUG".to_string())?;
-    validate_slug_step(&slug, &step)?;
+    validate_slug_step(pool, &slug, &step).await?;
 
     sqlx::query(
         "UPDATE prompts SET is_default = 0 WHERE schema_slug = ? AND step = ? AND is_default = 1",
@@ -314,53 +313,90 @@ pub async fn prompt_set_default(
 mod tests {
     use super::*;
 
-    #[test]
-    fn validate_slug_step_accepts_known_pairs() {
-        assert!(validate_slug_step("novel", "filename").is_ok());
-        assert!(validate_slug_step("novel", "content").is_ok());
-        assert!(validate_slug_step("comic", "filename").is_ok());
-        assert!(validate_slug_step("comic", "cover_pick").is_ok());
-        assert!(validate_slug_step("comic", "filename_folder").is_ok());
+    /// In-memory DB with the v6 schema tables + built-in step seeds.
+    async fn seeded_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE schema_pipeline_steps (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                schema_id TEXT NOT NULL,\
+                step_key TEXT NOT NULL,\
+                label TEXT NOT NULL,\
+                enabled BOOLEAN NOT NULL DEFAULT 1,\
+                order_index INTEGER NOT NULL DEFAULT 0\
+            );\
+            INSERT INTO schema_pipeline_steps (schema_id, step_key, label, enabled, order_index) VALUES \
+                ('novel', 'filename', 'Filename extraction', 1, 0),\
+                ('novel', 'content', 'Content analysis', 1, 1),\
+                ('comic', 'filename', 'Filename extraction', 1, 0),\
+                ('comic', 'cover_pick', 'Cover detection', 1, 1),\
+                ('comic', 'filename_folder', 'Folder filename extraction', 1, 2),\
+                ('galgame', 'filename', 'Filename extraction', 1, 0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
     }
 
-    #[test]
-    fn validate_slug_step_rejects_unknown() {
+    #[tokio::test]
+    async fn validate_slug_step_accepts_known_pairs() {
+        let pool = seeded_pool().await;
+        assert!(validate_slug_step(&pool, "novel", "filename").await.is_ok());
+        assert!(validate_slug_step(&pool, "novel", "content").await.is_ok());
+        assert!(validate_slug_step(&pool, "comic", "filename").await.is_ok());
+        assert!(validate_slug_step(&pool, "comic", "cover_pick").await.is_ok());
+        assert!(
+            validate_slug_step(&pool, "comic", "filename_folder")
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_slug_step_rejects_unknown() {
+        let pool = seeded_pool().await;
         assert_eq!(
-            validate_slug_step("novel", "cover_pick").unwrap_err(),
+            validate_slug_step(&pool, "novel", "cover_pick")
+                .await
+                .unwrap_err(),
             "INVALID_PROMPT_SCHEMA_STEP"
         );
         assert_eq!(
-            validate_slug_step("manga", "filename").unwrap_err(),
+            validate_slug_step(&pool, "manga", "filename")
+                .await
+                .unwrap_err(),
             "INVALID_PROMPT_SCHEMA_STEP"
         );
         // Retired with the category reclassify feature.
         assert_eq!(
-            validate_slug_step("novel", "category_reanalyze").unwrap_err(),
+            validate_slug_step(&pool, "novel", "category_reanalyze")
+                .await
+                .unwrap_err(),
             "INVALID_PROMPT_SCHEMA_STEP"
         );
     }
 
     #[test]
     fn legacy_mime_group_routes_filename_folder_to_image_folder() {
-        assert_eq!(legacy_mime_group(SchemaSlug::Novel, "filename"), "text");
-        assert_eq!(legacy_mime_group(SchemaSlug::Comic, "filename"), "archive");
-        assert_eq!(legacy_mime_group(SchemaSlug::Comic, "cover_pick"), "archive");
+        assert_eq!(legacy_mime_group("novel", "filename"), "text");
+        assert_eq!(legacy_mime_group("comic", "filename"), "archive");
+        assert_eq!(legacy_mime_group("comic", "cover_pick"), "archive");
         assert_eq!(
-            legacy_mime_group(SchemaSlug::Comic, "filename_folder"),
+            legacy_mime_group("comic", "filename_folder"),
             "image_folder"
         );
+        // Custom schemas keep their own slug in the legacy column.
+        assert_eq!(legacy_mime_group("podcast", "filename"), "podcast");
     }
 
     #[test]
     fn legacy_category_label_preserves_text_step_for_back_compat() {
-        assert_eq!(legacy_category_label(SchemaSlug::Novel, "filename"), "filename");
-        assert_eq!(legacy_category_label(SchemaSlug::Novel, "content"), "content");
+        assert_eq!(legacy_category_label("novel", "filename"), "filename");
+        assert_eq!(legacy_category_label("novel", "content"), "content");
+        assert_eq!(legacy_category_label("comic", "filename"), "archive_filename");
         assert_eq!(
-            legacy_category_label(SchemaSlug::Comic, "filename"),
-            "archive_filename"
-        );
-        assert_eq!(
-            legacy_category_label(SchemaSlug::Comic, "filename_folder"),
+            legacy_category_label("comic", "filename_folder"),
             "image_folder_filename_folder"
         );
     }

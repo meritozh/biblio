@@ -124,6 +124,7 @@ pub fn run() {
             commands::category::category_get,
             commands::category::category_create,
             commands::category::category_update,
+            commands::schemas::schema_list,
             commands::tag::tag_list,
             commands::tag::tag_count,
             commands::tag::tag_create,

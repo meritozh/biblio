@@ -1,83 +1,24 @@
-//! Category-driven schema slug.
+//! Schema slug constants.
 //!
-//! Mirrors `src/lib/categorySchema.ts` on the frontend. Each category
-//! row carries one of these slugs in its `schema_slug` column; prompts
-//! pair `(schema_slug, step)` to pick which LLM rules to run for a
-//! given pipeline step.
+//! Schemas (resource types) are data — rows in the `schemas` table
+//! seeded by migration v6 — not a code enum. This module keeps only
+//! the built-in identifiers that seed data and pipeline-template
+//! routing refer to. Code behavior keys off field *semantics*
+//! (`schema_fields.semantic`) and the schema's `pipeline_template`,
+//! never off the slug itself.
 //!
-//! New schemas are added in two places (here + the TS registry). Adding
-//! one without the other will compile but fall back to `Novel` at the
-//! Rust→DB boundary, which is the safest default for unknown user data.
+//! The frontend mirror lives in `src/lib/categorySchema.ts`, which
+//! resolves schema definitions from the DB via the `schema_list`
+//! command (with a static fallback copy for pre-load renders).
 
-use serde::{Deserialize, Serialize};
+/// Built-in schema slugs seeded by migration v6.
+pub const NOVEL: &str = "novel";
+pub const COMIC: &str = "comic";
+pub const GALGAME: &str = "galgame";
 
-/// Built-in schema identifier. Stored as a TEXT column in SQLite via
-/// `as_str` and read back via `from_str`. Case-insensitive; unknown
-/// values fall back to `Novel` so a stale `schema_slug` from a row
-/// written by an older binary doesn't crash the pipeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SchemaSlug {
-    Novel,
-    Comic,
-    Galgame,
-}
-
-impl SchemaSlug {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            SchemaSlug::Novel => "novel",
-            SchemaSlug::Comic => "comic",
-            SchemaSlug::Galgame => "galgame",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s.to_ascii_lowercase().as_str() {
-            "comic" => SchemaSlug::Comic,
-            "galgame" => SchemaSlug::Galgame,
-            // Default for any unknown value so a category row written by
-            // a future binary that introduced a new slug doesn't error
-            // here — it just renders with novel defaults until the
-            // registry catches up.
-            _ => SchemaSlug::Novel,
-        }
-    }
-
-    /// True if `s` parses to a known slug exactly. Used by command-layer
-    /// validation when accepting user input from a Tauri command, which
-    /// should reject typos rather than silently falling back.
-    pub fn is_known(s: &str) -> bool {
-        matches!(
-            s.to_ascii_lowercase().as_str(),
-            "novel" | "comic" | "galgame"
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn round_trip_known() {
-        for slug in [SchemaSlug::Novel, SchemaSlug::Comic, SchemaSlug::Galgame] {
-            assert_eq!(SchemaSlug::from_str(slug.as_str()), slug);
-        }
-    }
-
-    #[test]
-    fn from_str_falls_back_to_novel_for_unknown() {
-        assert_eq!(SchemaSlug::from_str(""), SchemaSlug::Novel);
-        assert_eq!(SchemaSlug::from_str("manga"), SchemaSlug::Novel);
-    }
-
-    #[test]
-    fn is_known_excludes_fallback_targets() {
-        assert!(SchemaSlug::is_known("novel"));
-        assert!(SchemaSlug::is_known("Comic"));
-        assert!(SchemaSlug::is_known("galgame"));
-        assert!(!SchemaSlug::is_known("manga"));
-        assert!(!SchemaSlug::is_known(""));
-    }
-}
+/// Slug applied when a stored value doesn't match any row in `schemas`
+/// (e.g. a category written by a newer binary that introduced a slug
+/// this build doesn't know). Mirrors the historical `SchemaSlug::
+/// from_str` fallback so stale rows keep novel defaults instead of
+/// crashing the pipeline.
+pub const FALLBACK: &str = NOVEL;

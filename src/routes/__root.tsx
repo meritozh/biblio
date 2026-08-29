@@ -8,6 +8,7 @@ import {
   setSettingsOpen,
   useAppState,
 } from '@/stores/appStore';
+import { loadSchemas } from '@/stores/schemaStore';
 
 export const Route = createRootRoute({
   component: AppShell,
@@ -21,6 +22,7 @@ function AppShell() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    void loadSchemas();
     void loadCategories();
   }, []);
 

@@ -1,6 +1,6 @@
 use crate::commands::*;
+use crate::commands::schemas::schema_exists;
 use crate::commands::validation::{sanitize_folder_name, validate_category_name};
-use crate::schema::SchemaSlug;
 use tauri::AppHandle;
 use tauri::Manager;
 use tauri_plugin_sql::{DbPool, DbInstances};
@@ -60,10 +60,10 @@ pub async fn category_create(
 
     let validated_name = validate_category_name(&name)?;
 
-    if !SchemaSlug::is_known(&schema_slug) {
+    if !schema_exists(&pool, &schema_slug).await? {
         return Err("INVALID_SCHEMA_SLUG".to_string());
     }
-    let canonical_slug = SchemaSlug::from_str(&schema_slug).as_str();
+    let canonical_slug = schema_slug.trim().to_ascii_lowercase();
 
     // UNIQUE(name) is enforced by the table, but check up front for a clean
     // error instead of a raw constraint-violation string.
@@ -277,10 +277,10 @@ pub async fn category_update(
     }
 
     if let Some(s) = schema_slug {
-        if !SchemaSlug::is_known(&s) {
+        if !schema_exists(&pool, &s).await? {
             return Err("INVALID_SCHEMA_SLUG".to_string());
         }
-        let canonical = SchemaSlug::from_str(&s).as_str();
+        let canonical = s.trim().to_ascii_lowercase();
         sqlx::query("UPDATE categories SET schema_slug = ? WHERE id = ?")
             .bind(canonical)
             .bind(id)

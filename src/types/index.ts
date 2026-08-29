@@ -1,10 +1,67 @@
 export type FileStatus = 'available' | 'missing' | 'moved';
 export type MetadataType = 'text' | 'number' | 'date' | 'boolean';
 
-/** Built-in schema slug. Each value picks a `CategorySchema` from
- *  `lib/categorySchema.ts` that decides which form sections, card
- *  fields, and prompts apply to files in this category. */
-export type SchemaSlug = 'novel' | 'comic' | 'galgame';
+/** Schema slug — identifier of a row in the `schemas` table. Schemas
+ *  are runtime-defined data (see `SchemaDefinition` below), so this is
+ *  intentionally just `string`; validation happens against the loaded
+ *  schema list, not the type system. Built-in slugs: 'novel', 'comic',
+ *  'galgame'. */
+export type SchemaSlug = string;
+
+/** A field definition row (`schema_fields` table). `semantic` marks
+ *  fields code behavior attaches to (authors / cover / progress / ...);
+ *  NULL means a user-defined field whose values live in the metadata
+ *  EAV table and are never touched by pipeline code. */
+export interface SchemaField {
+  id: number;
+  schema_id: string;
+  field_key: string;
+  semantic: string | null;
+  /** Renderer hint: 'builtin' switches on `semantic`; custom types
+   *  (text / number / rating / date / enum / bool) arrive with the
+   *  schema editor UI. */
+  field_type: string;
+  label: string;
+  options: string | null;
+  form_visible: boolean;
+  card_visible: boolean;
+  sortable: boolean;
+  filterable: boolean;
+  required: boolean;
+  order_index: number;
+}
+
+/** An enabled/ordered pipeline step row (`schema_pipeline_steps`).
+ *  `step_key` pairs with `prompts.step` for prompt resolution. */
+export interface SchemaPipelineStep {
+  id: number;
+  schema_id: string;
+  step_key: string;
+  label: string;
+  enabled: boolean;
+  order_index: number;
+}
+
+/** Full schema definition as returned by the `schema_list` command:
+ *  the `schemas` row plus its ordered fields and pipeline steps.
+ *  `accepted_extensions` is parsed from the stored JSON array by the
+ *  tauri bridge. */
+export interface SchemaDefinition {
+  id: string;
+  name: string;
+  icon: string | null;
+  description: string | null;
+  accepted_extensions: string[];
+  /** Which built-in node composition the import pipeline runs:
+   *  'novel' | 'comic' | 'galgame'. */
+  pipeline_template: string;
+  is_builtin: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  fields: SchemaField[];
+  pipeline_steps: SchemaPipelineStep[];
+}
 
 export interface Category {
   id: number;
