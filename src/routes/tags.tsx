@@ -21,6 +21,9 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Plus, Pencil, Trash2, Tag as TagIcon, Filter as FilterIcon } from 'lucide-react';
+import { PageHeader } from '@/components/PageHeader';
+import { EmptyState } from '@/components/EmptyState';
+import { LoadingState } from '@/components/LoadingState';
 import { tagList, tagCount, tagCreate, tagUpdate, tagDelete } from '@/lib/tauri';
 import { FilteredFileList } from '@/components/FilteredFileList';
 import { makeId as makeConditionId, type Condition } from '@/lib/filters';
@@ -296,55 +299,46 @@ function TagsManagementPage() {
 
   return (
     <>
-      <div
-        className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
-        data-tauri-drag-region
-      >
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-3xl text-foreground flex items-center gap-3">
-            <TagIcon className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
-            Tags
-          </h1>
-          <span className="font-serif-italic text-sm text-muted-foreground">
-            — {tally} {total === 1 ? 'tag' : 'tags'}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant={selectionMode ? 'default' : 'outline'}
-            size="sm"
-            onClick={toggleSelectionMode}
-          >
-            {selectionMode ? 'Done' : 'Select'}
-          </Button>
-          {selectionMode && (
+      <PageHeader
+        icon={TagIcon}
+        title="Tags"
+        subtitle={`— ${tally} ${total === 1 ? 'tag' : 'tags'}`}
+        actions={
+          <>
             <Button
+              variant={selectionMode ? 'default' : 'outline'}
               size="sm"
-              onClick={handleApplySelection}
-              disabled={selectedIds.size === 0}
+              onClick={toggleSelectionMode}
             >
-              <FilterIcon className="h-3.5 w-3.5 mr-1" />
-              Filter Library ({selectedIds.size})
+              {selectionMode ? 'Done' : 'Select'}
             </Button>
-          )}
-          <Button onClick={() => setCreateDialogOpen(true)}>
-            <Plus className="h-4 w-4 mr-1" />
-            Add Tag
-          </Button>
-        </div>
-      </div>
+            {selectionMode && (
+              <Button
+                size="sm"
+                onClick={handleApplySelection}
+                disabled={selectedIds.size === 0}
+              >
+                <FilterIcon className="h-3.5 w-3.5" aria-hidden="true" />
+                Filter Library ({selectedIds.size})
+              </Button>
+            )}
+            <Button onClick={() => setCreateDialogOpen(true)}>
+              <Plus aria-hidden="true" />
+              Add Tag
+            </Button>
+          </>
+        }
+      />
 
       <div className="flex-1 overflow-hidden px-8 py-6">
         {loading ? (
-          <div className="flex items-center justify-center h-32">
-            <p className="text-sm text-muted-foreground">Loading...</p>
-          </div>
+          <LoadingState />
         ) : tags.length === 0 ? (
-          <div className="flex items-center justify-center h-32">
-            <p className="text-sm text-muted-foreground">
-              No tags yet. Click "Add Tag" to create one.
-            </p>
-          </div>
+          <EmptyState
+            icon={TagIcon}
+            message="No tags yet."
+            action={{ label: 'Add Tag', onClick: () => setCreateDialogOpen(true) }}
+          />
         ) : (
           <div className="rounded-md border h-full flex flex-col overflow-hidden">
             {/* Header row */}

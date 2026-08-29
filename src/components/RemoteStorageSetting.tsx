@@ -177,7 +177,7 @@ export function RemoteStorageSetting() {
                 <span className="text-xs text-destructive">Token expired — please re-authenticate</span>
               )}
               <Button variant="outline" size="sm" onClick={handleLogout} disabled={busy}>
-                <LogOut className="h-3 w-3 mr-1" /> Sign out
+                <LogOut className="h-3 w-3" /> Sign out
               </Button>
             </div>
           </div>
@@ -271,7 +271,7 @@ export function RemoteStorageSetting() {
           </div>
 
           <Button size="sm" onClick={handleLogin} disabled={busy || !tokenInput.trim() || !appKey.trim()}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             Connect
           </Button>
         </div>
@@ -405,12 +405,12 @@ function EncryptionTools() {
       <div className="space-y-1.5">
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={handleToggleKey}>
-            <KeyRound className="h-3 w-3 mr-1" />
+            <KeyRound className="h-3 w-3" />
             {showKey ? 'Hide recovery key' : 'Show recovery key'}
           </Button>
           {recoveryKey && (
             <Button variant="ghost" size="sm" onClick={handleCopyKey}>
-              {copied ? <Check className="h-3 w-3 mr-1" /> : <Copy className="h-3 w-3 mr-1" />}
+              {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
               {copied ? 'Copied' : 'Copy'}
             </Button>
           )}
@@ -449,9 +449,9 @@ function EncryptionTools() {
             </p>
             <Button size="sm" onClick={handleEncryptAll} disabled={running}>
               {running ? (
-                <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
-                <Lock className="h-3 w-3 mr-1" />
+                <Lock className="h-3 w-3" />
               )}
               {running ? 'Encrypting…' : 'Encrypt existing files'}
             </Button>

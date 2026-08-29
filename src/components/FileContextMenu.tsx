@@ -163,19 +163,19 @@ export function FileContextMenu({
       <DropdownMenuContent align="end">
         {hasLocalCopy && (
           <DropdownMenuItem onClick={handleOpen}>
-            <Play className="h-4 w-4 mr-2" />
+            <Play className="h-4 w-4" />
             Open
           </DropdownMenuItem>
         )}
         <DropdownMenuItem onClick={() => onEdit(file)}>
-          <Pencil className="h-4 w-4 mr-2" />
+          <Pencil className="h-4 w-4" />
           Edit
         </DropdownMenuItem>
         <DropdownMenuItem onClick={handleToggleFavorite}>
           {file.is_favorite ? (
-            <StarOff className="h-4 w-4 mr-2" />
+            <StarOff className="h-4 w-4" />
           ) : (
-            <Star className="h-4 w-4 mr-2" />
+            <Star className="h-4 w-4" />
           )}
           {file.is_favorite ? 'Remove favorite' : 'Add favorite'}
         </DropdownMenuItem>
@@ -183,36 +183,36 @@ export function FileContextMenu({
           onClick={() => onDelete(file)}
           className="text-destructive focus:text-destructive"
         >
-          <Trash2 className="h-4 w-4 mr-2" />
+          <Trash2 className="h-4 w-4" />
           Delete
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         {hasLocalCopy && (
           <DropdownMenuItem onClick={handleRevealInFinder}>
-            <FolderOpen className="h-4 w-4 mr-2" />
+            <FolderOpen className="h-4 w-4" />
             Show in Finder
           </DropdownMenuItem>
         )}
         <DropdownMenuItem onClick={handleCopyPath}>
-          <Copy className="h-4 w-4 mr-2" />
+          <Copy className="h-4 w-4" />
           Copy Path
         </DropdownMenuItem>
         {showStorageSection && <DropdownMenuSeparator />}
         {canUpload && (
           <DropdownMenuItem onClick={handleUpload} disabled={isUploading}>
-            <Upload className="h-4 w-4 mr-2" />
+            <Upload className="h-4 w-4" />
             {isUploading ? 'Uploading…' : 'Upload to cloud'}
           </DropdownMenuItem>
         )}
         {canDownload && (
           <DropdownMenuItem onClick={handleDownload} disabled={isDownloading}>
-            <Download className="h-4 w-4 mr-2" />
+            <Download className="h-4 w-4" />
             {isDownloading ? 'Downloading…' : 'Download'}
           </DropdownMenuItem>
         )}
         {canClearCache && (
           <DropdownMenuItem onClick={handleClearCache}>
-            <XCircle className="h-4 w-4 mr-2" />
+            <XCircle className="h-4 w-4" />
             Clear cache
           </DropdownMenuItem>
         )}

@@ -142,7 +142,7 @@ export function DebugActionsSection({ onAfterRun }: DebugActionsSectionProps) {
           >
             {running ? (
               <>
-                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 Running…
               </>
             ) : (
@@ -368,7 +368,7 @@ function AssignAuthorCard({ onAfterRun }: AssignAuthorCardProps) {
         >
           {running ? (
             <>
-              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
               Running…
             </>
           ) : (
@@ -573,7 +573,7 @@ function RegenerateCoversCard({ onAfterRun }: RegenerateCoversCardProps) {
         >
           {running ? (
             <>
-              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
               Running…
             </>
           ) : (

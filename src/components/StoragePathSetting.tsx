@@ -59,7 +59,7 @@ export function StoragePathSetting() {
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={handleSelectFolder} disabled={saving}>
-          <FolderOpen className="h-4 w-4 mr-2" />
+          <FolderOpen className="h-4 w-4" />
           {storagePath ? 'Change' : 'Select Folder'}
         </Button>
       </div>

@@ -78,9 +78,9 @@ export function UnusedItemsSection({
           disabled={busy || deleting}
         >
           {deleting ? (
-            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
-            <Trash2 className="h-3.5 w-3.5 mr-1" />
+            <Trash2 className="h-3.5 w-3.5" />
           )}
           Delete all {items.length}
         </Button>

@@ -221,7 +221,7 @@ export function FileListHeader({
                 disabled={!bulk.remoteEnabled}
                 onClick={bulk.onUpload}
               >
-                <Cloud className="h-3.5 w-3.5 mr-1" />
+                <Cloud className="h-3.5 w-3.5" />
                 Upload
               </Button>
               <Button
@@ -231,7 +231,7 @@ export function FileListHeader({
                 disabled={!bulk.remoteEnabled || !bulk.canDownload}
                 onClick={bulk.onDownload}
               >
-                <Download className="h-3.5 w-3.5 mr-1" />
+                <Download className="h-3.5 w-3.5" />
                 Download
               </Button>
               <Button
@@ -241,7 +241,7 @@ export function FileListHeader({
                 disabled={!bulk.canClearCache || !bulk.hasCacheableSelection}
                 onClick={bulk.onClearCache}
               >
-                <Eraser className="h-3.5 w-3.5 mr-1" />
+                <Eraser className="h-3.5 w-3.5" />
                 Clear cache
               </Button>
               <Button
@@ -251,7 +251,7 @@ export function FileListHeader({
                 disabled={!bulk.canDelete}
                 onClick={bulk.onDelete}
               >
-                <Trash2 className="h-3.5 w-3.5 mr-1" />
+                <Trash2 className="h-3.5 w-3.5" />
                 Delete
               </Button>
             </>
@@ -263,7 +263,7 @@ export function FileListHeader({
             onClick={selection.exitSelectionMode}
             aria-label="Cancel selection"
           >
-            <X className="h-3.5 w-3.5 mr-1" />
+            <X className="h-3.5 w-3.5" />
             Cancel
           </Button>
         </div>

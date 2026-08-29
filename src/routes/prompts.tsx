@@ -21,6 +21,9 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Plus, Pencil, Trash2, MessageSquare, Star, Info } from 'lucide-react';
+import { PageHeader } from '@/components/PageHeader';
+import { EmptyState } from '@/components/EmptyState';
+import { LoadingState } from '@/components/LoadingState';
 import {
   promptList,
   promptCreate,
@@ -191,24 +194,17 @@ function PromptsPage() {
 
   return (
     <>
-      <div
-        className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
-        data-tauri-drag-region
-      >
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-3xl text-foreground flex items-center gap-3">
-            <MessageSquare className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
-            Prompts
-          </h1>
-          <span className="font-serif-italic text-sm text-muted-foreground">
-            — {prompts.length} {prompts.length === 1 ? 'prompt' : 'prompts'}
-          </span>
-        </div>
-        <Button onClick={() => setCreateDialogOpen(true)}>
-          <Plus className="h-4 w-4 mr-1" />
-          Add Prompt
-        </Button>
-      </div>
+      <PageHeader
+        icon={MessageSquare}
+        title="Prompts"
+        subtitle={`— ${prompts.length} ${prompts.length === 1 ? 'prompt' : 'prompts'}`}
+        actions={
+          <Button onClick={() => setCreateDialogOpen(true)}>
+            <Plus aria-hidden="true" />
+            Add Prompt
+          </Button>
+        }
+      />
 
         <div className="flex-1 overflow-auto px-8 py-6">
           {/* Info banner */}
@@ -222,15 +218,13 @@ function PromptsPage() {
           </div>
 
           {loading ? (
-            <div className="flex items-center justify-center h-32">
-              <p className="text-sm text-muted-foreground">Loading...</p>
-            </div>
+            <LoadingState />
           ) : prompts.length === 0 ? (
-            <div className="flex items-center justify-center h-32">
-              <p className="text-sm text-muted-foreground">
-                No prompts yet. Click "Add Prompt" to create one.
-              </p>
-            </div>
+            <EmptyState
+              icon={MessageSquare}
+              message="No prompts yet."
+              action={{ label: 'Add Prompt', onClick: () => setCreateDialogOpen(true) }}
+            />
           ) : (
             <div className="grid gap-4">
               {prompts.map((prompt) => (

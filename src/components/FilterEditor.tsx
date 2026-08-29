@@ -154,7 +154,7 @@ export function FilterEditor({
           className="h-7 text-xs"
           onClick={addCondition}
         >
-          <Plus className="h-3.5 w-3.5 mr-1" />
+          <Plus className="h-3.5 w-3.5" />
           Add condition
         </Button>
       </div>

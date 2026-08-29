@@ -26,7 +26,8 @@ import {
 import { hydrateFiles, patchFile } from '@/stores/fileStore';
 import type { Collection, ViewMode } from '@/types';
 import { Button } from '@/components/ui/button';
-import { AlertCircle, Dices } from 'lucide-react';
+import { AlertCircle, Dices, Library } from 'lucide-react';
+import { PageHeader } from '@/components/PageHeader';
 import { schemaForCategoryId, isImportable } from '@/lib/categorySchema';
 import { resolveViewConfig } from '@/lib/categoryViewConfig';
 import { filterCollectionsForQuery } from '@/lib/collectionSearch';
@@ -582,45 +583,38 @@ function HomePage() {
           <p className="text-sm font-medium text-primary">Drop files to import</p>
         </div>
       )}
-      <div
-        className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
-        data-tauri-drag-region
-      >
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-3xl text-foreground">Library</h1>
-          <span
-            className="font-serif-italic text-sm text-muted-foreground"
-            aria-label={`${total} files`}
-          >
-            — {total} {total === 1 ? 'volume' : 'volumes'}
-          </span>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="w-64">
-            <SearchBar
-              value={searchQuery}
-              onChange={setSearchQuery}
-              onSearch={handleSearchCommit}
-              placeholder="Search title, path…"
+      <PageHeader
+        icon={Library}
+        title="Library"
+        subtitle={`— ${total} ${total === 1 ? 'volume' : 'volumes'}`}
+        actions={
+          <>
+            <div className="w-64">
+              <SearchBar
+                value={searchQuery}
+                onChange={setSearchQuery}
+                onSearch={handleSearchCommit}
+                placeholder="Search title, path…"
+              />
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 gap-1.5"
+              onClick={handleLucky}
+              disabled={selectedCategoryId == null || luckyLoading || luckyRefreshing}
+            >
+              <Dices className="h-4 w-4" aria-hidden="true" />
+              Lucky
+            </Button>
+            <FilePicker
+              onFilesSelected={handleFilesSelected}
+              schemaSlug={selectedCategorySchema.slug}
+              disabled={storagePathConfigured === false}
             />
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-9 gap-1.5"
-            onClick={handleLucky}
-            disabled={selectedCategoryId == null || luckyLoading || luckyRefreshing}
-          >
-            <Dices className="h-4 w-4" aria-hidden="true" />
-            Lucky
-          </Button>
-          <FilePicker
-            onFilesSelected={handleFilesSelected}
-            schemaSlug={selectedCategorySchema.slug}
-            disabled={storagePathConfigured === false}
-          />
-        </div>
-      </div>
+          </>
+        }
+      />
 
       <div className="flex-1 flex flex-col overflow-hidden px-8 py-6">
         {storagePathConfigured === false && (

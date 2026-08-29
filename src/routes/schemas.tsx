@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/table';
 import { Pencil, Plus, Shapes, Trash2, Upload, Download } from 'lucide-react';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import { PageHeader } from '@/components/PageHeader';
 import { loadSchemas, useSchemas } from '@/stores/schemaStore';
 import {
   schemaCreate,
@@ -194,30 +195,23 @@ function SchemasPage() {
 
   return (
     <>
-      <div
-        className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
-        data-tauri-drag-region
-      >
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-3xl text-foreground flex items-center gap-3">
-            <Shapes className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
-            Schemas
-          </h1>
-          <span className="font-serif-italic text-sm text-muted-foreground">
-            — {schemas.length} {schemas.length === 1 ? 'schema' : 'schemas'}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => void handleImport()} className="gap-2">
-            <Upload className="h-4 w-4" aria-hidden="true" />
-            Import
-          </Button>
-          <Button onClick={handleStartCreate} className="gap-2">
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            New Schema
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        icon={Shapes}
+        title="Schemas"
+        subtitle={`— ${schemas.length} ${schemas.length === 1 ? 'schema' : 'schemas'}`}
+        actions={
+          <>
+            <Button variant="outline" onClick={() => void handleImport()}>
+              <Upload aria-hidden="true" />
+              Import
+            </Button>
+            <Button onClick={handleStartCreate}>
+              <Plus aria-hidden="true" />
+              New Schema
+            </Button>
+          </>
+        }
+      />
 
       <div className="flex-1 overflow-auto px-8 py-6">
         <p className="text-xs text-muted-foreground mb-4 max-w-2xl">

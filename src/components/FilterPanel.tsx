@@ -33,7 +33,7 @@ export function FilterPanel({
         </div>
         {hasFilters && (
           <Button variant="ghost" size="sm" onClick={onClear}>
-            <X className="h-3 w-3 mr-1" />
+            <X className="h-3 w-3" />
             Clear
           </Button>
         )}

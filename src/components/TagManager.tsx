@@ -92,7 +92,7 @@ export function TagManager({
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button variant="outline" size="sm" className="h-9 text-muted-foreground">
-            <Plus className="h-4 w-4 mr-1" />
+            <Plus className="h-4 w-4" />
             {selectedTags.length > 0 ? 'Edit tags' : 'Add tags'}
           </Button>
         </PopoverTrigger>

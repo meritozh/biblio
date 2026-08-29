@@ -44,7 +44,7 @@ export function CategoryManager({
       <div className="flex items-center justify-between">
         <h3 className="font-semibold">Categories</h3>
         <Button size="sm" variant="outline" onClick={() => setIsCreating(true)}>
-          <Plus className="h-4 w-4 mr-1" />
+          <Plus className="h-4 w-4" />
           Add
         </Button>
       </div>

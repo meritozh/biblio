@@ -2,7 +2,8 @@ import { createFileRoute } from '@tanstack/react-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '@tanstack/react-store';
 import { VirtualList } from '@/components/VirtualList';
-import { Loader2, Settings2 } from 'lucide-react';
+import { Loader2, Settings2, Sparkles } from 'lucide-react';
+import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -201,17 +202,15 @@ function CleanupPage() {
 
   return (
     <>
-      <div
-        className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
-        data-tauri-drag-region
-      >
-        <div className="min-w-0">
-          <div className="text-3xl text-foreground">Cleanup</div>
-          <p className="text-sm text-muted-foreground mt-1">
-            Find unused tags / authors and duplicate file names.
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        icon={Sparkles}
+        title="Cleanup"
+        subtitle={
+          loadingMeta && loadingGroups
+            ? undefined
+            : `— ${unusedTags.length + unusedAuthors.length} unused · ${visibleGroups.length} ${visibleGroups.length === 1 ? 'group' : 'groups'}`
+        }
+      />
 
       <div className="flex-1 overflow-auto px-8 py-6 space-y-8">
         {/* ── Section A: unused metadata ──────────────────────────── */}
@@ -315,7 +314,7 @@ function CleanupPage() {
               overscan={4}
               className="max-h-[70vh] overflow-auto rounded-lg"
               renderItem={(g) => (
-                <div style={{ paddingBottom: 8 }}>
+                <div className="pb-2">
                   <DuplicateGroupCard
                     prefix={g.prefix}
                     files={g.files}

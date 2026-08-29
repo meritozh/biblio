@@ -21,6 +21,9 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Plus, Pencil, Trash2, User as UserIcon } from 'lucide-react';
+import { PageHeader } from '@/components/PageHeader';
+import { EmptyState } from '@/components/EmptyState';
+import { LoadingState } from '@/components/LoadingState';
 import {
   authorList,
   authorCount,
@@ -245,36 +248,27 @@ function AuthorsManagementPage() {
 
   return (
     <>
-      <div
-        className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
-        data-tauri-drag-region
-      >
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-3xl text-foreground flex items-center gap-3">
-            <UserIcon className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
-            Authors
-          </h1>
-          <span className="font-serif-italic text-sm text-muted-foreground">
-            — {tally} {total === 1 ? 'author' : 'authors'}
-          </span>
-        </div>
-        <Button onClick={() => setCreateDialogOpen(true)}>
-          <Plus className="h-4 w-4 mr-1" />
-          Add Author
-        </Button>
-      </div>
+      <PageHeader
+        icon={UserIcon}
+        title="Authors"
+        subtitle={`— ${tally} ${total === 1 ? 'author' : 'authors'}`}
+        actions={
+          <Button onClick={() => setCreateDialogOpen(true)}>
+            <Plus aria-hidden="true" />
+            Add Author
+          </Button>
+        }
+      />
 
       <div className="flex-1 overflow-hidden px-8 py-6">
         {loading ? (
-          <div className="flex items-center justify-center h-32">
-            <p className="text-sm text-muted-foreground">Loading...</p>
-          </div>
+          <LoadingState />
         ) : authors.length === 0 ? (
-          <div className="flex items-center justify-center h-32">
-            <p className="text-sm text-muted-foreground">
-              No authors yet. Click "Add Author" to create one.
-            </p>
-          </div>
+          <EmptyState
+            icon={UserIcon}
+            message="No authors yet."
+            action={{ label: 'Add Author', onClick: () => setCreateDialogOpen(true) }}
+          />
         ) : (
           <div className="rounded-md border h-full flex flex-col overflow-hidden">
             <div className="grid grid-cols-[1fr_120px] items-center gap-3 px-4 py-2 border-b border-border bg-muted/30 text-xs font-medium text-muted-foreground uppercase tracking-wide">

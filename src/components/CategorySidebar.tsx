@@ -168,7 +168,7 @@ export function CategorySidebar({
             onClick={onOpenSettings}
             aria-label="Settings"
           >
-            <Settings className="h-4 w-4 mr-2" aria-hidden="true" />
+            <Settings className="h-4 w-4" aria-hidden="true" />
             Settings
           </Button>
         )}
