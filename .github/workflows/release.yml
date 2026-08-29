@@ -113,7 +113,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Biblio ${{ github.ref_name }}'
-          releaseDraft: true       # land as a draft so you can review before publishing
+          releaseDraft: false       # land as a draft so you can review before publishing
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
           releaseBody: |
             ## Changes
