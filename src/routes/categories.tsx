@@ -249,6 +249,12 @@ function CategoryFormFields({
               patchViewConfig({ conditions: next.length === 0 ? undefined : next })
             }
             tags={availableTags}
+            customFields={
+              schemas
+                .find((d) => d.id === values.schemaSlug)
+                ?.fields.filter((f) => f.semantic === null && f.filterable)
+                .map((f) => ({ key: f.field_key, label: f.label })) ?? []
+            }
           />
         </div>
       </div>

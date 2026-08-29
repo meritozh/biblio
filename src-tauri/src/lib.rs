@@ -129,6 +129,7 @@ pub fn run() {
             commands::schema_admin::schema_update,
             commands::schema_admin::schema_delete,
             commands::schema_admin::schema_field_data_count,
+            commands::schema_admin::schema_steps_update,
             commands::tag::tag_list,
             commands::tag::tag_count,
             commands::tag::tag_create,

@@ -99,8 +99,18 @@ pub async fn file_search(
     let limit = limit.unwrap_or(50);
     let offset = offset.unwrap_or(0);
     // The aliased form is needed because the search query joins `files_fts`
-    // and references columns through `f.`.
-    let order_by = order_by_clause(sort_by.as_deref(), sort_desc.unwrap_or(true), "f");
+    // and references columns through `f.`. `field:<key>` adds a metadata
+    // JOIN for custom-schema-field sorting.
+    let sort_desc = sort_desc.unwrap_or(true);
+    let (sort_join, order_by) = match sort_by.as_deref() {
+        Some(s) if s.starts_with("field:") => {
+            match custom_sort_clause(&pool, s, sort_desc, "f").await {
+                Some((join, order)) => (join, order),
+                None => (String::new(), order_by_clause(sort_by.as_deref(), sort_desc, "f")),
+            }
+        }
+        _ => (String::new(), order_by_clause(sort_by.as_deref(), sort_desc, "f")),
+    };
     let (filter_sql, filter_binds) = build_filter_sql(conditions.as_deref().unwrap_or(&[]), "f");
 
     // If the user's query sanitizes to nothing, return an empty result set
@@ -127,10 +137,10 @@ pub async fn file_search(
             format!(
                 "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.is_favorite, f.created_at, f.updated_at \
                  FROM files f \
-                 JOIN files_fts ON files_fts.rowid = f.id \
+                 JOIN files_fts ON files_fts.rowid = f.id{} \
                  WHERE files_fts MATCH ?{} \
                  {} LIMIT {} OFFSET {}",
-                where_tail, order_by, limit, offset
+                sort_join, where_tail, order_by, limit, offset
             ),
             format!(
                 "SELECT COUNT(*) FROM files f \
@@ -143,10 +153,10 @@ pub async fn file_search(
         SearchFilter::Like(pattern) => (
             format!(
                 "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.is_favorite, f.created_at, f.updated_at \
-                 FROM files f \
+                 FROM files f{} \
                  WHERE (f.display_name LIKE ? ESCAPE '\\' OR f.path LIKE ? ESCAPE '\\'){} \
                  {} LIMIT {} OFFSET {}",
-                where_tail, order_by, limit, offset
+                sort_join, where_tail, order_by, limit, offset
             ),
             format!(
                 "SELECT COUNT(*) FROM files f \

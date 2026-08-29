@@ -23,6 +23,11 @@ impl Phase2Node for ContentLlmNode {
         if !env.llm_config.analyze_content {
             return false;
         }
+        // The schema editor's step toggle: a schema without the
+        // `content` step skips content analysis entirely.
+        if !env.enabled_steps.contains("content") {
+            return false;
+        }
         if ctx.content_sample.is_none() {
             return false;
         }
@@ -49,6 +54,8 @@ impl Phase2Node for ContentLlmNode {
             ctx.display_name.as_deref(),
             &env.category_names,
             &env.tag_names,
+            &env.schema_slug,
+            &env.schema_template,
         )
         .await
         .map_err(|e| {

@@ -133,6 +133,31 @@ pub async fn schema_step_exists(
     Ok(found.is_some())
 }
 
+/// Every enabled step key for a schema, as a set the pipeline nodes
+/// consult in `applies()`. A slug that doesn't exist in `schemas`
+/// (stale category row) gets the fallback schema's steps so the
+/// historical behavior is preserved; an existing schema returns its
+/// own steps even when the user disabled every one.
+pub async fn enabled_steps_for(
+    pool: &sqlx::SqlitePool,
+    slug: &str,
+) -> Result<std::collections::HashSet<String>, String> {
+    let effective = if schema_exists(pool, slug).await? {
+        slug.trim().to_ascii_lowercase()
+    } else {
+        crate::schema::FALLBACK.to_string()
+    };
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT step_key FROM schema_pipeline_steps \
+         WHERE schema_id = ? AND enabled = 1",
+    )
+    .bind(&effective)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(|(s,)| s).collect())
+}
+
 #[tauri::command]
 pub async fn schema_list(app: tauri::AppHandle) -> Result<Vec<SchemaDefinition>, String> {
     let instances = app.state::<DbInstances>();

@@ -26,7 +26,11 @@ impl Phase2Node for LlmVisionCoverCheckNode {
     }
 
     fn applies(&self, ctx: &FileContext, env: &PipelineEnv) -> bool {
-        env.llm_config.enabled && !ctx.cover_candidates.is_empty()
+        // Part of the `cover_pick` step together with the candidates
+        // node — the schema toggle disables the whole LLM cover chain.
+        env.llm_config.enabled
+            && env.enabled_steps.contains("cover_pick")
+            && !ctx.cover_candidates.is_empty()
     }
 
     async fn run(&self, ctx: &mut FileContext, env: &PipelineEnv) -> Result<(), NodeError> {

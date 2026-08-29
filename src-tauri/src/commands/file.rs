@@ -29,7 +29,7 @@ pub use query_filter::FilterCondition;
 use create_replace::{FileCreateResponse, file_create, move_file_to_category_folder};
 use delete_move::file_move_category;
 use listing::{FileListResponse, hydrate_file_items};
-use query_filter::{build_filter_sql, get_sqlite_pool, order_by_clause};
+use query_filter::{build_filter_sql, custom_sort_clause, get_sqlite_pool, order_by_clause};
 use search_lucky_status::{SearchFilter, prepare_search_filter};
 use storage_files::{
     build_novel_filename, copy_file, get_unique_destination, move_file, sanitize_filename, zip_dir,

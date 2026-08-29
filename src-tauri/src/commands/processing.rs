@@ -245,21 +245,25 @@ pub(crate) async fn process_import_path(
     // validator (so "Novel category + dropped .zip" surfaces as an error
     // instead of silently running the comic pipeline). When no category was
     // supplied (legacy callers), fall back to extension-based routing.
-    let env = build_pipeline_env(app, generation, category_id).await?;
+    //
+    // The schema context (slug / template / enabled steps) is resolved
+    // BEFORE the env is built — LLM nodes read it for prompt routing
+    // (custom slug with template fallback) and step gating.
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
 
-    let kind = if let Some(cat_id) = category_id {
+    let (kind, schema_slug, schema_template) = if let Some(cat_id) = category_id {
         let row: Option<(String,)> =
             sqlx::query_as("SELECT schema_slug FROM categories WHERE id = ?")
                 .bind(cat_id)
-                .fetch_optional(&env.pool)
+                .fetch_optional(&pool)
                 .await
                 .map_err(|e| format!("Failed to load category schema: {e}"))?;
         let Some((slug,)) = row else {
             emit_error("target category not found");
             return Ok(());
         };
-        let template =
-            crate::commands::schemas::pipeline_template_for(&env.pool, &slug).await?;
+        let template = crate::commands::schemas::pipeline_template_for(&pool, &slug).await?;
         let want = FileKind::for_template(&template);
         // Validate the input *fits* the chosen category's schema. A mismatch
         // (e.g. a .txt dropped into a comic category) is a user error, not a
@@ -270,15 +274,32 @@ pub(crate) async fn process_import_path(
             emit_error("input does not match the selected category's schema");
             return Ok(());
         }
-        want
+        (want, slug, template)
     } else {
         // Legacy path: route purely by extension.
         let Some(detected) = kind_for_path(&path) else {
             emit_error("unsupported file type");
             return Ok(());
         };
-        detected
+        let slug = match detected {
+            FileKind::Novel => crate::schema::NOVEL,
+            FileKind::Comic => crate::schema::COMIC,
+            FileKind::Galgame => crate::schema::GALGAME,
+        };
+        (detected, slug.to_string(), slug.to_string())
     };
+
+    let enabled_steps =
+        crate::commands::schemas::enabled_steps_for(&pool, &schema_slug).await?;
+    let env = build_pipeline_env(
+        app,
+        generation,
+        category_id,
+        schema_slug,
+        schema_template,
+        enabled_steps,
+    )
+    .await?;
 
     let pipeline = match kind {
         FileKind::Novel => pipeline::nodes::novel_pipeline()
@@ -306,6 +327,9 @@ pub(crate) async fn build_pipeline_env(
     app: &tauri::AppHandle,
     generation: u64,
     requested_category_id: Option<i64>,
+    schema_slug: String,
+    schema_template: String,
+    enabled_steps: std::collections::HashSet<String>,
 ) -> Result<Arc<PipelineEnv>, String> {
     use super::{Author, Category, FileEntry, Tag};
 
@@ -380,6 +404,9 @@ pub(crate) async fn build_pipeline_env(
         tag_names,
         existing_files,
         requested_category_id,
+        schema_slug,
+        schema_template,
+        enabled_steps,
         storage_path: roots.storage_path,
         app_root: roots.app_root,
         settings: PipelineSettings { analyze_content },

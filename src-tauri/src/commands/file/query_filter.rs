@@ -31,6 +31,69 @@ pub(super) fn order_by_clause(sort_by: Option<&str>, sort_desc: bool, alias: &st
     format!("ORDER BY {} {}", column, direction)
 }
 
+/// Sort on a custom (user-defined) schema field. `sort_by` arrives as
+/// `field:<key>`; the key is interpolated into the JOIN's ON clause, so
+/// it must pass the identifier shape check AND exist as a sortable
+/// `schema_fields` row — anything else falls back to the default
+/// `created_at` ordering (the caller falls back to `order_by_clause`)
+/// rather than erroring the whole list.
+///
+/// Returns the JOIN fragment and the ORDER BY fragment. Files without
+/// a value for the key always sort last, regardless of direction.
+/// Numeric-ish types (number / rating) compare as REAL; everything
+/// else (text / enum / ISO dates) compares case-insensitively as text,
+/// which also orders ISO dates correctly.
+pub(super) async fn custom_sort_clause(
+    pool: &sqlx::SqlitePool,
+    sort_by: &str,
+    sort_desc: bool,
+    alias: &str,
+) -> Option<(String, String)> {
+    let key = sort_by.strip_prefix("field:")?;
+    if !is_valid_metadata_key(key) {
+        return None;
+    }
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT field_type FROM schema_fields WHERE field_key = ? AND sortable = 1 LIMIT 1",
+    )
+    .bind(key)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let (field_type,) = row?;
+    let prefix = if alias.is_empty() {
+        String::new()
+    } else {
+        format!("{}.", alias)
+    };
+    let value_expr = match field_type.as_str() {
+        "number" | "rating" => "CAST(ms.value AS REAL)",
+        _ => "LOWER(ms.value)",
+    };
+    let direction = if sort_desc { "DESC" } else { "ASC" };
+    Some((
+        format!(
+            " LEFT JOIN metadata ms ON ms.file_id = {}id AND ms.key = '{}'",
+            prefix, key
+        ),
+        format!("ORDER BY ms.value IS NULL, {} {}", value_expr, direction),
+    ))
+}
+
+/// Identifier shape for custom sort keys: lowercase alpha start, then
+/// alnum/underscore. Matches the schema editor's field-key rules — the
+/// key is interpolated into the JOIN, so this check is the
+/// SQL-injection guard.
+fn is_valid_metadata_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
 /// One row of the FilterPanel editor, deserialized loosely so a single shape
 /// covers the whole TS discriminated union. `field` and `op` together pick
 /// which of the value-bearing fields are read; the rest are ignored. The
@@ -55,6 +118,9 @@ pub struct FilterCondition {
     pub author_id: Option<i64>,
     pub text: Option<String>,
     pub value: Option<Value>,
+    /// Custom (user-defined) schema field key for `field = "custom"`
+    /// conditions. Always a bind parameter, never interpolated.
+    pub key: Option<String>,
 }
 
 fn condition_value_as_str(value: Option<&Value>) -> Option<&str> {
@@ -319,6 +385,56 @@ pub(super) fn build_filter_sql(
                             if v { 1 } else { 0 },
                             p = prefix
                         ));
+                    }
+                }
+            }
+            // User-defined schema fields, stored in the metadata EAV
+            // table. The key and every value go through bind
+            // parameters; a condition missing its key is a no-op,
+            // matching the "half-built row" rule.
+            "custom" => {
+                if let Some(key) = c.key.as_ref().filter(|k| !k.is_empty()) {
+                    match c.op.as_str() {
+                        "empty" => {
+                            sql.push_str(&format!(
+                                " AND NOT EXISTS (SELECT 1 FROM metadata m WHERE m.file_id = {p}id AND m.key = ?)",
+                                p = prefix
+                            ));
+                            binds.push(key.clone());
+                        }
+                        "not_empty" => {
+                            sql.push_str(&format!(
+                                " AND EXISTS (SELECT 1 FROM metadata m WHERE m.file_id = {p}id AND m.key = ?)",
+                                p = prefix
+                            ));
+                            binds.push(key.clone());
+                        }
+                        "is" => {
+                            if let Some(t) = c.text.as_ref() {
+                                sql.push_str(&format!(
+                                    " AND EXISTS (SELECT 1 FROM metadata m WHERE m.file_id = {p}id AND m.key = ? AND m.value = ?)",
+                                    p = prefix
+                                ));
+                                binds.push(key.clone());
+                                binds.push(t.clone());
+                            }
+                        }
+                        "contains" => {
+                            if let Some(t) = c.text.as_ref().filter(|s| !s.is_empty()) {
+                                sql.push_str(&format!(
+                                    " AND EXISTS (SELECT 1 FROM metadata m WHERE m.file_id = {p}id AND m.key = ? AND LOWER(m.value) LIKE ? ESCAPE '\\')",
+                                    p = prefix
+                                ));
+                                binds.push(key.clone());
+                                let escaped = t
+                                    .to_lowercase()
+                                    .replace('\\', "\\\\")
+                                    .replace('%', "\\%")
+                                    .replace('_', "\\_");
+                                binds.push(format!("%{}%", escaped));
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

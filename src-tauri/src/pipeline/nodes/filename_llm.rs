@@ -29,13 +29,15 @@ enum FilenameSource {
 }
 
 /// LLM Call 1: extract display_name / authors / progress from the filename.
-/// The (schema_slug, step) pair is fixed at construction time so the
-/// dispatcher decides which prompt to use, not the runtime MIME check.
+/// The pipeline step is fixed at construction time so the dispatcher
+/// decides which prompt step to use, not the runtime MIME check. The
+/// prompt slug comes from `env.schema_slug` (the category's actual
+/// schema) with `env.schema_template` as fallback, so a custom schema
+/// inherits its template's prompts until the user writes their own.
 ///
 /// The actual network call is gated by `LLM_REQUEST_TIMEOUT` inside
 /// `extract_filename_metadata`.
 pub struct FilenameLlmNode {
-    schema_slug: &'static str,
     step: &'static str,
     source: FilenameSource,
 }
@@ -43,28 +45,24 @@ pub struct FilenameLlmNode {
 impl FilenameLlmNode {
     pub fn text() -> Self {
         Self {
-            schema_slug: crate::schema::NOVEL,
             step: "filename",
             source: FilenameSource::Text,
         }
     }
     pub fn archive() -> Self {
         Self {
-            schema_slug: crate::schema::COMIC,
             step: "filename",
             source: FilenameSource::Archive,
         }
     }
     pub fn folder() -> Self {
         Self {
-            schema_slug: crate::schema::COMIC,
             step: "filename_folder",
             source: FilenameSource::Folder,
         }
     }
     pub fn galgame() -> Self {
         Self {
-            schema_slug: crate::schema::GALGAME,
             step: "filename",
             source: FilenameSource::Galgame,
         }
@@ -79,6 +77,11 @@ impl Phase2Node for FilenameLlmNode {
 
     fn applies(&self, ctx: &FileContext, env: &PipelineEnv) -> bool {
         if !env.llm_config.enabled {
+            return false;
+        }
+        // The schema editor's step toggle: a schema without this
+        // filename step skips LLM name extraction entirely.
+        if !env.enabled_steps.contains(self.step) {
             return false;
         }
         let is_dir = ctx.file_path.is_dir();
@@ -115,7 +118,8 @@ impl Phase2Node for FilenameLlmNode {
             &env.llm_config,
             &env.pool,
             &ctx.file_name,
-            self.schema_slug,
+            &env.schema_slug,
+            &env.schema_template,
             self.step,
         )
         .await

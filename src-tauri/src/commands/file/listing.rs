@@ -17,7 +17,17 @@ pub async fn file_list(
     let offset = offset.unwrap_or(0);
     // Default mirrors the previous hardcoded `ORDER BY created_at DESC` so
     // callers that don't pass sort options keep their existing ordering.
-    let order_by = order_by_clause(sort_by.as_deref(), sort_desc.unwrap_or(true), "");
+    // `field:<key>` sorts on a custom schema field via a metadata JOIN.
+    let sort_desc = sort_desc.unwrap_or(true);
+    let (sort_join, order_by) = match sort_by.as_deref() {
+        Some(s) if s.starts_with("field:") => {
+            match custom_sort_clause(&pool, s, sort_desc, "").await {
+                Some((join, order)) => (join, order),
+                None => (String::new(), order_by_clause(sort_by.as_deref(), sort_desc, "")),
+            }
+        }
+        _ => (String::new(), order_by_clause(sort_by.as_deref(), sort_desc, "")),
+    };
     let (filter_sql, filter_binds) = build_filter_sql(conditions.as_deref().unwrap_or(&[]), "");
 
     // Build the WHERE clause once so both the row query and the count query
@@ -41,8 +51,8 @@ pub async fn file_list(
     where_clause.push_str(&filter_sql);
 
     let row_query = format!(
-        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, is_favorite, created_at, updated_at FROM files{} {} LIMIT {} OFFSET {}",
-        where_clause, order_by, limit, offset
+        "SELECT id, path, display_name, category_id, file_status, in_storage, original_path, progress, storage_kind, remote_provider, local_cache_path, is_favorite, created_at, updated_at FROM files{}{} {} LIMIT {} OFFSET {}",
+        sort_join, where_clause, order_by, limit, offset
     );
     let mut row_stmt = sqlx::query_as::<_, FileEntry>(&row_query);
     for b in &filter_binds {

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::ProcessingCancel;
@@ -37,6 +38,20 @@ pub struct PipelineEnv {
     /// proposes a different category in `FileContext`. `None` for internal
     /// maintenance pipelines that did not originate from an import target.
     pub requested_category_id: Option<i64>,
+
+    /// The schema this batch runs under: the requested category's
+    /// `schema_slug`, or the extension-routed built-in for legacy
+    /// no-category imports. LLM nodes resolve prompts under this slug
+    /// first, falling back to `schema_template` when the custom schema
+    /// has no active prompt for a step.
+    pub schema_slug: String,
+    /// The built-in pipeline template (`novel` / `comic` / `galgame`)
+    /// the schema routes through. Doubles as the prompt-fallback slug.
+    pub schema_template: String,
+    /// Enabled `schema_pipeline_steps.step_key`s for `schema_slug`.
+    /// Nodes whose step is absent skip themselves in `applies()` —
+    /// this is what the schema editor's step toggles drive at runtime.
+    pub enabled_steps: HashSet<String>,
 
     /// Path roots used by duplicate detection (and any future node that
     /// needs to stat existing rows on disk). Each `existing_files` row's

@@ -165,4 +165,118 @@ mod filter_sql_tests {
         assert_eq!(sql, " AND is_favorite = 0");
         assert!(binds.is_empty());
     }
+
+    #[test]
+    fn custom_filter_binds_key_and_value() {
+        let conditions = vec![FilterCondition {
+            field: "custom".to_string(),
+            op: "is".to_string(),
+            key: Some("publisher".to_string()),
+            text: Some("ACME".to_string()),
+            ..Default::default()
+        }];
+
+        let (sql, binds) = build_filter_sql(&conditions, "");
+
+        assert_eq!(
+            sql,
+            " AND EXISTS (SELECT 1 FROM metadata m WHERE m.file_id = id AND m.key = ? AND m.value = ?)"
+        );
+        assert_eq!(binds, vec!["publisher".to_string(), "ACME".to_string()]);
+    }
+
+    #[test]
+    fn custom_filter_contains_escapes_like_meta() {
+        let conditions = vec![FilterCondition {
+            field: "custom".to_string(),
+            op: "contains".to_string(),
+            key: Some("publisher".to_string()),
+            text: Some("50%".to_string()),
+            ..Default::default()
+        }];
+
+        let (sql, binds) = build_filter_sql(&conditions, "f");
+
+        assert_eq!(
+            sql,
+            " AND EXISTS (SELECT 1 FROM metadata m WHERE m.file_id = f.id AND m.key = ? AND LOWER(m.value) LIKE ? ESCAPE '\\')"
+        );
+        assert_eq!(binds, vec!["publisher".to_string(), "%50\\%%".to_string()]);
+    }
+
+    #[test]
+    fn custom_filter_without_key_is_noop() {
+        let conditions = vec![FilterCondition {
+            field: "custom".to_string(),
+            op: "is".to_string(),
+            text: Some("x".to_string()),
+            ..Default::default()
+        }];
+
+        let (sql, binds) = build_filter_sql(&conditions, "");
+
+        assert_eq!(sql, "");
+        assert!(binds.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod custom_sort_tests {
+    use super::super::query_filter::custom_sort_clause;
+
+    async fn pool_with_sortable_field() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE schema_fields (\
+                id INTEGER PRIMARY KEY,\
+                schema_id TEXT NOT NULL,\
+                field_key TEXT NOT NULL,\
+                field_type TEXT NOT NULL,\
+                sortable BOOLEAN NOT NULL DEFAULT 0\
+            );\
+            INSERT INTO schema_fields (schema_id, field_key, field_type, sortable) VALUES \
+                ('novel', 'rating', 'rating', 1),\
+                ('novel', 'publisher', 'text', 1),\
+                ('novel', 'internal_note', 'text', 0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn numeric_field_sorts_as_real() {
+        let pool = pool_with_sortable_field().await;
+        let (join, order) = custom_sort_clause(&pool, "field:rating", true, "")
+            .await
+            .unwrap();
+        assert_eq!(
+            join,
+            " LEFT JOIN metadata ms ON ms.file_id = id AND ms.key = 'rating'"
+        );
+        assert_eq!(order, "ORDER BY ms.value IS NULL, CAST(ms.value AS REAL) DESC");
+    }
+
+    #[tokio::test]
+    async fn text_field_sorts_case_insensitive_asc() {
+        let pool = pool_with_sortable_field().await;
+        let (_, order) = custom_sort_clause(&pool, "field:publisher", false, "f")
+            .await
+            .unwrap();
+        assert_eq!(order, "ORDER BY ms.value IS NULL, LOWER(ms.value) ASC");
+    }
+
+    #[tokio::test]
+    async fn non_sortable_or_malformed_keys_fall_back() {
+        let pool = pool_with_sortable_field().await;
+        // Not marked sortable → no custom clause.
+        assert!(custom_sort_clause(&pool, "field:internal_note", true, "").await.is_none());
+        // Identifier-shape violation (would be an injection sink) → none.
+        assert!(custom_sort_clause(&pool, "field:x'; DROP TABLE files;--", true, "").await.is_none());
+        // Unknown key → none.
+        assert!(custom_sort_clause(&pool, "field:missing", true, "").await.is_none());
+        // Not a field sort at all → none.
+        assert!(custom_sort_clause(&pool, "name", true, "").await.is_none());
+    }
 }

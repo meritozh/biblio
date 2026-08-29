@@ -2,7 +2,10 @@ import { invoke } from '@tauri-apps/api/core';
 import type { FileEntry, Category } from '@/types';
 import type { Condition } from '@/lib/filters';
 
-export type SortKey = 'name' | 'created' | 'updated';
+/** Sort keys: the three built-in columns, plus `field:<key>` for a
+ *  custom schema field whose `sortable` flag is set (server resolves
+ *  it through a metadata JOIN, see `custom_sort_clause`). */
+export type SortKey = 'name' | 'created' | 'updated' | `field:${string}`;
 
 // Wire-format the filter editor's conditions into the loose object the
 // backend's `FilterCondition` struct expects. Local `id`s are dropped (the
@@ -45,6 +48,9 @@ function serializeConditions(conditions: ReadonlyArray<Condition>): unknown[] {
     }
     if (c.field === 'favorite' && c.op === 'is') {
       return { ...base, value: c.value };
+    }
+    if (c.field === 'custom') {
+      return { ...base, key: c.key, text: c.text };
     }
     return base;
   });

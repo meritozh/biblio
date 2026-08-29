@@ -37,6 +37,10 @@ interface FilterEditorProps {
   onConditionsChange: (next: Condition[]) => void;
   tags: ReadonlyArray<Tag>;
   authors?: ReadonlyArray<{ id: number; name: string }>;
+  /** Filterable custom (user-defined) fields of the current schema.
+   *  When empty, the "Custom field" option is hidden from the field
+   *  dropdown. */
+  customFields?: ReadonlyArray<{ key: string; label: string }>;
   /** Opt into buffered mode: every edit stages a local draft, and the
    *  parent's `onConditionsChange` is only called when the user clicks
    *  Apply. Cancel discards the draft. Both buttons fire `onClose` so
@@ -56,6 +60,7 @@ export function FilterEditor({
   onConditionsChange,
   tags,
   authors = [],
+  customFields = [],
   bufferUntilApply = false,
   onClose,
 }: FilterEditorProps) {
@@ -135,6 +140,7 @@ export function FilterEditor({
                 onRemove={() => removeAt(i)}
                 tags={tags}
                 authors={authors}
+                customFields={customFields}
               />
             </li>
           ))}
@@ -183,9 +189,15 @@ interface ConditionRowProps {
   onRemove: () => void;
   tags: ReadonlyArray<Tag>;
   authors: ReadonlyArray<{ id: number; name: string }>;
+  customFields: ReadonlyArray<{ key: string; label: string }>;
 }
 
-function ConditionRow({ condition, onChange, onRemove, tags, authors }: ConditionRowProps) {
+function ConditionRow({ condition, onChange, onRemove, tags, authors, customFields }: ConditionRowProps) {
+  // "Custom field" only appears when the current schema actually has
+  // filterable custom fields — otherwise the option would produce a
+  // row with nothing to select.
+  const fieldOptions =
+    customFields.length > 0 ? FIELD_KEYS : FIELD_KEYS.filter((f) => f !== 'custom');
   return (
     <div className="flex items-center gap-1.5">
       <Select
@@ -196,13 +208,31 @@ function ConditionRow({ condition, onChange, onRemove, tags, authors }: Conditio
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {FIELD_KEYS.map((f) => (
+          {fieldOptions.map((f) => (
             <SelectItem key={f} value={f} className="text-xs">
               {FIELD_LABELS[f]}
             </SelectItem>
           ))}
         </SelectContent>
       </Select>
+
+      {condition.field === 'custom' && (
+        <Select
+          value={condition.key ?? ''}
+          onValueChange={(v) => onChange({ ...condition, key: v })}
+        >
+          <SelectTrigger className="h-8 w-[120px] text-xs shrink-0">
+            <SelectValue placeholder="field…" />
+          </SelectTrigger>
+          <SelectContent>
+            {customFields.map((f) => (
+              <SelectItem key={f.key} value={f.key} className="text-xs">
+                {f.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
 
       <Select
         value={condition.op}
@@ -356,6 +386,17 @@ function ValueEditor({ condition: c, onChange, tags, authors }: ValueEditorProps
         value={c.text ?? ''}
         onChange={(e) => onChange({ ...c, text: e.target.value })}
         placeholder="text…"
+        className="h-8 flex-1 text-xs"
+      />
+    );
+  }
+
+  if (c.field === 'custom' && (c.op === 'is' || c.op === 'contains')) {
+    return (
+      <Input
+        value={c.text ?? ''}
+        onChange={(e) => onChange({ ...c, text: e.target.value })}
+        placeholder="value…"
         className="h-8 flex-1 text-xs"
       />
     );

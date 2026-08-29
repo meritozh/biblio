@@ -86,6 +86,24 @@ export async function schemaFieldDataCount(
   return invoke('schema_field_data_count', { schemaId, fieldKey });
 }
 
+export interface SchemaStepInput {
+  step_key: string;
+  label: string;
+  enabled: boolean;
+  order_index: number;
+}
+
+/** Replace a schema's pipeline steps (toggle + reorder). `enabled` is
+ *  functional — pipeline nodes skip disabled steps at runtime;
+ *  `order_index` drives display order here and on the Prompts page. */
+export async function schemaStepsUpdate(
+  id: string,
+  steps: SchemaStepInput[]
+): Promise<SchemaDefinition> {
+  const row = await invoke<SchemaDefinitionWire>('schema_steps_update', { id, steps });
+  return normalizeDefinition(row);
+}
+
 function normalizeDefinition(row: SchemaDefinitionWire): SchemaDefinition {
   let extensions: string[] = [];
   try {

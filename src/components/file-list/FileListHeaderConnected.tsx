@@ -2,7 +2,10 @@ import { memo, useCallback, useMemo } from 'react';
 import { useStore } from '@tanstack/react-store';
 import { FileListHeader } from '@/components/FileListHeader';
 import { fileStore } from '@/stores/fileStore';
+import { useAppState } from '@/stores/appStore';
+import { useSchemas } from '@/stores/schemaStore';
 import type { Author, Tag } from '@/types';
+import type { SortKey } from '@/stores';
 import {
   conditionsOf,
   showCollectionsOf,
@@ -60,6 +63,38 @@ export const FileListHeaderConnected = memo(function FileListHeaderConnected() {
     return m;
   }, [availableAuthors]);
 
+  // Custom schema fields of the current category's schema drive the
+  // extra sort options (sortable) and filter rows (filterable). With
+  // no category selected, union across every schema — the list then
+  // spans categories, so any schema's fields may apply.
+  const categories = useAppState((s) => s.categories);
+  const selectedCategoryId = useAppState((s) => s.selectedCategoryId);
+  const schemas = useSchemas();
+  const { customSortOptions, customFilterFields } = useMemo(() => {
+    const cat = categories.find((c) => c.id === selectedCategoryId);
+    const defs = cat
+      ? schemas.filter((d) => d.id === cat.schema_slug)
+      : schemas;
+    const sortOptions: { value: SortKey; label: string }[] = [];
+    const filterFields: { key: string; label: string }[] = [];
+    const seenSort = new Set<string>();
+    const seenFilter = new Set<string>();
+    for (const def of defs) {
+      for (const f of def.fields) {
+        if (f.semantic !== null) continue;
+        if (f.sortable && !seenSort.has(f.field_key)) {
+          seenSort.add(f.field_key);
+          sortOptions.push({ value: `field:${f.field_key}`, label: f.label });
+        }
+        if (f.filterable && !seenFilter.has(f.field_key)) {
+          seenFilter.add(f.field_key);
+          filterFields.push({ key: f.field_key, label: f.label });
+        }
+      }
+    }
+    return { customSortOptions: sortOptions, customFilterFields: filterFields };
+  }, [categories, selectedCategoryId, schemas]);
+
   const onUpload = useCallback(() => {
     controller.handleBulkUpload(inFlightUploadIds);
   }, [controller, inFlightUploadIds]);
@@ -83,6 +118,7 @@ export const FileListHeaderConnected = memo(function FileListHeaderConnected() {
         sortDesc,
         setSortBy: controller.setSortBy,
         setSortDesc: controller.setSortDesc,
+        customOptions: customSortOptions,
       }}
       filter={{
         conditions,
@@ -94,6 +130,7 @@ export const FileListHeaderConnected = memo(function FileListHeaderConnected() {
         availableAuthors,
         tagsById,
         authorsById,
+        customFields: customFilterFields,
       }}
       selection={{
         selectionMode,

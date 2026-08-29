@@ -239,21 +239,42 @@ const MAX_CONTENT_TAGS: usize = 6;
 /// Chinese regardless of which active prompt the user has chosen.
 const LANGUAGE_INSTRUCTION: &str = "Output all Chinese text in Simplified Chinese (简体中文). Never use Traditional Chinese (繁體中文) characters.";
 
+/// Resolve the active prompt for (slug, step), falling back to the
+/// pipeline template's slug when the custom schema has no active prompt
+/// for the step. This is what lets a user-created schema run imports
+/// out of the box: it inherits its template's prompts until the user
+/// writes their own on the Prompts page.
+async fn prompt_with_fallback(
+    pool: &sqlx::SqlitePool,
+    schema_slug: &str,
+    fallback_slug: &str,
+    step: &str,
+) -> Result<String, String> {
+    match crate::commands::prompts::prompt_get_active(pool, schema_slug, step).await {
+        Ok(p) => Ok(p),
+        Err(e) if schema_slug != fallback_slug && e.starts_with("NO_ACTIVE_PROMPT") => {
+            crate::commands::prompts::prompt_get_active(pool, fallback_slug, step).await
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Call 1: Extract display_name, authors, progress from filename only.
 /// Preamble is loaded from the active `(schema_slug, step)` prompt in
-/// the DB. Step is normally `"filename"`; the comic pipeline passes
-/// `"filename_folder"` instead when the source is an image folder so
-/// the LLM uses different rules (folder name doesn't carry the author).
+/// the DB, falling back to `(fallback_slug, step)`. Step is normally
+/// `"filename"`; the comic pipeline passes `"filename_folder"` instead
+/// when the source is an image folder so the LLM uses different rules
+/// (folder name doesn't carry the author).
 pub async fn extract_filename_metadata(
     config: &LlmConfig,
     pool: &sqlx::SqlitePool,
     file_name: &str,
     schema_slug: &str,
+    fallback_slug: &str,
     step: &str,
 ) -> Result<LlmFilenameMetadata, String> {
     let client = build_client(config)?;
-    let user_preamble =
-        crate::commands::prompts::prompt_get_active(pool, schema_slug, step).await?;
+    let user_preamble = prompt_with_fallback(pool, schema_slug, fallback_slug, step).await?;
     let preamble = format!("{}\n\n{}", LANGUAGE_INSTRUCTION, user_preamble);
 
     let input = format!("File name: {}", file_name);
@@ -284,14 +305,11 @@ pub async fn extract_content_metadata(
     display_name_hint: Option<&str>,
     categories: &[String],
     tags: &[String],
+    schema_slug: &str,
+    fallback_slug: &str,
 ) -> Result<LlmContentMetadata, String> {
     let client = build_client(config)?;
-    let rules = crate::commands::prompts::prompt_get_active(
-        pool,
-        crate::schema::NOVEL,
-        "content",
-    )
-    .await?;
+    let rules = prompt_with_fallback(pool, schema_slug, fallback_slug, "content").await?;
 
     let categories_str = if categories.is_empty() {
         "None defined yet".to_string()
@@ -348,14 +366,12 @@ pub async fn extract_cover_candidates(
     config: &LlmConfig,
     pool: &sqlx::SqlitePool,
     entry_names: &[&str],
+    schema_slug: &str,
+    fallback_slug: &str,
 ) -> Result<Vec<String>, String> {
     let client = build_client(config)?;
-    let user_preamble = crate::commands::prompts::prompt_get_active(
-        pool,
-        crate::schema::COMIC,
-        "cover_pick",
-    )
-    .await?;
+    let user_preamble =
+        prompt_with_fallback(pool, schema_slug, fallback_slug, "cover_pick").await?;
     let preamble = format!("{}\n\n{}", LANGUAGE_INSTRUCTION, user_preamble);
 
     let input = format!("Filenames (archive order):\n{}", entry_names.join("\n"));

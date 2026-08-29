@@ -61,6 +61,10 @@ interface SortControls {
   sortDesc: boolean;
   setSortBy: (key: SortKey) => void;
   setSortDesc: (desc: boolean) => void;
+  /** Sortable custom schema fields (`field:<key>` options), appended
+   *  after the built-in columns. Empty when the current schema has no
+   *  sortable custom fields. */
+  customOptions?: ReadonlyArray<{ value: SortKey; label: string }>;
 }
 
 interface FilterControls {
@@ -73,6 +77,8 @@ interface FilterControls {
   availableAuthors: ReadonlyArray<Author>;
   tagsById: Map<number, Tag>;
   authorsById: Map<number, Author>;
+  /** Filterable custom schema fields, forwarded to the FilterEditor. */
+  customFields?: ReadonlyArray<{ key: string; label: string }>;
 }
 
 interface SelectionControls {
@@ -307,6 +313,11 @@ export function FileListHeader({
                     {opt.label}
                   </SelectItem>
                 ))}
+                {(sort.customOptions ?? []).map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                    {opt.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <Button
@@ -360,6 +371,7 @@ export function FileListHeader({
                   onConditionsChange={filter.setConditions}
                   tags={filter.availableTags}
                   authors={filter.availableAuthors}
+                  customFields={filter.customFields ?? []}
                   bufferUntilApply
                   onClose={() => filter.setFilterOpen(false)}
                 />

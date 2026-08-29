@@ -30,6 +30,12 @@ pub const PIPELINE_TEMPLATES: &[&str] = &["novel", "comic", "galgame"];
 /// Renderer types allowed for user-defined (semantic-less) fields.
 pub const CUSTOM_FIELD_TYPES: &[&str] = &["text", "number", "rating", "date", "enum", "bool"];
 
+/// Pipeline steps the schema editor can toggle/reorder. The set a
+/// schema carries is copied from its pipeline template at creation;
+/// this vocab is the universe those steps come from.
+pub const PIPELINE_STEP_VOCAB: &[&str] =
+    &["filename", "content", "cover_pick", "filename_folder"];
+
 /// Code-behavior markers a field can carry. Code keys off these, never
 /// off the field key itself; users cannot invent new ones.
 pub const SEMANTICS: &[&str] = &[
@@ -417,6 +423,66 @@ pub async fn schema_field_data_count(
     let instances = app.state::<DbInstances>();
     let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
     count_field_data(&pool, &schema_id, &field_key).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SchemaStepInput {
+    pub step_key: String,
+    pub label: String,
+    pub enabled: bool,
+    pub order_index: i64,
+}
+
+/// Replace a schema's pipeline steps (toggle + reorder from the schema
+/// editor). Step keys must come from the fixed vocab — the UI never
+/// invents steps, it only enables/disables and reorders the ones the
+/// schema's template provides. Note `order_index` is presentational
+/// (prompts page + editor ordering); execution order inside a pipeline
+/// composition stays code-defined. `enabled` is the functional bit:
+/// pipeline nodes consult it via `PipelineEnv::enabled_steps`.
+#[tauri::command]
+pub async fn schema_steps_update(
+    app: tauri::AppHandle,
+    id: String,
+    steps: Vec<SchemaStepInput>,
+) -> Result<SchemaDefinition, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+
+    if !super::schemas::schema_exists(&pool, &id).await? {
+        return Err("SCHEMA_NOT_FOUND".to_string());
+    }
+    for step in &steps {
+        if !PIPELINE_STEP_VOCAB.contains(&step.step_key.as_str()) {
+            return Err("INVALID_STEP_KEY".to_string());
+        }
+        if step.label.trim().is_empty() {
+            return Err("INVALID_STEP_LABEL".to_string());
+        }
+    }
+
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM schema_pipeline_steps WHERE schema_id = ?")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    for step in &steps {
+        sqlx::query(
+            "INSERT INTO schema_pipeline_steps (schema_id, step_key, label, enabled, order_index) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(&step.step_key)
+        .bind(step.label.trim())
+        .bind(step.enabled)
+        .bind(step.order_index)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    fetch_definition(&pool, &id).await
 }
 
 // ── Shared internals ────────────────────────────────────────────────

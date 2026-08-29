@@ -15,7 +15,8 @@ export type Field =
   | 'file_status'
   | 'storage_kind'
   | 'local_cache'
-  | 'favorite';
+  | 'favorite'
+  | 'custom';
 
 export type Condition =
   | { id: string; field: 'authors'; op: 'empty' }
@@ -56,7 +57,13 @@ export type Condition =
   // and cached" / "remote and not cached".
   | { id: string; field: 'local_cache'; op: 'empty' }
   | { id: string; field: 'local_cache'; op: 'not_empty' }
-  | { id: string; field: 'favorite'; op: 'is'; value?: boolean };
+  | { id: string; field: 'favorite'; op: 'is'; value?: boolean }
+  // User-defined schema fields, matched against the metadata EAV
+  // table. `key` is the schema_fields.field_key; `text` carries the
+  // comparison value for `is` / `contains`. Server-side is
+  // authoritative — the client evaluator degrades to a no-op when the
+  // list item carries no metadata (the main list payload doesn't).
+  | { id: string; field: 'custom'; key?: string; op: 'is' | 'contains' | 'empty' | 'not_empty'; text?: string };
 
 export type Op = Condition['op'];
 
@@ -71,6 +78,7 @@ export const FIELD_LABELS: Record<Field, string> = {
   storage_kind: 'Storage',
   local_cache: 'Cached',
   favorite: 'Favorite',
+  custom: 'Custom field',
 };
 
 export const OP_LABELS: Record<Op, string> = {
@@ -106,6 +114,7 @@ export const OPS_BY_FIELD: Record<Field, ReadonlyArray<Op>> = {
   storage_kind: ['is'],
   local_cache: ['empty', 'not_empty'],
   favorite: ['is'],
+  custom: ['is', 'contains', 'empty', 'not_empty'],
 };
 
 export const FILE_STATUS_OPTIONS: ReadonlyArray<{ value: FileStatus; label: string }> = [
@@ -156,6 +165,8 @@ export function newCondition(field: Field): Condition {
       return { id, field, op: 'not_empty' };
     case 'favorite':
       return { id, field, op: 'is', value: true };
+    case 'custom':
+      return { id, field, op: 'is' };
   }
 }
 
@@ -259,6 +270,12 @@ export function withOp(c: Condition, op: Op): Condition {
       return { id: c.id, field: 'local_cache', op: op as 'empty' | 'not_empty' };
     case 'favorite':
       return { id: c.id, field: 'favorite', op: 'is', value: c.value };
+    case 'custom': {
+      // All four ops share the same value shape (key + optional text),
+      // so swap freely while preserving both.
+      const narrowed = op as 'is' | 'contains' | 'empty' | 'not_empty';
+      return { id: c.id, field: 'custom', op: narrowed, key: c.key, text: c.text };
+    }
   }
 }
 
@@ -372,6 +389,30 @@ function matchFavorite(
   return c.value === undefined ? true : file.is_favorite === c.value;
 }
 
+function matchCustom(
+  c: Extract<Condition, { field: 'custom' }>,
+  file: FileEntry
+): boolean {
+  // The main list payload doesn't hydrate metadata; server-side SQL is
+  // authoritative there, so the client predicate no-ops. Detail views
+  // that DO carry metadata get a real evaluation.
+  if (!file.metadata) return true;
+  if (!c.key) return true;
+  const entry = file.metadata.find((m) => m.key === c.key);
+  switch (c.op) {
+    case 'empty':
+      return entry === undefined;
+    case 'not_empty':
+      return entry !== undefined;
+    case 'is':
+      return c.text === undefined ? true : entry?.value === c.text;
+    case 'contains':
+      return c.text === undefined || c.text === ''
+        ? true
+        : (entry?.value.toLowerCase() ?? '').includes(c.text.toLowerCase());
+  }
+}
+
 function matches(c: Condition, file: FileEntry): boolean {
   switch (c.field) {
     case 'authors':
@@ -390,6 +431,8 @@ function matches(c: Condition, file: FileEntry): boolean {
       return matchLocalCache(c, file);
     case 'favorite':
       return matchFavorite(c, file);
+    case 'custom':
+      return matchCustom(c, file);
   }
 }
 
@@ -530,5 +573,21 @@ export function describeCondition(
       return describeLocalCache(c);
     case 'favorite':
       return describeFavorite(c);
+    case 'custom':
+      return describeCustom(c);
+  }
+}
+
+function describeCustom(c: Extract<Condition, { field: 'custom' }>): string {
+  const f = c.key ?? FIELD_LABELS.custom;
+  switch (c.op) {
+    case 'empty':
+      return `${f} is empty`;
+    case 'not_empty':
+      return `${f} not empty`;
+    case 'is':
+      return c.text ? `${f} is "${c.text}"` : `${f} is …`;
+    case 'contains':
+      return c.text ? `${f} contains "${c.text}"` : `${f} contains …`;
   }
 }

@@ -203,6 +203,10 @@ pub async fn file_reanalyze_missing_tags(app: AppHandle) -> Result<ReanalyzeResp
             Some(&c.display_name),
             &category_names,
             &tag_names,
+            // The missing-tags cleanup only processes novel files; the
+            // prompt resolution mirrors the pre-dynamic-schemas behavior.
+            crate::schema::NOVEL,
+            crate::schema::NOVEL,
         )
         .await
         {
@@ -552,7 +556,22 @@ pub async fn file_regenerate_missing_covers(
         .add_phase2(crate::pipeline::nodes::CoverCompressNode)
         .build();
 
-    let env = crate::commands::processing::build_pipeline_env(&app, generation, None).await?;
+    // Cover regeneration always runs the comic pipeline's cover chain,
+    // so the schema context is the comic built-in: prompts resolve under
+    // (comic, cover_pick) and the step gates mirror a comic import.
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    let enabled_steps =
+        crate::commands::schemas::enabled_steps_for(&pool, crate::schema::COMIC).await?;
+    let env = crate::commands::processing::build_pipeline_env(
+        &app,
+        generation,
+        None,
+        crate::schema::COMIC.to_string(),
+        crate::schema::COMIC.to_string(),
+        enabled_steps,
+    )
+    .await?;
     let paths: Vec<PathBuf> = runnable.iter().map(|(p, _, _)| p.clone()).collect();
 
     // run_batch caps Phase-1 fan-out internally (PHASE1_CONCURRENCY=8)

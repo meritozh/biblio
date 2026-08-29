@@ -16,7 +16,11 @@ impl Phase2Node for LlmCoverCandidatesNode {
     }
 
     fn applies(&self, ctx: &FileContext, env: &PipelineEnv) -> bool {
-        env.llm_config.enabled && !ctx.archive_entries.is_empty()
+        // `cover_pick` is the schema-editor toggle for the whole LLM
+        // cover chain (this node + the vision check downstream).
+        env.llm_config.enabled
+            && env.enabled_steps.contains("cover_pick")
+            && !ctx.archive_entries.is_empty()
     }
 
     async fn run(&self, ctx: &mut FileContext, env: &PipelineEnv) -> Result<(), NodeError> {
@@ -34,7 +38,15 @@ impl Phase2Node for LlmCoverCandidatesNode {
             .map(|e| e.basename.as_str())
             .collect();
 
-        match crate::commands::llm::extract_cover_candidates(&env.llm_config, &env.pool, &names).await {
+        match crate::commands::llm::extract_cover_candidates(
+            &env.llm_config,
+            &env.pool,
+            &names,
+            &env.schema_slug,
+            &env.schema_template,
+        )
+        .await
+        {
             Ok(mut candidates) => {
                 // Defensive: the LLM may hallucinate filenames. Keep only
                 // names that actually appear in archive_entries.
