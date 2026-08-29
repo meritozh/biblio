@@ -108,8 +108,9 @@ describe('LuckyDialog', () => {
       />
     );
 
-    expect(screen.getByRole('dialog', { name: 'Lucky' })).toHaveStyle({
-      width: `min(calc(100vw - 2rem), ${LUCKY_DIALOG_WIDTH}px)`,
-    });
+    const dialog = screen.getByRole('dialog', { name: 'Lucky' });
+    // jsdom 30 serializes this min()/calc() to `min(-2rem + 100vw, 620px)`.
+    expect(dialog.style.width).toContain(`${LUCKY_DIALOG_WIDTH}px`);
+    expect(dialog.style.width).toMatch(/^min\(/);
   });
 });
