@@ -8,6 +8,7 @@ import {
   LayoutGrid,
   MessageSquare,
   Settings,
+  Shapes,
   Sparkles,
   Tag,
   User,
@@ -27,6 +28,7 @@ interface CategorySidebarProps {
 
 const NAV_LINKS = [
   { to: '/categories', label: 'Categories', icon: LayoutGrid },
+  { to: '/schemas', label: 'Schemas', icon: Shapes },
   { to: '/tags', label: 'Tags', icon: Tag },
   { to: '/authors', label: 'Authors', icon: User },
   { to: '/cleanup', label: 'Cleanup', icon: Sparkles },

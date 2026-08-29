@@ -19,17 +19,83 @@ type SchemaDefinitionWire = Omit<SchemaDefinition, 'accepted_extensions'> & {
  *  hard-coded frontend REGISTRY. */
 export async function schemaList(): Promise<SchemaDefinition[]> {
   const rows = await invoke<SchemaDefinitionWire[]>('schema_list');
-  return rows.map((row) => {
-    let extensions: string[] = [];
-    try {
-      const parsed = JSON.parse(row.accepted_extensions);
-      if (Array.isArray(parsed)) {
-        extensions = parsed.filter((e): e is string => typeof e === 'string');
-      }
-    } catch {
-      // Malformed JSON → treat as "no extensions" rather than failing
-      // the whole load; the schema still works via category-first import.
+  return rows.map(normalizeDefinition);
+}
+
+/** Field payload for create/update. Keys are snake_case to match the
+ *  Rust serde shape verbatim (Tauri passes nested objects through
+ *  unchanged). */
+export interface SchemaFieldInput {
+  field_key: string;
+  semantic: string | null;
+  field_type: string;
+  label: string;
+  options: string | null;
+  form_visible: boolean;
+  card_visible: boolean;
+  sortable: boolean;
+  filterable: boolean;
+  required: boolean;
+  order_index: number;
+}
+
+export interface SchemaUpsertPayload {
+  name: string;
+  icon: string | null;
+  description: string | null;
+  accepted_extensions: string[];
+  pipeline_template: string;
+  fields: SchemaFieldInput[];
+}
+
+/** Create a custom schema. `id` is the slug — immutable afterwards,
+ *  must match `^[a-z][a-z0-9_]*$`. Pipeline steps are copied from the
+ *  chosen template. */
+export async function schemaCreate(
+  id: string,
+  payload: SchemaUpsertPayload
+): Promise<SchemaDefinition> {
+  const row = await invoke<SchemaDefinitionWire>('schema_create', { id, payload });
+  return normalizeDefinition(row);
+}
+
+/** Update basic info + replace the field list. Semantic fields must
+ *  all survive; removed custom fields lose their stored values (warn
+ *  via `schemaFieldDataCount` first). */
+export async function schemaUpdate(
+  id: string,
+  payload: SchemaUpsertPayload
+): Promise<SchemaDefinition> {
+  const row = await invoke<SchemaDefinitionWire>('schema_update', { id, payload });
+  return normalizeDefinition(row);
+}
+
+/** Delete a custom schema. Backend rejects built-ins
+ *  (`SCHEMA_BUILTIN_NOT_DELETABLE`) and schemas still referenced by
+ *  categories (`SCHEMA_IN_USE:<count>`). */
+export async function schemaDelete(id: string): Promise<void> {
+  return invoke('schema_delete', { id });
+}
+
+/** Number of metadata values a field holds across files under this
+ *  schema — the "N files will lose this value" warning count. */
+export async function schemaFieldDataCount(
+  schemaId: string,
+  fieldKey: string
+): Promise<number> {
+  return invoke('schema_field_data_count', { schemaId, fieldKey });
+}
+
+function normalizeDefinition(row: SchemaDefinitionWire): SchemaDefinition {
+  let extensions: string[] = [];
+  try {
+    const parsed = JSON.parse(row.accepted_extensions);
+    if (Array.isArray(parsed)) {
+      extensions = parsed.filter((e): e is string => typeof e === 'string');
     }
-    return { ...row, accepted_extensions: extensions };
-  });
+  } catch {
+    // Malformed JSON → treat as "no extensions" rather than failing
+    // the whole load; the schema still works via category-first import.
+  }
+  return { ...row, accepted_extensions: extensions };
 }

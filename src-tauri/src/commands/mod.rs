@@ -1,6 +1,7 @@
 pub mod file;
 pub mod category;
 pub mod schemas;
+pub mod schema_admin;
 pub mod tag;
 pub mod metadata;
 pub mod validation;

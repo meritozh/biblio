@@ -21,7 +21,7 @@
  * hasn't picked a category yet, so we fall back to extension routing.
  */
 
-import type { Category, PromptStep, SchemaDefinition } from '@/types';
+import type { Category, PromptStep, SchemaDefinition, SchemaField } from '@/types';
 import { schemaStore } from '@/stores/schemaStore';
 
 export type { SchemaSlug } from '@/types';
@@ -29,9 +29,9 @@ export type { SchemaSlug } from '@/types';
 /**
  * Form sections that callers can opt in/out of via the schema's field
  * list. Order in the definition's fields IS the visual render order.
- * Custom user-defined fields (field_key outside this set) are skipped
- * by the form renderer until the schema-editor UI ships custom-field
- * renderers.
+ * These are the built-in (semantic-backed) keys the form renderer has
+ * dedicated widgets for; user-defined fields render through the
+ * generic custom-field widgets keyed off `SchemaField.field_type`.
  */
 export type FormFieldKey =
   | 'display_name'
@@ -49,13 +49,18 @@ export type CardFieldKey = 'authors' | 'tags' | 'progress';
 export interface CategorySchema {
   slug: string;
   /** Form sections (ordered) used in both the import dialog's per-file
-   *  review pane and the edit dialog. */
+   *  review pane and the edit dialog. Built-in (semantic) fields only —
+   *  see `fieldDefs` for the full ordered list including custom fields. */
   formFields: ReadonlyArray<FormFieldKey>;
   /** Fields shown on the file card under the title, in order. */
   cardFields: ReadonlyArray<CardFieldKey>;
   /** Lowercased extensions this schema's pipeline accepts. Used at the
    *  import-time fallback when the user hasn't picked a category yet. */
   acceptedExtensions: ReadonlyArray<string>;
+  /** Full ordered field definitions (form-visible only), including
+   *  user-defined fields. The metadata form iterates this so custom
+   *  fields render interleaved with built-in ones. */
+  fieldDefs: ReadonlyArray<SchemaField>;
 }
 
 const FORM_FIELD_KEYS: ReadonlySet<string> = new Set([
@@ -197,6 +202,7 @@ function toCategorySchema(def: SchemaDefinition): CategorySchema {
       .filter((f) => f.card_visible && CARD_FIELD_KEYS.has(f.field_key))
       .map((f) => f.field_key as CardFieldKey),
     acceptedExtensions: def.accepted_extensions,
+    fieldDefs: sorted.filter((f) => f.form_visible),
   };
 }
 

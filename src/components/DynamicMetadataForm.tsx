@@ -16,12 +16,20 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import {
   ExistingCoverPreview,
   StagedCoverPreview,
 } from '@/components/CoverPreview';
 import type { CategorySchema, FormFieldKey } from '@/lib/categorySchema';
 import { schemaForCategoryId } from '@/lib/categorySchema';
-import type { Category, Tag, Author, MetadataType } from '@/types';
+import type { Category, Tag, Author, MetadataType, SchemaField } from '@/types';
 
 export interface DynamicMetadataFormValues {
   display_name: string;
@@ -83,12 +91,10 @@ export function DynamicMetadataForm({
   // If the caller didn't pin a schema, resolve from the current
   // category_id. This makes the form reactive to category changes:
   // pick a different category in the dropdown → next render uses the
-  // new schema's `formFields`. Falls back to the literal `fields` list
+  // new schema's field list. Falls back to the literal `fields` list
   // for legacy callers that pre-date the schema model.
-  const resolvedFields: ReadonlyArray<FormFieldKey> =
-    schema?.formFields ??
-    fields ??
-    schemaForCategoryId(values.category_id, categories).formFields;
+  const resolvedSchema: CategorySchema | null =
+    schema ?? (fields ? null : schemaForCategoryId(values.category_id, categories));
   // State for category change confirmation dialog
   const [pendingCategoryId, setPendingCategoryId] = useState<number | null>(null);
   const [isMoving, setIsMoving] = useState(false);
@@ -355,9 +361,119 @@ export function DynamicMetadataForm({
     }
   };
 
+  /** Custom (semantic-less) field types map onto the metadata EAV
+   *  data_type vocabulary; values ride the same commit path as the
+   *  built-in 'volume' field always has. */
+  const CUSTOM_TYPE_TO_METADATA: Record<string, MetadataType> = {
+    text: 'text',
+    number: 'number',
+    rating: 'number',
+    date: 'date',
+    enum: 'text',
+    bool: 'boolean',
+  };
+
+  /** Sentinel for "no value" in enum selects — Radix Select items
+   *  can't carry an empty-string value. */
+  const ENUM_EMPTY = '__none__';
+
+  const renderCustomField = (field: SchemaField) => {
+    const value = getMetadataValue(field.field_key);
+    const dataType = CUSTOM_TYPE_TO_METADATA[field.field_type] ?? 'text';
+    const setValue = (v: string) =>
+      handleMetadataFieldChange(field.field_key, v, dataType);
+
+    const control = (() => {
+      switch (field.field_type) {
+        case 'number':
+          return (
+            <Input
+              type="number"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+            />
+          );
+        case 'rating':
+          return (
+            <Input
+              type="number"
+              min={0}
+              max={5}
+              step={1}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="0–5"
+            />
+          );
+        case 'date':
+          return (
+            <Input
+              type="date"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+            />
+          );
+        case 'enum': {
+          let options: string[] = [];
+          try {
+            const parsed = JSON.parse(field.options ?? '[]');
+            if (Array.isArray(parsed)) {
+              options = parsed.filter((o): o is string => typeof o === 'string');
+            }
+          } catch {
+            options = [];
+          }
+          return (
+            <Select
+              value={value === '' ? ENUM_EMPTY : value}
+              onValueChange={(v) => setValue(v === ENUM_EMPTY ? '' : v)}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ENUM_EMPTY}>—</SelectItem>
+                {options.map((opt) => (
+                  <SelectItem key={opt} value={opt}>
+                    {opt}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          );
+        }
+        case 'bool':
+          return (
+            <Switch
+              checked={value === 'true'}
+              onCheckedChange={(v) => setValue(String(v))}
+              aria-label={field.label}
+            />
+          );
+        default:
+          return (
+            <Input value={value} onChange={(e) => setValue(e.target.value)} />
+          );
+      }
+    })();
+
+    return (
+      <div className="space-y-2" key={field.field_key}>
+        <Label className="text-sm font-medium">{field.label}</Label>
+        {control}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-4">
-      {resolvedFields.map((field) => renderField(field))}
+      {resolvedSchema
+        ? resolvedSchema.fieldDefs.map((def) =>
+            def.semantic
+              ? renderField(def.semantic as FormFieldKey)
+              : renderCustomField(def)
+          )
+        : (fields ?? []).map((field) => renderField(field))}
 
       {/* Category Change Confirmation Dialog */}
       <AlertDialog

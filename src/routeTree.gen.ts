@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TagsRouteImport } from './routes/tags'
+import { Route as SchemasRouteImport } from './routes/schemas'
 import { Route as PromptsRouteImport } from './routes/prompts'
 import { Route as CleanupRouteImport } from './routes/cleanup'
 import { Route as CategoriesRouteImport } from './routes/categories'
@@ -19,6 +20,11 @@ import { Route as IndexRouteImport } from './routes/index'
 const TagsRoute = TagsRouteImport.update({
   id: '/tags',
   path: '/tags',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SchemasRoute = SchemasRouteImport.update({
+  id: '/schemas',
+  path: '/schemas',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PromptsRoute = PromptsRouteImport.update({
@@ -53,6 +59,7 @@ export interface FileRoutesByFullPath {
   '/categories': typeof CategoriesRoute
   '/cleanup': typeof CleanupRoute
   '/prompts': typeof PromptsRoute
+  '/schemas': typeof SchemasRoute
   '/tags': typeof TagsRoute
 }
 export interface FileRoutesByTo {
@@ -61,6 +68,7 @@ export interface FileRoutesByTo {
   '/categories': typeof CategoriesRoute
   '/cleanup': typeof CleanupRoute
   '/prompts': typeof PromptsRoute
+  '/schemas': typeof SchemasRoute
   '/tags': typeof TagsRoute
 }
 export interface FileRoutesById {
@@ -70,6 +78,7 @@ export interface FileRoutesById {
   '/categories': typeof CategoriesRoute
   '/cleanup': typeof CleanupRoute
   '/prompts': typeof PromptsRoute
+  '/schemas': typeof SchemasRoute
   '/tags': typeof TagsRoute
 }
 export interface FileRouteTypes {
@@ -80,9 +89,17 @@ export interface FileRouteTypes {
     | '/categories'
     | '/cleanup'
     | '/prompts'
+    | '/schemas'
     | '/tags'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/authors' | '/categories' | '/cleanup' | '/prompts' | '/tags'
+  to:
+    | '/'
+    | '/authors'
+    | '/categories'
+    | '/cleanup'
+    | '/prompts'
+    | '/schemas'
+    | '/tags'
   id:
     | '__root__'
     | '/'
@@ -90,6 +107,7 @@ export interface FileRouteTypes {
     | '/categories'
     | '/cleanup'
     | '/prompts'
+    | '/schemas'
     | '/tags'
   fileRoutesById: FileRoutesById
 }
@@ -99,6 +117,7 @@ export interface RootRouteChildren {
   CategoriesRoute: typeof CategoriesRoute
   CleanupRoute: typeof CleanupRoute
   PromptsRoute: typeof PromptsRoute
+  SchemasRoute: typeof SchemasRoute
   TagsRoute: typeof TagsRoute
 }
 
@@ -109,6 +128,13 @@ declare module '@tanstack/react-router' {
       path: '/tags'
       fullPath: '/tags'
       preLoaderRoute: typeof TagsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/schemas': {
+      id: '/schemas'
+      path: '/schemas'
+      fullPath: '/schemas'
+      preLoaderRoute: typeof SchemasRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/prompts': {
@@ -155,6 +181,7 @@ const rootRouteChildren: RootRouteChildren = {
   CategoriesRoute: CategoriesRoute,
   CleanupRoute: CleanupRoute,
   PromptsRoute: PromptsRoute,
+  SchemasRoute: SchemasRoute,
   TagsRoute: TagsRoute,
 }
 export const routeTree = rootRouteImport
