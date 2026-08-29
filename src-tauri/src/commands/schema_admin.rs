@@ -18,7 +18,7 @@
 //!     count from `schema_field_data_count` first.
 //!   - deleting a schema is blocked while any category references it.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tauri_plugin_sql::{DbInstances, DbPool};
 
@@ -49,7 +49,7 @@ pub const SEMANTICS: &[&str] = &[
     "file_path",
 ];
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SchemaFieldInput {
     pub field_key: String,
     pub semantic: Option<String>,
@@ -96,7 +96,8 @@ fn is_valid_key(s: &str) -> bool {
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-fn validate_schema_id(id: &str) -> Result<(), String> {
+/// Also `pub(crate)` for `schema_transfer`, which re-runs it on import.
+pub(crate) fn validate_schema_id(id: &str) -> Result<(), String> {
     if id.len() > 50 || !is_valid_key(id) {
         return Err("INVALID_SCHEMA_ID".to_string());
     }
@@ -122,7 +123,10 @@ fn normalize_extensions(raw: &[String]) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-fn validate_payload(payload: &SchemaUpsertPayload) -> Result<Vec<String>, String> {
+/// Also `pub(crate)` for `schema_transfer`, which re-runs it on import.
+pub(crate) fn validate_payload(
+    payload: &SchemaUpsertPayload,
+) -> Result<Vec<String>, String> {
     if payload.name.trim().is_empty() {
         return Err("INVALID_SCHEMA_NAME".to_string());
     }
@@ -185,7 +189,8 @@ fn validate_payload(payload: &SchemaUpsertPayload) -> Result<Vec<String>, String
 
 // ── Read-back helper ────────────────────────────────────────────────
 
-async fn fetch_definition(
+/// Also `pub(crate)` for `schema_transfer`'s export path.
+pub(crate) async fn fetch_definition(
     pool: &sqlx::SqlitePool,
     id: &str,
 ) -> Result<SchemaDefinition, String> {
@@ -425,7 +430,7 @@ pub async fn schema_field_data_count(
     count_field_data(&pool, &schema_id, &field_key).await
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SchemaStepInput {
     pub step_key: String,
     pub label: String,

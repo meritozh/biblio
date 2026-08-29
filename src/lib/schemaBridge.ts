@@ -104,6 +104,22 @@ export async function schemaStepsUpdate(
   return normalizeDefinition(row);
 }
 
+/** Serialize a schema (basic info + fields + steps; prompts are not
+ *  included — an imported schema falls back to its template's prompts)
+ *  and write it to `path`, which should come from a native save
+ *  dialog. */
+export async function schemaExport(id: string, path: string): Promise<void> {
+  return invoke('schema_export', { id, path });
+}
+
+/** Read and validate an exported schema file. Returns the definition
+ *  *unpersisted* — the caller prefills the schema editor (create mode);
+ *  actual creation rides `schemaCreate` + `schemaStepsUpdate`. */
+export async function schemaImportRead(path: string): Promise<SchemaDefinition> {
+  const row = await invoke<SchemaDefinitionWire>('schema_import_read', { path });
+  return normalizeDefinition(row);
+}
+
 function normalizeDefinition(row: SchemaDefinitionWire): SchemaDefinition {
   let extensions: string[] = [];
   try {

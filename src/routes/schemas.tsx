@@ -27,11 +27,14 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Pencil, Plus, Shapes, Trash2 } from 'lucide-react';
+import { Pencil, Plus, Shapes, Trash2, Upload, Download } from 'lucide-react';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { loadSchemas, useSchemas } from '@/stores/schemaStore';
 import {
   schemaCreate,
   schemaDelete,
+  schemaExport,
+  schemaImportRead,
   schemaStepsUpdate,
   schemaUpdate,
 } from '@/lib/schemaBridge';
@@ -47,6 +50,22 @@ import type { SchemaDefinition } from '@/types';
 export const Route = createFileRoute('/schemas')({
   component: SchemasPage,
 });
+
+/** Dialog filter for exported schema files (both pickers). */
+const SCHEMA_FILE_FILTER = [{ name: 'Biblio Schema', extensions: ['json'] }];
+
+/** Human-readable messages for the backend's import error codes; raw
+ *  codes are terse ("IMPORT_NOT_A_SCHEMA_FILE") and would surface in
+ *  alerts unexplained. */
+function describeImportError(error: unknown): string {
+  const message = String(error);
+  if (message.startsWith('IMPORT_READ_FAILED:')) return `Could not read the file: ${message}`;
+  if (message.startsWith('IMPORT_NOT_A_SCHEMA_FILE'))
+    return 'This file is not a Biblio schema export.';
+  if (message.startsWith('IMPORT_UNSUPPORTED_VERSION:'))
+    return `This export uses format version ${message.split(':')[1]}, which this app cannot import.`;
+  return `Failed to import schema: ${message}`;
+}
 
 function SchemasPage() {
   const schemas = useSchemas();
@@ -67,6 +86,41 @@ function SchemasPage() {
     setEditing(def);
     setDraft(draftFromDefinition(def));
     setEditorOpen(true);
+  };
+
+  const handleExport = async (def: SchemaDefinition) => {
+    const path = await save({
+      defaultPath: `${def.id}.schema.json`,
+      filters: SCHEMA_FILE_FILTER,
+    });
+    if (!path) return;
+    try {
+      await schemaExport(def.id, path);
+      alert(`Exported "${def.name}" to ${path}`);
+    } catch (error) {
+      alert(`Failed to export schema: ${error}`);
+    }
+  };
+
+  const handleImport = async () => {
+    const picked = await open({
+      multiple: false,
+      directory: false,
+      filters: SCHEMA_FILE_FILTER,
+    });
+    if (typeof picked !== 'string') return;
+    try {
+      const def = await schemaImportRead(picked);
+      const draft = draftFromDefinition(def);
+      // Nothing is persisted yet: every imported row is removable
+      // without a data-loss warning.
+      draft.fields = draft.fields.map((f) => ({ ...f, isNew: true }));
+      setEditing(null);
+      setDraft(draft);
+      setEditorOpen(true);
+    } catch (error) {
+      alert(describeImportError(error));
+    }
   };
 
   const handleSave = async () => {
@@ -96,7 +150,14 @@ function SchemasPage() {
       setDraft(null);
       setEditing(null);
     } catch (error) {
-      alert(`Failed to save schema: ${error}`);
+      const message = String(error);
+      if (message === 'SCHEMA_ID_EXISTS') {
+        alert(
+          `A schema with slug "${editing ? editing.id : draft.id.trim()}" already exists. Pick a different slug.`
+        );
+      } else {
+        alert(`Failed to save schema: ${error}`);
+      }
     } finally {
       setSaving(false);
     }
@@ -146,10 +207,16 @@ function SchemasPage() {
             — {schemas.length} {schemas.length === 1 ? 'schema' : 'schemas'}
           </span>
         </div>
-        <Button onClick={handleStartCreate} className="gap-2">
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          New Schema
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => void handleImport()} className="gap-2">
+            <Upload className="h-4 w-4" aria-hidden="true" />
+            Import
+          </Button>
+          <Button onClick={handleStartCreate} className="gap-2">
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            New Schema
+          </Button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-auto px-8 py-6">
@@ -157,7 +224,8 @@ function SchemasPage() {
           A schema defines a resource type: which files it accepts, which fields
           its files carry, and which import pipeline runs. Categories bind to a
           schema; files inherit it from their category. Built-in schemas can be
-          edited but not deleted.
+          edited but not deleted. Export shares a schema as a JSON file (fields
+          and pipeline steps; prompts fall back to the template's).
         </p>
         <div className="rounded-md border">
           <Table>
@@ -168,7 +236,7 @@ function SchemasPage() {
                 <TableHead className="w-[140px]">Pipeline</TableHead>
                 <TableHead>Extensions</TableHead>
                 <TableHead className="w-[90px]">Fields</TableHead>
-                <TableHead className="w-[110px]">Actions</TableHead>
+                <TableHead className="w-[130px]">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -202,6 +270,16 @@ function SchemasPage() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-8 w-8"
+                        onClick={() => void handleExport(def)}
+                        aria-label={`Export ${def.name}`}
+                        title={`Export ${def.name} as JSON`}
+                      >
+                        <Download className="h-4 w-4" />
+                      </Button>
                       <Button
                         size="icon"
                         variant="ghost"
