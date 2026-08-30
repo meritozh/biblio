@@ -12,7 +12,7 @@ import {
 import { SuggestedTagChip } from '@/components/SuggestedTagChip';
 import { DuplicateWarning } from '@/components/DuplicateWarning';
 import { vndbFetchCover, vndbSearch, type VndbCandidate } from '@/lib/tauri';
-import { defaultSchema, schemaBySlug, schemaForCategoryId, schemaForPath } from '@/lib/categorySchema';
+import { defaultSchema, schemaBySlug, schemaForCategoryId, schemaForPath, schemaStepEnabled } from '@/lib/categorySchema';
 import {
   AlertCircle,
   AlertTriangle,
@@ -528,7 +528,10 @@ function FileCardRow({
                   </div>
                 )}
 
-                {resolvedSchema.slug === 'galgame' && (
+                {/* VNDB enrichment is a pipeline *step* (migration v7
+                    seeds it for galgame), not a hardcoded slug check —
+                    disabling it in the schema editor hides this panel. */}
+                {schemaStepEnabled(resolvedSchema.slug, 'vndb') && (
                   <GalgameVndbPanel
                     item={item}
                     onFormChange={onFormChange}

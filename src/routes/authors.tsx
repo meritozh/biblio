@@ -24,6 +24,7 @@ import { Plus, Pencil, Trash2, User as UserIcon } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { EmptyState } from '@/components/EmptyState';
 import { LoadingState } from '@/components/LoadingState';
+import { SearchBar } from '@/components/SearchBar';
 import {
   authorList,
   authorCount,
@@ -101,22 +102,33 @@ function AuthorsManagementPage() {
   const [deletingAuthor, setDeletingAuthor] = useState<AuthorWithUsage | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Initial-mount fetch only. Mutations (create / edit / delete) apply a
-  // local diff instead of calling reload — that keeps the virtualizer's
-  // count and scrollTop stable, and avoids a redundant IPC round-trip
-  // since the mutation command already returned success. See the
-  // handler bodies below for the diff shape per action.
+  // Name search. `searchInput` is the live field value; `nameQuery` is
+  // the committed value SearchBar fires (debounced typing, immediate on
+  // Enter / clear). It flows into both the list and count queries, and
+  // a change re-runs `reload` from offset 0.
+  const [searchInput, setSearchInput] = useState('');
+  const [nameQuery, setNameQuery] = useState('');
+
+  // Initial-mount fetch, and refetch whenever the committed name query
+  // changes. Mutations (create / edit / delete) apply a local diff
+  // instead of calling reload — that keeps the virtualizer's count and
+  // scrollTop stable, and avoids a redundant IPC round-trip since the
+  // mutation command already returned success. Exception: while a query
+  // is active, mutations call `reload` so the list always reflects the
+  // filter exactly (a local diff can't know whether the renamed/created
+  // row still matches).
   const reload = useCallback(async () => {
     setLoading(true);
+    const query = nameQuery || undefined;
     const [page, count] = await Promise.all([
-      authorList({ includeUsage: true, limit: PAGE_SIZE, offset: 0 }),
-      authorCount(),
+      authorList({ includeUsage: true, limit: PAGE_SIZE, offset: 0, nameQuery: query }),
+      authorCount({ nameQuery: query }),
     ]);
     setAuthors(page.authors);
     setTotal(count);
     setFetchedOffset(page.authors.length);
     setLoading(false);
-  }, []);
+  }, [nameQuery]);
 
   useEffect(() => {
     void reload();
@@ -130,6 +142,7 @@ function AuthorsManagementPage() {
         includeUsage: true,
         limit: PAGE_SIZE,
         offset: fetchedOffset,
+        nameQuery: nameQuery || undefined,
       });
       // Dedup by id when appending so an overlapping page never duplicates
       // a row in the list.
@@ -142,7 +155,7 @@ function AuthorsManagementPage() {
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, fetchedOffset, total]);
+  }, [loadingMore, fetchedOffset, total, nameQuery]);
 
   const handleCreate = async () => {
     const trimmed = newAuthorName.trim();
@@ -152,6 +165,11 @@ function AuthorsManagementPage() {
       const { id } = await authorCreate(trimmed);
       setCreateDialogOpen(false);
       setNewAuthorName('');
+      if (nameQuery) {
+        // A local diff can't tell whether the new row matches the active
+        // filter — refetch instead.
+        void reload();
+      } else {
       // Local diff: insert at the alphabetical position so the new row
       // appears where the user expects without refetching. The server
       // sorts by raw `name` (binary compare); JS `localeCompare` is a
@@ -171,6 +189,7 @@ function AuthorsManagementPage() {
         return [...prev.slice(0, insertAt), created, ...prev.slice(insertAt)];
       });
       setTotal((t) => t + 1);
+      }
     } catch (error) {
       console.error('Failed to create author:', error);
       alert(`Failed to create author: ${error}`);
@@ -191,6 +210,9 @@ function AuthorsManagementPage() {
       await authorUpdate(targetId, trimmed);
       setEditingId(null);
       setEditName('');
+      if (nameQuery) {
+        void reload();
+      } else {
       // Local diff: patch the row's name in place. The list stays at
       // the row's original position even if the rename moved it
       // alphabetically — re-sorting client-side would jump the row
@@ -199,6 +221,7 @@ function AuthorsManagementPage() {
       setAuthors((prev) =>
         prev.map((a) => (a.id === targetId ? { ...a, name: trimmed } : a))
       );
+      }
     } catch (error) {
       console.error('Failed to update author:', error);
       alert(`Failed to update author: ${error}`);
@@ -253,10 +276,20 @@ function AuthorsManagementPage() {
         title="Authors"
         subtitle={`— ${tally} ${total === 1 ? 'author' : 'authors'}`}
         actions={
-          <Button onClick={() => setCreateDialogOpen(true)}>
-            <Plus aria-hidden="true" />
-            Add Author
-          </Button>
+          <>
+            <div className="w-56">
+              <SearchBar
+                value={searchInput}
+                onChange={setSearchInput}
+                onSearch={(q) => setNameQuery(q.trim())}
+                placeholder="Search authors…"
+              />
+            </div>
+            <Button onClick={() => setCreateDialogOpen(true)}>
+              <Plus aria-hidden="true" />
+              Add Author
+            </Button>
+          </>
         }
       />
 
@@ -264,11 +297,15 @@ function AuthorsManagementPage() {
         {loading ? (
           <LoadingState />
         ) : authors.length === 0 ? (
+          nameQuery ? (
+            <EmptyState type="search" message={`No authors match "${nameQuery}".`} />
+          ) : (
           <EmptyState
             icon={UserIcon}
             message="No authors yet."
             action={{ label: 'Add Author', onClick: () => setCreateDialogOpen(true) }}
           />
+          )
         ) : (
           <div className="rounded-md border h-full flex flex-col overflow-hidden">
             <div className="grid grid-cols-[1fr_120px] items-center gap-3 px-4 py-2 border-b border-border bg-muted/30 text-xs font-medium text-muted-foreground uppercase tracking-wide">

@@ -48,6 +48,11 @@ fn get_sqlite_pool(instances: &DbInstances, db_url: &str) -> Result<sqlx::Sqlite
 const PROMPT_SELECT: &str =
     "SELECT id, name, content, category, mime_group, schema_slug, step, is_default, created_at, updated_at FROM prompts";
 
+/// Steps that consume an LLM prompt. Non-LLM steps (e.g. `vndb`, a
+/// deterministic API lookup toggleable in the schema editor) must not
+/// accept prompts — a stored one would silently never run.
+const PROMPTABLE_STEPS: &[&str] = &["filename", "content", "cover_pick", "filename_folder"];
+
 /// Validate that a (schema_slug, step) pair exists as an enabled
 /// pipeline step in the DB (seeded pairs: `(novel, filename)`,
 /// `(novel, content)`, `(comic, filename)`, `(comic, cover_pick)`,
@@ -61,7 +66,7 @@ async fn validate_slug_step(
     slug: &str,
     step: &str,
 ) -> Result<(), String> {
-    if schema_step_exists(pool, slug, step).await? {
+    if PROMPTABLE_STEPS.contains(&step) && schema_step_exists(pool, slug, step).await? {
         Ok(())
     } else {
         Err("INVALID_PROMPT_SCHEMA_STEP".to_string())

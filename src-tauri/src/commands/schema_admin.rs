@@ -32,9 +32,11 @@ pub const CUSTOM_FIELD_TYPES: &[&str] = &["text", "number", "rating", "date", "e
 
 /// Pipeline steps the schema editor can toggle/reorder. The set a
 /// schema carries is copied from its pipeline template at creation;
-/// this vocab is the universe those steps come from.
+/// this vocab is the universe those steps come from. `vndb` is a
+/// review-dialog enrichment step (no backend node — the frontend gates
+/// its VNDB panel on it), seeded for galgame by migration v7.
 pub const PIPELINE_STEP_VOCAB: &[&str] =
-    &["filename", "content", "cover_pick", "filename_folder"];
+    &["filename", "content", "cover_pick", "filename_folder", "vndb"];
 
 /// Code-behavior markers a field can carry. Code keys off these, never
 /// off the field key itself; users cannot invent new ones.

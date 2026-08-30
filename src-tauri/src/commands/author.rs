@@ -284,6 +284,77 @@ pub struct AuthorDeleteUnusedResponse {
     pub deleted: i64,
 }
 
+/// Merge `from_id` into `to_id`: every file linked to the source author
+/// is relinked to the target (files already linked to both keep only
+/// the target), then the source row is deleted. Used by `/cleanup`'s
+/// author tools. Single transaction; emits the bulk `author-deleted`
+/// sentinel so list views refresh everywhere.
+#[tauri::command]
+pub async fn author_merge(
+    app: AppHandle,
+    from_id: i64,
+    to_id: i64,
+) -> Result<AuthorMergeResponse, String> {
+    let instances = app.state::<DbInstances>();
+    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
+    let moved = merge_authors(&pool, from_id, to_id).await?;
+    let _ = app.emit("author-deleted", AuthorChangeEvent { id: 0 });
+    Ok(AuthorMergeResponse { moved })
+}
+
+/// The merge itself, pool-scoped for testability.
+async fn merge_authors(
+    pool: &sqlx::SqlitePool,
+    from_id: i64,
+    to_id: i64,
+) -> Result<i64, String> {
+    if from_id == to_id {
+        return Err("MERGE_SAME_AUTHOR".to_string());
+    }
+    // Both rows must exist — merging into a ghost target would silently
+    // erase the source's identity along with its links.
+    let found: Vec<(i64,)> = sqlx::query_as("SELECT id FROM authors WHERE id IN (?, ?)")
+        .bind(from_id)
+        .bind(to_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    if found.len() != 2 {
+        return Err("AUTHOR_NOT_FOUND".to_string());
+    }
+
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    // OR IGNORE: a file linked to both authors would collide on the
+    // (file_id, author_id) PK; those links stay and get dropped by the
+    // DELETE below instead.
+    let moved = sqlx::query("UPDATE OR IGNORE file_authors SET author_id = ? WHERE author_id = ?")
+        .bind(to_id)
+        .bind(from_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected() as i64;
+    sqlx::query("DELETE FROM file_authors WHERE author_id = ?")
+        .bind(from_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM authors WHERE id = ?")
+        .bind(from_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(moved)
+}
+
+#[derive(Serialize)]
+pub struct AuthorMergeResponse {
+    /// Files newly linked to the target author (files already linked
+    /// to both don't count — they kept their existing target link).
+    pub moved: i64,
+}
+
 #[tauri::command]
 pub async fn author_assign(
     app: AppHandle,
@@ -380,4 +451,69 @@ pub async fn author_set(
 #[derive(Serialize)]
 pub struct AuthorSetResponse {
     pub success: bool,
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal authors + file_authors schema for merge tests.
+    async fn seeded_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE authors (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                name TEXT NOT NULL UNIQUE\
+            );\
+            CREATE TABLE file_authors (\
+                file_id INTEGER NOT NULL,\
+                author_id INTEGER NOT NULL,\
+                PRIMARY KEY (file_id, author_id)\
+            );\
+            INSERT INTO authors (id, name) VALUES (1, 'Alpha'), (2, 'Beta');\
+            INSERT INTO file_authors (file_id, author_id) VALUES \
+                (10, 1), (20, 1), (20, 2), (30, 2);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Seed layout: file 10 has only the source author, file 20 has
+        // both, file 30 has only the target.
+        pool
+    }
+
+    #[tokio::test]
+    async fn merge_relinks_files_and_deletes_source() {
+        let pool = seeded_pool().await;
+        let moved = merge_authors(&pool, 1, 2).await.unwrap();
+        // file 10 newly links to target; file 20 already had it.
+        assert_eq!(moved, 1);
+
+        let links: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT file_id, author_id FROM file_authors ORDER BY file_id, author_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(links, vec![(10, 2), (20, 2), (30, 2)]);
+
+        let authors: Vec<(i64,)> = sqlx::query_as("SELECT id FROM authors ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(authors, vec![(2,)]);
+    }
+
+    #[tokio::test]
+    async fn merge_rejects_same_author_and_missing_rows() {
+        let pool = seeded_pool().await;
+        assert_eq!(merge_authors(&pool, 1, 1).await.unwrap_err(), "MERGE_SAME_AUTHOR");
+        assert_eq!(merge_authors(&pool, 1, 99).await.unwrap_err(), "AUTHOR_NOT_FOUND");
+        assert_eq!(merge_authors(&pool, 99, 2).await.unwrap_err(), "AUTHOR_NOT_FOUND");
+        // Nothing was written by the rejected merges.
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM file_authors")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 4);
+    }
 }

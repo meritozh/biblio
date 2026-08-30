@@ -78,7 +78,7 @@ const CARD_FIELD_KEYS: ReadonlySet<string> = new Set(['authors', 'tags', 'progre
 /** Static copy of the migration-v6 seeds — the exact shape of the old
  *  hard-coded REGISTRY + PROMPT_STEPS_BY_SCHEMA. Used only until the
  *  first `loadSchemas()` lands and in backend-less unit tests. Keep in
- *  sync with `database/mod.rs` migration v6. */
+ *  sync with `database/mod.rs` migrations v6-v7. */
 const BUILTIN_FALLBACK: ReadonlyArray<SchemaDefinition> = [
   {
     id: 'novel',
@@ -145,6 +145,7 @@ const BUILTIN_FALLBACK: ReadonlyArray<SchemaDefinition> = [
     ],
     pipeline_steps: [
       { id: -6, schema_id: 'galgame', step_key: 'filename', label: 'Filename extraction', enabled: true, order_index: 0 },
+      { id: -14, schema_id: 'galgame', step_key: 'vndb', label: 'VNDB metadata lookup', enabled: true, order_index: 1 },
     ],
   },
 ];
@@ -175,6 +176,16 @@ export function schemaLabel(slug: string | null | undefined): string {
   return schemaDefBySlug(slug)?.name ?? slug ?? '';
 }
 
+/** Steps that consume an LLM prompt — mirrors PROMPTABLE_STEPS in
+ *  `commands/prompts.rs`. Non-LLM steps (e.g. `vndb`, a deterministic
+ *  API lookup) are editor-toggleable but get no prompt slot. */
+const PROMPTABLE_STEPS: ReadonlySet<string> = new Set([
+  'filename',
+  'content',
+  'cover_pick',
+  'filename_folder',
+]);
+
 /** Enabled prompt steps for a schema, in order. Mirrors the old
  *  PROMPT_STEPS_BY_SCHEMA lookup; unknown slugs get an empty list. */
 export function promptStepsFor(
@@ -183,8 +194,21 @@ export function promptStepsFor(
   const def = schemaDefBySlug(slug);
   if (!def) return [];
   return def.pipeline_steps
-    .filter((s) => s.enabled)
+    .filter((s) => s.enabled && PROMPTABLE_STEPS.has(s.step_key))
     .map((s) => ({ step: s.step_key as PromptStep, label: s.label }));
+}
+
+/** Whether a pipeline step is enabled for a schema. Drives features
+ *  that aren't backend nodes — e.g. the review dialog's VNDB panel
+ *  gates on `schemaStepEnabled(slug, 'vndb')`. Unknown slugs / steps
+ *  return false. */
+export function schemaStepEnabled(
+  slug: string | null | undefined,
+  step: string
+): boolean {
+  const def = schemaDefBySlug(slug);
+  if (!def) return false;
+  return def.pipeline_steps.some((s) => s.step_key === step && s.enabled);
 }
 
 /** Project a definition into the render-time view the form and card

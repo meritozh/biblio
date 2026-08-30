@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '@tanstack/react-store';
 import { VirtualList } from '@/components/VirtualList';
-import { Loader2, Settings2, Sparkles } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2, Settings2, Sparkles } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,6 +22,8 @@ import {
 import { useAppState } from '@/stores/appStore';
 import { UnusedItemsSection } from '@/components/cleanup/UnusedItemsSection';
 import { DebugActionsSection } from '@/components/cleanup/DebugActionsSection';
+import { AssignAuthorCard } from '@/components/cleanup/AssignAuthorCard';
+import { MergeAuthorCard } from '@/components/cleanup/MergeAuthorCard';
 import { DuplicateGroupCard } from '@/components/cleanup/DuplicateGroupCard';
 import {
   authorDeleteUnused,
@@ -63,6 +65,10 @@ function CleanupPage() {
   // so we don't pay a second IPC; the root route already loads them.
   const categories = useAppState((s) => s.categories);
   const [categoryFilter, setCategoryFilter] = useState<number | null>(null);
+
+  // Maintenance actions (LLM re-analyze, cover regen) are expensive and
+  // rarely needed — the section stays collapsed until asked for.
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false);
 
   // Session-only dismissed groups, keyed by prefix string. "Keep all" on a
   // group adds its prefix here; refreshing the page wipes the set, which is
@@ -213,6 +219,15 @@ function CleanupPage() {
       />
 
       <div className="flex-1 overflow-auto px-8 py-6 space-y-8">
+        {/* ── Section: author tools ────────────────────────────────── */}
+        <section className="space-y-4">
+          <h2 className="text-sm uppercase tracking-wide text-muted-foreground font-medium">
+            Author tools
+          </h2>
+          <AssignAuthorCard onAfterRun={fetchUnused} />
+          <MergeAuthorCard onAfterRun={fetchUnused} />
+        </section>
+
         {/* ── Section A: unused metadata ──────────────────────────── */}
         <section className="space-y-4">
           <h2 className="text-sm uppercase tracking-wide text-muted-foreground font-medium">
@@ -246,8 +261,25 @@ function CleanupPage() {
           )}
         </section>
 
-        {/* ── Section: debug actions (LLM re-analyze, etc.) ──────────── */}
-        <DebugActionsSection onAfterRun={fetchUnused} />
+        {/* ── Section: maintenance (LLM re-analyze, cover regen) ────
+            Expensive batch actions; collapsed by default so the common
+            tools above stay in focus. */}
+        <section className="space-y-4">
+          <button
+            type="button"
+            onClick={() => setMaintenanceOpen((v) => !v)}
+            className="flex items-center gap-2 text-sm uppercase tracking-wide text-muted-foreground font-medium hover:text-foreground transition-colors focus:outline-none focus:ring-2 focus:ring-ring rounded"
+            aria-expanded={maintenanceOpen}
+          >
+            {maintenanceOpen ? (
+              <ChevronDown className="h-4 w-4" aria-hidden="true" />
+            ) : (
+              <ChevronRight className="h-4 w-4" aria-hidden="true" />
+            )}
+            Maintenance
+          </button>
+          {maintenanceOpen && <DebugActionsSection onAfterRun={fetchUnused} />}
+        </section>
 
         {/* ── Section B: duplicate-name candidates ────────────────── */}
         <section className="space-y-4">

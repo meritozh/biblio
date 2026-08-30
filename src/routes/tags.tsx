@@ -24,6 +24,7 @@ import { Plus, Pencil, Trash2, Tag as TagIcon, Filter as FilterIcon } from 'luci
 import { PageHeader } from '@/components/PageHeader';
 import { EmptyState } from '@/components/EmptyState';
 import { LoadingState } from '@/components/LoadingState';
+import { SearchBar } from '@/components/SearchBar';
 import { tagList, tagCount, tagCreate, tagUpdate, tagDelete } from '@/lib/tauri';
 import { FilteredFileList } from '@/components/FilteredFileList';
 import { makeId as makeConditionId, type Condition } from '@/lib/filters';
@@ -126,20 +127,31 @@ function TagsManagementPage() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
-  // Initial-mount fetch only. Mutations (create / edit / delete) apply a
-  // local diff instead of calling reload — preserves scrollTop, no
-  // redundant IPC. See the handler bodies below for the diff shape.
+  // Name search. `searchInput` is the live field value; `nameQuery` is
+  // the committed value SearchBar fires (debounced typing, immediate on
+  // Enter / clear). It flows into both the list and count queries, and
+  // a change re-runs `reload` from offset 0.
+  const [searchInput, setSearchInput] = useState('');
+  const [nameQuery, setNameQuery] = useState('');
+
+  // Initial-mount fetch, and refetch whenever the committed name query
+  // changes. Mutations (create / edit / delete) apply a local diff
+  // instead of calling reload — preserves scrollTop, no redundant IPC.
+  // Exception: while a query is active, mutations call `reload` so the
+  // list always reflects the filter exactly (a local diff can't know
+  // whether the renamed/created row still matches).
   const reload = useCallback(async () => {
     setLoading(true);
+    const query = nameQuery || undefined;
     const [page, count] = await Promise.all([
-      tagList({ includeUsage: true, limit: PAGE_SIZE, offset: 0 }),
-      tagCount(),
+      tagList({ includeUsage: true, limit: PAGE_SIZE, offset: 0, nameQuery: query }),
+      tagCount({ nameQuery: query }),
     ]);
     setTags(page.tags);
     setTotal(count);
     setFetchedOffset(page.tags.length);
     setLoading(false);
-  }, []);
+  }, [nameQuery]);
 
   useEffect(() => {
     void reload();
@@ -153,6 +165,7 @@ function TagsManagementPage() {
         includeUsage: true,
         limit: PAGE_SIZE,
         offset: fetchedOffset,
+        nameQuery: nameQuery || undefined,
       });
       // Dedup by id when appending so an overlapping page never duplicates
       // a row in the list.
@@ -165,7 +178,7 @@ function TagsManagementPage() {
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, fetchedOffset, total]);
+  }, [loadingMore, fetchedOffset, total, nameQuery]);
 
   const handleCreate = async () => {
     const trimmed = newTagName.trim();
@@ -175,6 +188,11 @@ function TagsManagementPage() {
       const { id } = await tagCreate(trimmed, undefined);
       setCreateDialogOpen(false);
       setNewTagName('');
+      if (nameQuery) {
+        // A local diff can't tell whether the new row matches the active
+        // filter — refetch instead.
+        void reload();
+      } else {
       // Local diff: insert at the alphabetical position so the new row
       // appears where the user expects without refetching. localeCompare
       // is a close-enough approximation of the server's `ORDER BY name`
@@ -194,6 +212,7 @@ function TagsManagementPage() {
         return [...prev.slice(0, insertAt), created, ...prev.slice(insertAt)];
       });
       setTotal((t) => t + 1);
+      }
     } catch (error) {
       console.error('Failed to create tag:', error);
       alert(`Failed to create tag: ${error}`);
@@ -214,12 +233,16 @@ function TagsManagementPage() {
       await tagUpdate(targetId, trimmed, undefined);
       setEditingId(null);
       setEditName('');
+      if (nameQuery) {
+        void reload();
+      } else {
       // Local diff: patch the row's name in place. Don't re-sort — the
       // row stays under the user's pointer even if the rename moved it
       // alphabetically. Order resolves on next mount.
       setTags((prev) =>
         prev.map((t) => (t.id === targetId ? { ...t, name: trimmed } : t))
       );
+      }
     } catch (error) {
       console.error('Failed to update tag:', error);
       alert(`Failed to update tag: ${error}`);
@@ -305,6 +328,14 @@ function TagsManagementPage() {
         subtitle={`— ${tally} ${total === 1 ? 'tag' : 'tags'}`}
         actions={
           <>
+            <div className="w-56">
+              <SearchBar
+                value={searchInput}
+                onChange={setSearchInput}
+                onSearch={(q) => setNameQuery(q.trim())}
+                placeholder="Search tags…"
+              />
+            </div>
             <Button
               variant={selectionMode ? 'default' : 'outline'}
               size="sm"
@@ -334,11 +365,15 @@ function TagsManagementPage() {
         {loading ? (
           <LoadingState />
         ) : tags.length === 0 ? (
+          nameQuery ? (
+            <EmptyState type="search" message={`No tags match "${nameQuery}".`} />
+          ) : (
           <EmptyState
             icon={TagIcon}
             message="No tags yet."
             action={{ label: 'Add Tag', onClick: () => setCreateDialogOpen(true) }}
           />
+          )
         ) : (
           <div className="rounded-md border h-full flex flex-col overflow-hidden">
             {/* Header row */}

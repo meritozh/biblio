@@ -145,5 +145,16 @@ pub fn get_migrations() -> Vec<Migration> {
                       ('galgame', 'filename', 'Filename extraction', 1, 0);",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 7,
+            description: "vndb pipeline step for galgame",
+            // The VNDB metadata lookup (review-dialog enrichment for
+            // galgame imports) becomes a toggleable pipeline step so the
+            // schema editor can switch it off. Frontend gates its VNDB
+            // panel on this step being enabled.
+            sql: "INSERT OR IGNORE INTO schema_pipeline_steps (schema_id, step_key, label, enabled, order_index) VALUES \
+                      ('galgame', 'vndb', 'VNDB metadata lookup', 1, 1);",
+            kind: MigrationKind::Up,
+        },
     ]
 }
