@@ -198,7 +198,7 @@ function SchemasPage() {
       <PageHeader
         icon={Shapes}
         title="Schemas"
-        subtitle={`— ${schemas.length} ${schemas.length === 1 ? 'schema' : 'schemas'}`}
+        subtitle={`${schemas.length} ${schemas.length === 1 ? 'schema' : 'schemas'}`}
         actions={
           <>
             <Button variant="outline" onClick={() => void handleImport()}>
@@ -213,13 +213,12 @@ function SchemasPage() {
         }
       />
 
-      <div className="flex-1 overflow-auto px-8 py-6">
+      <div className="flex-1 overflow-auto px-5 py-4 md:px-6 md:py-5">
         <p className="text-xs text-muted-foreground mb-4 max-w-2xl">
-          A schema defines a resource type: which files it accepts, which fields
-          its files carry, and which import pipeline runs. Categories bind to a
-          schema; files inherit it from their category. Built-in schemas can be
-          edited but not deleted. Export shares a schema as a JSON file (fields
-          and pipeline steps; prompts fall back to the template's).
+          A schema defines a resource type: which files it accepts, which fields its files carry,
+          and which import pipeline runs. Categories bind to a schema; files inherit it from their
+          category. Built-in schemas can be edited but not deleted. Export shares a schema as a JSON
+          file (fields and pipeline steps; prompts fall back to the template's).
         </p>
         <div className="rounded-md border">
           <Table>
@@ -349,8 +348,8 @@ function SchemasPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete schema</AlertDialogTitle>
             <AlertDialogDescription>
-              Delete "{deleting?.name}"? Its prompts are deleted too. Categories using it
-              must be moved to another schema first.
+              Delete "{deleting?.name}"? Its prompts are deleted too. Categories using it must be
+              moved to another schema first.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

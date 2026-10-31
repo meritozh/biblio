@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="background" x1="176" y1="128" x2="856" y2="920" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6588F4"/>
+      <stop offset="1" stop-color="#3154C7"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="330" y1="286" x2="670" y2="794" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F1F0EA"/>
+    </linearGradient>
+    <filter id="icon-shadow" x="24" y="40" width="976" height="976" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#17254F" flood-opacity="0.2"/>
+    </filter>
+    <filter id="card-shadow" x="210" y="170" width="620" height="680" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#17317E" flood-opacity="0.14"/>
+    </filter>
+  </defs>
+
+  <rect x="64" y="64" width="896" height="896" rx="204" fill="url(#background)" filter="url(#icon-shadow)"/>
+  <rect x="66" y="66" width="892" height="892" rx="202" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="2"/>
+
+  <g filter="url(#card-shadow)">
+    <rect x="340" y="222" width="350" height="498" rx="54" fill="#A9C0F0"/>
+    <rect x="664" y="370" width="110" height="208" rx="28" fill="#F3B94F"/>
+    <rect x="258" y="292" width="456" height="500" rx="62" fill="url(#paper)"/>
+
+    <rect x="338" y="410" width="92" height="86" rx="24" fill="url(#background)"/>
+    <rect x="462" y="428" width="156" height="32" rx="16" fill="url(#background)"/>
+    <rect x="338" y="542" width="280" height="32" rx="16" fill="url(#background)"/>
+    <rect x="338" y="608" width="208" height="32" rx="16" fill="url(#background)"/>
+  </g>
+</svg>

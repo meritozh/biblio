@@ -21,14 +21,8 @@ import {
 } from 'lucide-react';
 import { cacheClear, cacheOpen, fileSetFavorite, revealItemInDir } from '@/lib/tauri';
 import { patchFile } from '@/stores/fileStore';
-import {
-  enqueueUpload,
-  useRemoteUploadStore,
-} from '@/stores/remoteUploadStore';
-import {
-  enqueueDownload,
-  useRemoteDownloadStore,
-} from '@/stores/remoteDownloadStore';
+import { enqueueUpload, useRemoteUploadStore } from '@/stores/remoteUploadStore';
+import { enqueueDownload, useRemoteDownloadStore } from '@/stores/remoteDownloadStore';
 import type { FileEntry } from '@/types';
 
 interface FileContextMenuProps {
@@ -59,14 +53,10 @@ export function FileContextMenu({
   const uploadState = useRemoteUploadStore();
   const downloadState = useRemoteDownloadStore();
   const isUploading = uploadState.uploads.some(
-    (u) =>
-      u.file_id === file.id &&
-      (u.status === 'pending' || u.status === 'uploading')
+    (u) => u.file_id === file.id && (u.status === 'pending' || u.status === 'uploading')
   );
   const isDownloading = downloadState.downloads.some(
-    (d) =>
-      d.file_id === file.id &&
-      (d.status === 'pending' || d.status === 'downloading')
+    (d) => d.file_id === file.id && (d.status === 'pending' || d.status === 'downloading')
   );
 
   // Storage actions keyed on the row's storage state. Cloud actions
@@ -172,16 +162,12 @@ export function FileContextMenu({
           Edit
         </DropdownMenuItem>
         <DropdownMenuItem onClick={handleToggleFavorite}>
-          {file.is_favorite ? (
-            <StarOff className="h-4 w-4" />
-          ) : (
-            <Star className="h-4 w-4" />
-          )}
+          {file.is_favorite ? <StarOff className="h-4 w-4" /> : <Star className="h-4 w-4" />}
           {file.is_favorite ? 'Remove favorite' : 'Add favorite'}
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={() => onDelete(file)}
-          className="text-destructive focus:text-destructive"
+          className="text-destructive focus:bg-destructive focus:text-destructive-foreground"
         >
           <Trash2 className="h-4 w-4" />
           Delete

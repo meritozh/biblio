@@ -7,9 +7,7 @@ import { EditFileDialog } from '@/components/EditFileDialog';
 import { ConfirmDeleteDialog } from '@/components/ConfirmDeleteDialog';
 import { useFileActions } from '@/hooks/useFileActions';
 import { useView, type ViewFetcherResult } from '@/hooks/useView';
-import {
-  enqueueUpload,
-} from '@/stores/remoteUploadStore';
+import { enqueueUpload } from '@/stores/remoteUploadStore';
 import { enqueueDownload } from '@/stores/remoteDownloadStore';
 import { enqueueDelete } from '@/stores/remoteDeleteStore';
 import { fileStore, patchFile } from '@/stores/fileStore';
@@ -103,14 +101,10 @@ export function FilteredFileList({
     () => [...seededConditions, ...extraConditions],
     [seededConditions, extraConditions]
   );
-  const conditionsKey = useMemo(
-    () => JSON.stringify(effectiveConditions),
-    [effectiveConditions]
-  );
+  const conditionsKey = useMemo(() => JSON.stringify(effectiveConditions), [effectiveConditions]);
 
   const fullViewKey = useMemo(
-    () =>
-      `${viewKey}::sort=${sortBy}:${sortDesc ? 'desc' : 'asc'}::filters=${conditionsKey}`,
+    () => `${viewKey}::sort=${sortBy}:${sortDesc ? 'desc' : 'asc'}::filters=${conditionsKey}`,
     [viewKey, sortBy, sortDesc, conditionsKey]
   );
 
@@ -141,14 +135,7 @@ export function FilteredFileList({
     } finally {
       setLoadingMore(false);
     }
-  }, [
-    loadingMore,
-    sortBy,
-    sortDesc,
-    effectiveConditions,
-    ids.length,
-    appendMore,
-  ]);
+  }, [loadingMore, sortBy, sortDesc, effectiveConditions, ids.length, appendMore]);
 
   const {
     categories,
@@ -209,21 +196,18 @@ export function FilteredFileList({
   // row's `local_cache_path` to null on success so the grid badges flip
   // without a full reload. Failures are logged but don't stop sibling
   // clears — the backend is already idempotent on already-cleared rows.
-  const handleBulkClearCache = useCallback(
-    async (fileIds: number[]) => {
-      await Promise.allSettled(
-        fileIds.map(async (id) => {
-          try {
-            await cacheClear(id);
-            patchFile(id, { local_cache_path: null });
-          } catch (err) {
-            console.error(`Failed to clear cache for file ${id}:`, err);
-          }
-        })
-      );
-    },
-    []
-  );
+  const handleBulkClearCache = useCallback(async (fileIds: number[]) => {
+    await Promise.allSettled(
+      fileIds.map(async (id) => {
+        try {
+          await cacheClear(id);
+          patchFile(id, { local_cache_path: null });
+        } catch (err) {
+          console.error(`Failed to clear cache for file ${id}:`, err);
+        }
+      })
+    );
+  }, []);
 
   // Name resolution maps for the header title. `useFileActions` already
   // fetched these — no second IPC call needed.
@@ -245,30 +229,32 @@ export function FilteredFileList({
 
   return (
     <>
-      <div
-        className="flex items-end justify-between px-8 pt-14 pb-5 border-b border-border"
+      <header
+        className="flex min-h-[76px] flex-col gap-3 border-b border-border/80 px-5 pb-4 pt-5 md:px-6 md:pb-3 md:pt-9 lg:flex-row lg:items-center"
         data-tauri-drag-region
       >
-        <div className="flex items-baseline gap-3 min-w-0">
+        <div className="flex min-w-0 items-center gap-3">
           <Link
             to={backHref}
-            className="inline-flex items-center gap-1.5 rounded-full border bg-secondary/40 hover:bg-secondary transition-colors h-8 px-3 text-xs shrink-0"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs text-muted-foreground outline-none transition-[background-color,color,scale] hover:bg-secondary hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/35 active:scale-[0.96]"
             aria-label={`Back to ${backLabel}`}
           >
-            <ArrowLeft className="h-3 w-3" aria-hidden="true" />
-            <span className="text-muted-foreground">{backLabel}</span>
+            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{backLabel}</span>
           </Link>
-          <div className="text-3xl text-foreground truncate min-w-0">{headerTitle}</div>
+          <div className="min-w-0 truncate text-[22px] font-semibold leading-7 text-foreground">
+            {headerTitle}
+          </div>
           <span
-            className="font-serif-italic text-sm text-muted-foreground shrink-0"
+            className="shrink-0 text-xs text-muted-foreground [font-variant-numeric:tabular-nums]"
             aria-label={`${total} files`}
           >
-            — {total} {total === 1 ? 'volume' : 'volumes'}
+            {total} {total === 1 ? 'volume' : 'volumes'}
           </span>
         </div>
-      </div>
+      </header>
 
-      <div className="flex-1 flex flex-col overflow-hidden px-8 py-6">
+      <div className="flex flex-1 flex-col overflow-hidden px-5 py-4 md:px-6 md:py-5">
         {loading ? (
           <div className="flex items-center justify-center h-32">
             <p className="text-sm text-muted-foreground">Loading...</p>

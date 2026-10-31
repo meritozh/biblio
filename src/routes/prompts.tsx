@@ -33,11 +33,7 @@ import {
 } from '@/lib/tauri';
 import type { Prompt, PromptStep, SchemaSlug } from '@/types';
 import { useSchemas } from '@/stores/schemaStore';
-import {
-  promptStepsFor,
-  schemaLabel,
-  coerceSchemaSlug,
-} from '@/lib/categorySchema';
+import { promptStepsFor, schemaLabel, coerceSchemaSlug } from '@/lib/categorySchema';
 
 interface PromptFormState {
   schemaSlug: SchemaSlug;
@@ -197,7 +193,7 @@ function PromptsPage() {
       <PageHeader
         icon={MessageSquare}
         title="Prompts"
-        subtitle={`— ${prompts.length} ${prompts.length === 1 ? 'prompt' : 'prompts'}`}
+        subtitle={`${prompts.length} ${prompts.length === 1 ? 'prompt' : 'prompts'}`}
         actions={
           <Button onClick={() => setCreateDialogOpen(true)}>
             <Plus aria-hidden="true" />
@@ -206,88 +202,89 @@ function PromptsPage() {
         }
       />
 
-        <div className="flex-1 overflow-auto px-8 py-6">
-          {/* Info banner */}
-          <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 mb-6">
-            <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
-            <p className="text-xs text-muted-foreground">
-              Prompts are grouped by mime type. Novels (.txt) use a filename and a content
-              prompt; comics (.zip / .cbz / .rar / .cbr) use a filename and a cover-detection
-              prompt. The active prompt within each (group, step) bucket runs at import time.
-            </p>
-          </div>
+      <div className="flex-1 overflow-auto px-5 py-4 md:px-6 md:py-5">
+        {/* Info banner */}
+        <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 mb-6">
+          <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+          <p className="text-xs text-muted-foreground">
+            Prompts are grouped by mime type. Novels (.txt) use a filename and a content prompt;
+            comics (.zip / .cbz / .rar / .cbr) use a filename and a cover-detection prompt. The
+            active prompt within each (group, step) bucket runs at import time.
+          </p>
+        </div>
 
-          {loading ? (
-            <LoadingState />
-          ) : prompts.length === 0 ? (
-            <EmptyState
-              icon={MessageSquare}
-              message="No prompts yet."
-              action={{ label: 'Add Prompt', onClick: () => setCreateDialogOpen(true) }}
-            />
-          ) : (
-            <div className="grid gap-4">
-              {prompts.map((prompt) => (
-                <div
-                  key={prompt.id}
-                  className={`rounded-xl border bg-card p-4 hover:shadow-sm transition-shadow ${
-                    prompt.is_default ? 'border-primary/30 bg-primary/[0.02]' : 'border-border'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-2">
-                        <h3 className="text-base font-semibold text-foreground truncate">
-                          {prompt.name}
-                        </h3>
-                        <Badge variant="gray" className="text-xs">
-                          {schemaLabel(coerceSchemaSlug(prompt.schema_slug))} · {STEP_LABEL[prompt.step]}
+        {loading ? (
+          <LoadingState />
+        ) : prompts.length === 0 ? (
+          <EmptyState
+            icon={MessageSquare}
+            message="No prompts yet."
+            action={{ label: 'Add Prompt', onClick: () => setCreateDialogOpen(true) }}
+          />
+        ) : (
+          <div className="grid gap-4">
+            {prompts.map((prompt) => (
+              <div
+                key={prompt.id}
+                className={`rounded-xl border bg-card p-4 hover:shadow-sm transition-shadow ${
+                  prompt.is_default ? 'border-primary/30 bg-primary/[0.02]' : 'border-border'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-2">
+                      <h3 className="text-base font-semibold text-foreground truncate">
+                        {prompt.name}
+                      </h3>
+                      <Badge variant="gray" className="text-xs">
+                        {schemaLabel(coerceSchemaSlug(prompt.schema_slug))} ·{' '}
+                        {STEP_LABEL[prompt.step]}
+                      </Badge>
+                      {prompt.is_default && (
+                        <Badge variant="green" className="text-xs">
+                          Active
                         </Badge>
-                        {prompt.is_default && (
-                          <Badge variant="green" className="text-xs">
-                            Active
-                          </Badge>
-                        )}
-                      </div>
-                      <p className="text-xs text-muted-foreground line-clamp-3">
-                        {truncateText(prompt.content)}
-                      </p>
+                      )}
                     </div>
-                    <div className="flex items-center gap-1 shrink-0">
+                    <p className="text-xs text-muted-foreground line-clamp-3">
+                      {truncateText(prompt.content)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8"
+                      onClick={() => handleStartEdit(prompt)}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    {!prompt.is_default && (
                       <Button
                         size="icon"
                         variant="ghost"
                         className="h-8 w-8"
-                        onClick={() => handleStartEdit(prompt)}
+                        onClick={() => handleSetDefault(prompt)}
+                        title="Set as active prompt"
                       >
-                        <Pencil className="h-4 w-4" />
+                        <Star className="h-4 w-4" />
                       </Button>
-                      {!prompt.is_default && (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-8 w-8"
-                          onClick={() => handleSetDefault(prompt)}
-                          title="Set as active prompt"
-                        >
-                          <Star className="h-4 w-4" />
-                        </Button>
-                      )}
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-8 w-8 text-destructive"
-                        onClick={() => handleDeleteClick(prompt)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
+                    )}
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8 text-destructive"
+                      onClick={() => handleDeleteClick(prompt)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent className="max-w-2xl">
@@ -328,9 +325,7 @@ function PromptsPage() {
                         type="radio"
                         name="new-prompt-step"
                         checked={newPromptForm.step === step}
-                        onChange={() =>
-                          setNewPromptForm((prev) => ({ ...prev, step }))
-                        }
+                        onChange={() => setNewPromptForm((prev) => ({ ...prev, step }))}
                         className="accent-primary"
                       />
                       <span className="text-sm">{label}</span>
@@ -392,9 +387,8 @@ function PromptsPage() {
                   ? (() => {
                       const slug = coerceSchemaSlug(editingPrompt.schema_slug);
                       const stepLabel =
-                        promptStepsFor(slug).find(
-                          (s) => s.step === editingPrompt.step
-                        )?.label ?? editingPrompt.step;
+                        promptStepsFor(slug).find((s) => s.step === editingPrompt.step)?.label ??
+                        editingPrompt.step;
                       return `${schemaLabel(slug)} · ${stepLabel}`;
                     })()
                   : ''}
@@ -445,7 +439,8 @@ function PromptsPage() {
               Are you sure you want to delete "{deletingPrompt?.name}"?
               {deletingPrompt?.is_default && (
                 <span className="text-destructive font-medium">
-                  {' '}This is the active prompt and cannot be deleted.
+                  {' '}
+                  This is the active prompt and cannot be deleted.
                 </span>
               )}
             </AlertDialogDescription>

@@ -2,7 +2,7 @@ kind = "tauri"
 team_id = "N59353RP3W"
 bundle_id = "io.augite.biblio"
 product_name = "Biblio"
-version = "0.10.0"
+version = "0.10.1"
 build = 0
 channels = ["developer-id"]
 

@@ -14,10 +14,7 @@ interface NovelCoverProps {
 }
 
 export function NovelCover({ tags, fileId, displayName, progress }: NovelCoverProps) {
-  const gradient = useMemo(
-    () => gradientFromSeed(tagSeed(tags, fileId)),
-    [tags, fileId]
-  );
+  const gradient = useMemo(() => gradientFromSeed(tagSeed(tags, fileId)), [tags, fileId]);
 
   return (
     <div
@@ -35,11 +32,11 @@ export function NovelCover({ tags, fileId, displayName, progress }: NovelCoverPr
         className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-black/5"
       />
       <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 py-6">
-        <h3 className="font-serif-display text-center text-foreground/85 text-[15px] leading-[1.15] tracking-tight line-clamp-5 break-words">
+        <h3 className="line-clamp-5 break-words text-center text-[15px] font-semibold leading-[1.15] tracking-normal text-[#2a2420]/85">
           {displayName}
         </h3>
         {progress && (
-          <p className="font-serif-italic text-center text-foreground/65 text-[11px] leading-tight line-clamp-1 max-w-full">
+          <p className="line-clamp-1 max-w-full text-center text-[11px] font-normal leading-tight text-[#2a2420]/65">
             {progress}
           </p>
         )}

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import {
-  GripVertical,
+  BookOpen,
   LayoutGrid,
   MessageSquare,
   Settings,
@@ -13,6 +13,7 @@ import {
   Tag,
   User,
 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import type { Category } from '@/types';
 
 interface CategorySidebarProps {
@@ -21,23 +22,36 @@ interface CategorySidebarProps {
   onCategorySelect: (categoryId: number | null) => void;
   onManageCategories?: () => void;
   onOpenSettings?: () => void;
+  onNavigate?: () => void;
   fileCounts?: Record<number, number>;
-  /** Current pathname, used to highlight the active bottom-nav link. */
   currentPath?: string;
+  className?: string;
+  autoFocus?: boolean;
+  resizable?: boolean;
 }
 
-const NAV_LINKS = [
-  { to: '/categories', label: 'Categories', icon: LayoutGrid },
-  { to: '/schemas', label: 'Schemas', icon: Shapes },
-  { to: '/tags', label: 'Tags', icon: Tag },
-  { to: '/authors', label: 'Authors', icon: User },
-  { to: '/cleanup', label: 'Cleanup', icon: Sparkles },
-  { to: '/prompts', label: 'Prompts', icon: MessageSquare },
+const NAV_GROUPS = [
+  {
+    label: 'Manage',
+    links: [
+      { to: '/categories', label: 'Categories', icon: LayoutGrid },
+      { to: '/tags', label: 'Tags', icon: Tag },
+      { to: '/authors', label: 'Authors', icon: User },
+      { to: '/cleanup', label: 'Cleanup', icon: Sparkles },
+    ],
+  },
+  {
+    label: 'Advanced',
+    links: [
+      { to: '/schemas', label: 'Schemas', icon: Shapes },
+      { to: '/prompts', label: 'Prompts', icon: MessageSquare },
+    ],
+  },
 ] as const;
 
-const MIN_WIDTH = 180;
+const MIN_WIDTH = 200;
 const MAX_WIDTH = 320;
-const DEFAULT_WIDTH = 240;
+const DEFAULT_WIDTH = 232;
 
 export function CategorySidebar({
   categories,
@@ -45,23 +59,26 @@ export function CategorySidebar({
   onCategorySelect,
   onManageCategories,
   onOpenSettings,
+  onNavigate,
   fileCounts = {},
   currentPath,
+  className,
+  autoFocus = false,
+  resizable = true,
 }: CategorySidebarProps) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
+  const handleMouseDown = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
     setIsResizing(true);
   }, []);
 
   const handleMouseMove = useCallback(
-    (e: MouseEvent) => {
+    (event: MouseEvent) => {
       if (!isResizing) return;
-      const newWidth = e.clientX;
-      setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, newWidth)));
+      setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, event.clientX)));
     },
     [isResizing]
   );
@@ -69,6 +86,10 @@ export function CategorySidebar({
   const handleMouseUp = useCallback(() => {
     setIsResizing(false);
   }, []);
+
+  useEffect(() => {
+    if (autoFocus) sidebarRef.current?.querySelector<HTMLElement>('button, a')?.focus();
+  }, [autoFocus]);
 
   useEffect(() => {
     if (isResizing) {
@@ -85,90 +106,133 @@ export function CategorySidebar({
     };
   }, [isResizing, handleMouseMove, handleMouseUp]);
 
+  const navigationItemClass = (active: boolean) =>
+    cn(
+      'flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] font-medium outline-none transition-[background-color,color,scale] duration-100 focus-visible:ring-2 focus-visible:ring-ring/40 active:scale-[0.98]',
+      active
+        ? 'bg-primary/10 text-primary'
+        : 'text-sidebar-foreground/80 hover:bg-foreground/[0.055] hover:text-foreground'
+    );
+
   return (
     <div
       ref={sidebarRef}
-      className="bg-sidebar border-r border-sidebar-border flex flex-col h-full relative"
-      style={{ width: `${width}px`, minWidth: `${MIN_WIDTH}px`, maxWidth: `${MAX_WIDTH}px` }}
+      tabIndex={-1}
+      className={cn(
+        'relative flex h-full flex-col border-r border-sidebar-border/80 bg-sidebar text-sidebar-foreground outline-none',
+        className
+      )}
+      style={
+        resizable
+          ? { width: `${width}px`, minWidth: `${MIN_WIDTH}px`, maxWidth: `${MAX_WIDTH}px` }
+          : undefined
+      }
       role="navigation"
-      aria-label="Category navigation"
+      aria-label="Main navigation"
     >
-      {/* Spacer for transparent title bar traffic lights */}
-      <div className="h-14 flex items-end px-3 pb-1" data-tauri-drag-region>
-        <h2
-          className="px-3 font-serif-italic text-[15px] text-muted-foreground"
-          id="categories-heading"
-        >
-          Categories
-        </h2>
+      <div className="flex h-16 shrink-0 items-end px-4 pb-3" data-tauri-drag-region>
+        <div className={cn('flex items-center gap-2', resizable && 'pl-[58px]')}>
+          <BookOpen className="h-4 w-4 text-primary" strokeWidth={1.9} aria-hidden="true" />
+          <span className="text-[13px] font-semibold tracking-[-0.01em]">Biblio</span>
+        </div>
       </div>
-      <ScrollArea className="flex-1">
-        <div className="px-2 pb-2" role="list" aria-labelledby="categories-heading">
-          {categories.map((category) => (
-            <button
-              key={category.id}
-              onClick={() => onCategorySelect(category.id)}
-              className={`w-full text-left px-3 py-1.5 rounded flex items-center justify-between transition-colors duration-100 ${
-                selectedCategoryId === category.id
-                  ? 'bg-secondary text-foreground'
-                  : 'hover:bg-secondary/60 text-sidebar-foreground'
-              }`}
-              role="listitem"
-              aria-current={selectedCategoryId === category.id ? 'page' : undefined}
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="px-3 pb-5">
+          <section aria-labelledby={resizable ? 'library-navigation' : 'mobile-library-navigation'}>
+            <h2
+              id={resizable ? 'library-navigation' : 'mobile-library-navigation'}
+              className="px-2.5 pb-1.5 text-[11px] font-semibold text-muted-foreground"
             >
-              <span className="flex items-center gap-2 text-sm">
-                {category.icon && <span aria-hidden="true">{category.icon}</span>}
-                <span className="truncate">{category.name}</span>
-              </span>
-              {fileCounts[category.id] !== undefined && fileCounts[category.id]! > 0 && (
-                <Badge
-                  variant="gray"
-                  className="text-xs font-normal"
-                  aria-label={`${fileCounts[category.id]} files`}
-                >
-                  {fileCounts[category.id]}
-                </Badge>
-              )}
-            </button>
-          ))}
-        </div>
-      </ScrollArea>
-      <div>
-        {/* Ornamental section break between category list and utility links.
-            Doubles as the separator — no border-t on the wrapper. */}
-        <div className="ornament px-4 pt-3 pb-2" aria-hidden="true">
-          <span className="ornament-mark">❦</span>
-        </div>
-        <div className="px-1 py-1">
-          {NAV_LINKS.map(({ to, label, icon: Icon }) => {
-            const active = currentPath === to;
+              Library
+            </h2>
+            <div className="space-y-0.5">
+              {categories.map((category) => {
+                const active = selectedCategoryId === category.id;
+                return (
+                  <button
+                    key={category.id}
+                    type="button"
+                    onClick={() => {
+                      onCategorySelect(category.id);
+                      onNavigate?.();
+                    }}
+                    className={cn(navigationItemClass(active), 'justify-between')}
+                    aria-current={active ? 'page' : undefined}
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span
+                        className="w-5 shrink-0 text-center text-[15px] leading-none"
+                        aria-hidden="true"
+                      >
+                        {category.icon ?? <BookOpen className="mx-auto h-4 w-4 opacity-60" />}
+                      </span>
+                      <span className="truncate">{category.name}</span>
+                    </span>
+                    {fileCounts[category.id] !== undefined && fileCounts[category.id]! > 0 && (
+                      <Badge
+                        variant="gray"
+                        className="text-[11px] font-normal [font-variant-numeric:tabular-nums]"
+                        aria-label={`${fileCounts[category.id]} files`}
+                      >
+                        {fileCounts[category.id]}
+                      </Badge>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          {NAV_GROUPS.map((group, groupIndex) => {
+            const headingId = `${resizable ? 'sidebar' : 'mobile-sidebar'}-${group.label.toLowerCase()}`;
             return (
-              <Link
-                key={to}
-                to={to}
-                aria-current={active ? 'page' : undefined}
-                className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm rounded transition-colors ${
-                  active
-                    ? 'bg-secondary text-foreground'
-                    : 'text-muted-foreground hover:bg-secondary/60 hover:text-foreground'
-                }`}
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                {label}
-              </Link>
+              <section key={group.label} className="mt-6" aria-labelledby={headingId}>
+                <h2
+                  id={headingId}
+                  className="px-2.5 pb-1.5 text-[11px] font-semibold text-muted-foreground"
+                >
+                  {group.label}
+                </h2>
+                <div className="space-y-0.5">
+                  {group.links.map(({ to, label, icon: Icon }) => (
+                    <Link
+                      key={to}
+                      to={to}
+                      onClick={onNavigate}
+                      aria-current={currentPath === to ? 'page' : undefined}
+                      className={navigationItemClass(currentPath === to)}
+                    >
+                      <Icon
+                        className="h-4 w-4 shrink-0 opacity-75"
+                        strokeWidth={1.8}
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">{label}</span>
+                    </Link>
+                  ))}
+                </div>
+                {groupIndex === 0 && (
+                  <div className="mx-2.5 mt-5 border-t border-sidebar-border/60" />
+                )}
+              </section>
             );
           })}
         </div>
-        <div className="border-t border-sidebar-border" />
+      </ScrollArea>
+
+      <div className="shrink-0 border-t border-sidebar-border/80 p-3">
         {onOpenSettings && (
           <Button
             variant="ghost"
             size="sm"
-            className="w-full justify-start rounded-none text-muted-foreground hover:text-foreground"
-            onClick={onOpenSettings}
+            className="h-8 w-full justify-start text-muted-foreground hover:bg-foreground/[0.055] hover:text-foreground"
+            onClick={() => {
+              onOpenSettings();
+              onNavigate?.();
+            }}
             aria-label="Settings"
           >
-            <Settings className="h-4 w-4" aria-hidden="true" />
+            <Settings className="h-4 w-4 opacity-75" strokeWidth={1.8} aria-hidden="true" />
             Settings
           </Button>
         )}
@@ -176,7 +240,7 @@ export function CategorySidebar({
           <Button
             variant="ghost"
             size="sm"
-            className="w-full justify-start rounded-none text-muted-foreground hover:text-foreground"
+            className="h-8 w-full justify-start text-muted-foreground hover:bg-foreground/[0.055] hover:text-foreground"
             onClick={onManageCategories}
             aria-label="Manage categories"
           >
@@ -185,17 +249,16 @@ export function CategorySidebar({
         )}
       </div>
 
-      {/* Resize handle */}
-      <div
-        className={`absolute top-0 right-0 w-1 h-full cursor-col-resize group ${
-          isResizing ? 'bg-primary/20' : 'hover:bg-primary/10'
-        }`}
-        onMouseDown={handleMouseDown}
-      >
-        <div className="absolute top-1/2 right-0 -translate-y-1/2 translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
-          <GripVertical className="h-4 w-4 text-muted-foreground" />
-        </div>
-      </div>
+      {resizable && (
+        <div
+          className={cn(
+            'absolute right-0 top-0 hidden h-full w-1.5 cursor-col-resize md:block',
+            isResizing ? 'bg-primary/15' : 'hover:bg-primary/10'
+          )}
+          onMouseDown={handleMouseDown}
+          aria-hidden="true"
+        />
+      )}
     </div>
   );
 }

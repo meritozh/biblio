@@ -7,11 +7,7 @@ import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   Select,
   SelectContent,
@@ -214,11 +210,11 @@ function CleanupPage() {
         subtitle={
           loadingMeta && loadingGroups
             ? undefined
-            : `— ${unusedTags.length + unusedAuthors.length} unused · ${visibleGroups.length} ${visibleGroups.length === 1 ? 'group' : 'groups'}`
+            : `${unusedTags.length + unusedAuthors.length} unused · ${visibleGroups.length} ${visibleGroups.length === 1 ? 'group' : 'groups'}`
         }
       />
 
-      <div className="flex-1 overflow-auto px-8 py-6 space-y-8">
+      <div className="flex-1 space-y-8 overflow-auto px-5 py-4 md:px-6 md:py-5">
         {/* ── Section: author tools ────────────────────────────────── */}
         <section className="space-y-4">
           <h2 className="text-sm uppercase tracking-wide text-muted-foreground font-medium">
@@ -288,17 +284,14 @@ function CleanupPage() {
               Similar names
               {!loadingGroups && (
                 <span className="ml-2 font-normal normal-case text-muted-foreground/80">
-                  · {visibleGroups.length}{' '}
-                  {visibleGroups.length === 1 ? 'group' : 'groups'}
+                  · {visibleGroups.length} {visibleGroups.length === 1 ? 'group' : 'groups'}
                 </span>
               )}
             </h2>
             <div className="flex items-center gap-2">
               <Select
                 value={categoryFilter == null ? 'all' : String(categoryFilter)}
-                onValueChange={(v) =>
-                  setCategoryFilter(v === 'all' ? null : Number(v))
-                }
+                onValueChange={(v) => setCategoryFilter(v === 'all' ? null : Number(v))}
               >
                 <SelectTrigger className="h-8 w-auto text-xs gap-1.5">
                   <span className="text-muted-foreground">Category</span>
@@ -334,7 +327,7 @@ function CleanupPage() {
           ) : visibleGroups.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               {groups.length === 0
-                ? "No groups found. Looking only at shared name beginnings — files whose names start the same."
+                ? 'No groups found. Looking only at shared name beginnings — files whose names start the same.'
                 : 'All groups dismissed for this session.'}
             </p>
           ) : (
@@ -373,11 +366,7 @@ interface SensitivityControlProps {
 /** Hidden-by-default sensitivity tuner. Defaults match the backend so the
  *  initial open state matches the current grouping; "Apply" pushes the
  *  values to the parent which re-runs the fetch. */
-function SensitivityControl({
-  minPrefixChars,
-  prefixRatio,
-  onApply,
-}: SensitivityControlProps) {
+function SensitivityControl({ minPrefixChars, prefixRatio, onApply }: SensitivityControlProps) {
   const [open, setOpen] = useState(false);
   const [draftChars, setDraftChars] = useState(minPrefixChars);
   const [draftRatio, setDraftRatio] = useState(prefixRatio);
@@ -434,17 +423,12 @@ function SensitivityControl({
             className="h-8 text-xs"
           />
           <p className="text-[11px] text-muted-foreground">
-            Higher = stricter. {Math.round(prefixRatio * 100)}% means the shared
-            prefix must be at least that fraction of the shorter file name.
+            Higher = stricter. {Math.round(prefixRatio * 100)}% means the shared prefix must be at
+            least that fraction of the shorter file name.
           </p>
         </div>
         <div className="flex justify-end gap-2 pt-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 text-xs"
-            onClick={() => setOpen(false)}
-          >
+          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setOpen(false)}>
             Cancel
           </Button>
           <Button

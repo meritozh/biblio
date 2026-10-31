@@ -193,25 +193,23 @@ function TagsManagementPage() {
         // filter — refetch instead.
         void reload();
       } else {
-      // Local diff: insert at the alphabetical position so the new row
-      // appears where the user expects without refetching. localeCompare
-      // is a close-enough approximation of the server's `ORDER BY name`
-      // for visual placement; order resolves exactly on next mount.
-      const created: TagWithUsage = {
-        id,
-        name: trimmed,
-        color: null,
-        created_at: new Date().toISOString(),
-        usageCount: 0,
-      };
-      setTags((prev) => {
-        const insertAt = prev.findIndex(
-          (t) => t.name.localeCompare(trimmed) > 0
-        );
-        if (insertAt === -1) return [...prev, created];
-        return [...prev.slice(0, insertAt), created, ...prev.slice(insertAt)];
-      });
-      setTotal((t) => t + 1);
+        // Local diff: insert at the alphabetical position so the new row
+        // appears where the user expects without refetching. localeCompare
+        // is a close-enough approximation of the server's `ORDER BY name`
+        // for visual placement; order resolves exactly on next mount.
+        const created: TagWithUsage = {
+          id,
+          name: trimmed,
+          color: null,
+          created_at: new Date().toISOString(),
+          usageCount: 0,
+        };
+        setTags((prev) => {
+          const insertAt = prev.findIndex((t) => t.name.localeCompare(trimmed) > 0);
+          if (insertAt === -1) return [...prev, created];
+          return [...prev.slice(0, insertAt), created, ...prev.slice(insertAt)];
+        });
+        setTotal((t) => t + 1);
       }
     } catch (error) {
       console.error('Failed to create tag:', error);
@@ -236,12 +234,10 @@ function TagsManagementPage() {
       if (nameQuery) {
         void reload();
       } else {
-      // Local diff: patch the row's name in place. Don't re-sort — the
-      // row stays under the user's pointer even if the rename moved it
-      // alphabetically. Order resolves on next mount.
-      setTags((prev) =>
-        prev.map((t) => (t.id === targetId ? { ...t, name: trimmed } : t))
-      );
+        // Local diff: patch the row's name in place. Don't re-sort — the
+        // row stays under the user's pointer even if the rename moved it
+        // alphabetically. Order resolves on next mount.
+        setTags((prev) => prev.map((t) => (t.id === targetId ? { ...t, name: trimmed } : t)));
       }
     } catch (error) {
       console.error('Failed to update tag:', error);
@@ -325,10 +321,10 @@ function TagsManagementPage() {
       <PageHeader
         icon={TagIcon}
         title="Tags"
-        subtitle={`— ${tally} ${total === 1 ? 'tag' : 'tags'}`}
+        subtitle={`${tally} ${total === 1 ? 'tag' : 'tags'}`}
         actions={
           <>
-            <div className="w-56">
+            <div className="w-full sm:w-56">
               <SearchBar
                 value={searchInput}
                 onChange={setSearchInput}
@@ -344,11 +340,7 @@ function TagsManagementPage() {
               {selectionMode ? 'Done' : 'Select'}
             </Button>
             {selectionMode && (
-              <Button
-                size="sm"
-                onClick={handleApplySelection}
-                disabled={selectedIds.size === 0}
-              >
+              <Button size="sm" onClick={handleApplySelection} disabled={selectedIds.size === 0}>
                 <FilterIcon className="h-3.5 w-3.5" aria-hidden="true" />
                 Filter Library ({selectedIds.size})
               </Button>
@@ -361,18 +353,18 @@ function TagsManagementPage() {
         }
       />
 
-      <div className="flex-1 overflow-hidden px-8 py-6">
+      <div className="flex-1 overflow-hidden px-5 py-4 md:px-6 md:py-5">
         {loading ? (
           <LoadingState />
         ) : tags.length === 0 ? (
           nameQuery ? (
             <EmptyState type="search" message={`No tags match "${nameQuery}".`} />
           ) : (
-          <EmptyState
-            icon={TagIcon}
-            message="No tags yet."
-            action={{ label: 'Add Tag', onClick: () => setCreateDialogOpen(true) }}
-          />
+            <EmptyState
+              icon={TagIcon}
+              message="No tags yet."
+              action={{ label: 'Add Tag', onClick: () => setCreateDialogOpen(true) }}
+            />
           )
         ) : (
           <div className="rounded-md border h-full flex flex-col overflow-hidden">
@@ -405,9 +397,7 @@ function TagsManagementPage() {
                   <div
                     role="row"
                     className={`grid items-center gap-3 px-4 border-b border-border hover:bg-muted/30 ${
-                      selectionMode
-                        ? 'grid-cols-[auto_1fr_120px]'
-                        : 'grid-cols-[1fr_120px]'
+                      selectionMode ? 'grid-cols-[auto_1fr_120px]' : 'grid-cols-[1fr_120px]'
                     } ${checked ? 'bg-primary/5' : ''}`}
                     style={{ height: ROW_HEIGHT }}
                   >
@@ -529,8 +519,8 @@ function TagsManagementPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Tag</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{deletingTag?.name}"? It will be
-              removed from any files currently using it.
+              Are you sure you want to delete "{deletingTag?.name}"? It will be removed from any
+              files currently using it.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

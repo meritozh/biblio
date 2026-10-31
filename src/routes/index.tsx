@@ -586,10 +586,10 @@ function HomePage() {
       <PageHeader
         icon={Library}
         title="Library"
-        subtitle={`— ${total} ${total === 1 ? 'volume' : 'volumes'}`}
+        subtitle={`${total} ${total === 1 ? 'volume' : 'volumes'}`}
         actions={
           <>
-            <div className="w-64">
+            <div className="w-full sm:w-56 lg:w-64">
               <SearchBar
                 value={searchQuery}
                 onChange={setSearchQuery}
@@ -598,7 +598,7 @@ function HomePage() {
               />
             </div>
             <Button
-              variant="outline"
+              variant="ghost"
               size="sm"
               className="h-9 gap-1.5"
               onClick={handleLucky}
@@ -616,13 +616,13 @@ function HomePage() {
         }
       />
 
-      <div className="flex-1 flex flex-col overflow-hidden px-8 py-6">
+      <div className="flex flex-1 flex-col overflow-hidden px-5 py-4 md:px-6 md:py-5">
         {storagePathConfigured === false && (
-          <div className="mb-6 p-4 bg-secondary/50 rounded flex items-center gap-3">
-            <AlertCircle className="h-4 w-4 text-muted-foreground shrink-0" />
-            <div className="flex-1 min-w-0">
+          <div className="mb-5 flex items-center gap-3 rounded-lg border border-border/60 bg-secondary/60 p-4">
+            <AlertCircle className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-foreground">Storage path not configured</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
+              <p className="mt-0.5 text-xs text-muted-foreground">
                 Select a storage folder to start adding files.
               </p>
             </div>
@@ -633,11 +633,11 @@ function HomePage() {
         )}
 
         {storagePathConfigured === true && !storagePathAccessible && (
-          <div className="mb-6 p-4 bg-destructive/5 rounded flex items-center gap-3">
-            <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
-            <div className="flex-1 min-w-0">
+          <div className="mb-5 flex items-center gap-3 rounded-lg border border-destructive/15 bg-destructive/5 p-4">
+            <AlertCircle className="h-4 w-4 shrink-0 text-destructive" />
+            <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-foreground">Storage path inaccessible</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
+              <p className="mt-0.5 text-xs text-muted-foreground">
                 The storage folder cannot be accessed.
               </p>
             </div>
@@ -648,11 +648,11 @@ function HomePage() {
         )}
 
         {categories.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center">
-            <div className="max-w-sm text-center space-y-3">
+          <div className="flex flex-1 items-center justify-center">
+            <div className="max-w-sm space-y-3 text-center">
               <p className="text-sm font-medium text-foreground">No categories yet</p>
               <p className="text-xs text-muted-foreground">
-                Create a category to start organizing your library — comics, novels, or anything
+                Create a category to start organizing your library: comics, novels, or anything
                 else.
               </p>
               <Link to="/categories">

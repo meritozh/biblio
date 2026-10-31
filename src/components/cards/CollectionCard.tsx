@@ -69,14 +69,11 @@ export const CollectionCard = memo(function CollectionCard({
 }: CollectionCardProps) {
   const count = collection.file_ids.length;
   return (
-    <div
-      className="relative group"
-      style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}
-    >
+    <div className="relative group" style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}>
       <button
         type="button"
         onClick={() => onOpen(collection)}
-        className="w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 transition-colors hover:bg-muted/50 focus:outline-none focus:ring-2 focus:ring-ring"
+        className="flex h-full w-full flex-col gap-2 rounded-lg p-2 text-left outline-none transition-[background-color,box-shadow,scale] duration-150 focus-visible:ring-2 focus-visible:ring-ring/35 active:scale-[0.98] [@media(hover:hover)]:hover:bg-muted/60"
         aria-label={`Open ${collection.title} (${count} items)`}
       >
         <div className="relative aspect-2/3 w-full">
@@ -94,10 +91,7 @@ export const CollectionCard = memo(function CollectionCard({
           </div>
         </div>
         <div className="space-y-0.5 min-w-0 px-0.5">
-          <MiddleEllipsis
-            text={collection.title}
-            className="text-sm font-medium leading-tight"
-          />
+          <MiddleEllipsis text={collection.title} className="text-sm font-medium leading-tight" />
           <p className="text-xs text-muted-foreground">
             {count} {count === 1 ? 'volume' : 'volumes'}
           </p>

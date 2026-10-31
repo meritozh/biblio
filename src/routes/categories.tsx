@@ -154,8 +154,8 @@ function CategoryFormFields({
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground mt-1.5">
-          Decides which form fields appear in import / edit dialogs, what
-          the file card shows, and which prompts the LLM runs.
+          Decides which form fields appear in import / edit dialogs, what the file card shows, and
+          which prompts the LLM runs.
         </p>
       </div>
 
@@ -175,9 +175,7 @@ function CategoryFormFields({
             </label>
             <Select
               value={effective.viewMode}
-              onValueChange={(v) =>
-                patchViewConfig({ view_mode: v as CategoryViewMode })
-              }
+              onValueChange={(v) => patchViewConfig({ view_mode: v as CategoryViewMode })}
             >
               <SelectTrigger className="h-9 w-full">
                 <SelectValue />
@@ -191,8 +189,8 @@ function CategoryFormFields({
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground mt-1.5">
-              How the file list opens for this category. "By author" / "By
-              series" collapse the grid into collection cards.
+              How the file list opens for this category. "By author" / "By series" collapse the grid
+              into collection cards.
             </p>
           </div>
         )}
@@ -279,10 +277,9 @@ function CategoryFormFields({
             placeholder={openAppPlaceholder()}
           />
           <p className="text-xs text-muted-foreground mt-1.5">
-            Leave empty to use the system default app. Format is
-            platform-specific: macOS app name or bundle id ({'"'}iA Writer{'"'},
-            {' "'}com.apple.Preview{'"'}); Windows full path to the .exe; Linux
-            command name in PATH.
+            Leave empty to use the system default app. Format is platform-specific: macOS app name
+            or bundle id ({'"'}iA Writer{'"'},{' "'}com.apple.Preview{'"'}); Windows full path to
+            the .exe; Linux command name in PATH.
           </p>
         </div>
       </div>
@@ -389,7 +386,7 @@ function CategoriesPage() {
       <PageHeader
         icon={FolderOpen}
         title="Categories"
-        subtitle={`— ${categories.length} ${categories.length === 1 ? 'category' : 'categories'}`}
+        subtitle={`${categories.length} ${categories.length === 1 ? 'category' : 'categories'}`}
         actions={
           <Button onClick={handleStartCreate}>
             <Plus aria-hidden="true" />
@@ -398,7 +395,7 @@ function CategoriesPage() {
         }
       />
 
-      <div className="flex-1 overflow-auto px-8 py-6">
+      <div className="flex-1 overflow-auto px-5 py-4 md:px-6 md:py-5">
         {categories.length === 0 ? (
           <EmptyState
             icon={FolderOpen}
@@ -406,21 +403,21 @@ function CategoriesPage() {
             action={{ label: 'New Category', onClick: handleStartCreate }}
           />
         ) : (
-        <div className="rounded-md border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Description</TableHead>
-                <TableHead className="w-[120px]">Schema</TableHead>
-                <TableHead className="w-[150px]">Folder</TableHead>
-                <TableHead className="w-[140px]">View defaults</TableHead>
-                <TableHead className="w-[100px]">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {categories.map((category) => (
-                <TableRow key={category.id}>
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead className="w-[120px]">Schema</TableHead>
+                  <TableHead className="w-[150px]">Folder</TableHead>
+                  <TableHead className="w-[140px]">View defaults</TableHead>
+                  <TableHead className="w-[100px]">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {categories.map((category) => (
+                  <TableRow key={category.id}>
                     <TableCell>
                       <div className="flex items-center gap-2">
                         {category.name}
@@ -464,9 +461,9 @@ function CategoriesPage() {
                     </TableCell>
                   </TableRow>
                 ))}
-            </TableBody>
-          </Table>
-        </div>
+              </TableBody>
+            </Table>
+          </div>
         )}
       </div>
 
@@ -483,11 +480,7 @@ function CategoriesPage() {
           <DialogHeader>
             <DialogTitle>New Category</DialogTitle>
           </DialogHeader>
-          <CategoryFormFields
-            values={createForm}
-            onChange={setCreateForm}
-            availableTags={tags}
-          />
+          <CategoryFormFields values={createForm} onChange={setCreateForm} availableTags={tags} />
           <DialogFooter>
             <Button
               variant="outline"
@@ -499,10 +492,7 @@ function CategoriesPage() {
             >
               Cancel
             </Button>
-            <Button
-              onClick={handleSaveCreate}
-              disabled={!createForm.name.trim() || creating}
-            >
+            <Button onClick={handleSaveCreate} disabled={!createForm.name.trim() || creating}>
               {creating ? 'Creating…' : 'Create'}
             </Button>
           </DialogFooter>
@@ -519,11 +509,7 @@ function CategoriesPage() {
           <DialogHeader>
             <DialogTitle>Edit Category</DialogTitle>
           </DialogHeader>
-          <CategoryFormFields
-            values={editForm}
-            onChange={setEditForm}
-            availableTags={tags}
-          />
+          <CategoryFormFields values={editForm} onChange={setEditForm} availableTags={tags} />
           <DialogFooter>
             <Button variant="outline" onClick={handleCancelEdit}>
               Cancel
@@ -534,7 +520,6 @@ function CategoriesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
     </>
   );
 }

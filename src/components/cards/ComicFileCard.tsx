@@ -22,7 +22,7 @@ function ComicCover({ fileId }: { fileId: number }) {
       .then(({ data, mime_type }) => {
         if (!cancelled) setSrc(`data:${mime_type};base64,${data}`);
       })
-      .catch(() => { });
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -58,10 +58,7 @@ export const ComicFileCard = memo(function ComicFileCard({
   const schema = schemaForCategoryId(file.category_id, categories);
 
   return (
-    <div
-      className="relative group"
-      style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}
-    >
+    <div className="relative group" style={{ width: CARD_WIDTH, height: CARD_HEIGHT }}>
       {selectionMode && (
         <div className="absolute top-2 left-2 z-10">
           <label className="flex items-center justify-center h-6 w-6 rounded-md bg-background/90 backdrop-blur-sm border border-border/40 shadow-sm cursor-pointer hover:bg-background transition-colors">
@@ -80,18 +77,17 @@ export const ComicFileCard = memo(function ComicFileCard({
       <button
         type="button"
         onClick={() => onCardClick(file)}
-        className={`w-full h-full flex flex-col gap-2 text-left rounded-lg p-2 transition-colors focus:outline-none focus:ring-2 focus:ring-ring ${isSelected
-          ? 'bg-primary/10 ring-1 ring-primary/40'
-          : 'hover:bg-muted/50'
-          }`}
+        className={`flex h-full w-full flex-col gap-2 rounded-lg p-2 text-left outline-none transition-[background-color,box-shadow,scale] duration-150 focus-visible:ring-2 focus-visible:ring-ring/35 active:scale-[0.98] ${
+          isSelected
+            ? 'bg-primary/10 ring-1 ring-primary/35'
+            : '[@media(hover:hover)]:hover:bg-muted/60'
+        }`}
         aria-label={
-          selectionMode
-            ? `Toggle selection of ${file.display_name}`
-            : `View ${file.display_name}`
+          selectionMode ? `Toggle selection of ${file.display_name}` : `View ${file.display_name}`
         }
         aria-pressed={selectionMode ? isSelected : undefined}
       >
-        <div className="relative aspect-2/3 w-full rounded-md overflow-hidden bg-secondary/40 border flex items-center justify-center">
+        <div className="relative flex aspect-2/3 w-full items-center justify-center overflow-hidden rounded-md border border-black/5 bg-secondary/40 shadow-[0_1px_3px_rgba(0,0,0,0.10)]">
           <ComicCover fileId={file.id} />
           <div className="absolute bottom-1.5 left-1.5">
             <CardStatus
@@ -101,10 +97,10 @@ export const ComicFileCard = memo(function ComicFileCard({
             />
           </div>
         </div>
-        <div className="space-y-0.5 min-w-0 px-0.5">
+        <div className="min-w-0 space-y-0.5 px-0.5">
           <MiddleEllipsis
             text={file.display_name}
-            className="text-sm font-medium leading-tight"
+            className="text-[13px] font-medium leading-snug"
           />
           {schema.cardFields.map((field) => (
             <CardField key={field} field={field} file={file} />

@@ -1,9 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Check, Loader2, Plus } from 'lucide-react';
 import { Input } from '@/components/ui/input';
@@ -31,11 +26,7 @@ interface PaginatedPickerProps {
   mode: 'single' | 'multi';
   /** Paginated fetcher. `query` is whatever the search input currently
    *  holds; empty means "no filter". `offset` walks the result set. */
-  fetcher: (params: {
-    query: string;
-    offset: number;
-    limit: number;
-  }) => Promise<PickerPage>;
+  fetcher: (params: { query: string; offset: number; limit: number }) => Promise<PickerPage>;
   /** Multi-mode: called with the next full id list on each toggle. */
   onToggle?: (nextIds: number[]) => void;
   /** Single-mode: called with the picked id and the full item (so the
@@ -261,7 +252,7 @@ export function PaginatedPicker({
                   type="button"
                   key={item.id}
                   onClick={() => handleToggle(item)}
-                  className="absolute inset-x-1 flex items-center gap-3 px-2 py-2 text-sm rounded-md hover:bg-accent transition-colors text-left"
+                  className="absolute inset-x-1 flex items-center gap-3 px-2 py-2 text-sm rounded-md hover:bg-secondary transition-colors text-left"
                   style={{
                     top: 0,
                     transform: `translateY(${virtualRow.start}px)`,
@@ -305,13 +296,9 @@ export function PaginatedPicker({
           type="button"
           onClick={handleCreate}
           disabled={creating}
-          className="w-full flex items-center gap-2 px-3 py-2 text-sm border-t hover:bg-accent transition-colors text-primary disabled:opacity-50"
+          className="w-full flex items-center gap-2 px-3 py-2 text-sm border-t hover:bg-secondary transition-colors text-primary disabled:opacity-50"
         >
-          {creating ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Plus className="h-4 w-4" />
-          )}
+          {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
           <span className="truncate">Create &ldquo;{query}&rdquo;</span>
         </button>
       )}

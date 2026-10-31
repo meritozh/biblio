@@ -25,13 +25,7 @@ import { PageHeader } from '@/components/PageHeader';
 import { EmptyState } from '@/components/EmptyState';
 import { LoadingState } from '@/components/LoadingState';
 import { SearchBar } from '@/components/SearchBar';
-import {
-  authorList,
-  authorCount,
-  authorCreate,
-  authorUpdate,
-  authorDelete,
-} from '@/lib/tauri';
+import { authorList, authorCount, authorCreate, authorUpdate, authorDelete } from '@/lib/tauri';
 import { FilteredFileList } from '@/components/FilteredFileList';
 import { makeId as makeConditionId, type Condition } from '@/lib/filters';
 import type { AuthorWithUsage } from '@/types';
@@ -170,25 +164,23 @@ function AuthorsManagementPage() {
         // filter — refetch instead.
         void reload();
       } else {
-      // Local diff: insert at the alphabetical position so the new row
-      // appears where the user expects without refetching. The server
-      // sorts by raw `name` (binary compare); JS `localeCompare` is a
-      // close-enough approximation for visual placement — order
-      // resolves exactly on next mount.
-      const created: AuthorWithUsage = {
-        id,
-        name: trimmed,
-        created_at: new Date().toISOString(),
-        usageCount: 0,
-      };
-      setAuthors((prev) => {
-        const insertAt = prev.findIndex(
-          (a) => a.name.localeCompare(trimmed) > 0
-        );
-        if (insertAt === -1) return [...prev, created];
-        return [...prev.slice(0, insertAt), created, ...prev.slice(insertAt)];
-      });
-      setTotal((t) => t + 1);
+        // Local diff: insert at the alphabetical position so the new row
+        // appears where the user expects without refetching. The server
+        // sorts by raw `name` (binary compare); JS `localeCompare` is a
+        // close-enough approximation for visual placement — order
+        // resolves exactly on next mount.
+        const created: AuthorWithUsage = {
+          id,
+          name: trimmed,
+          created_at: new Date().toISOString(),
+          usageCount: 0,
+        };
+        setAuthors((prev) => {
+          const insertAt = prev.findIndex((a) => a.name.localeCompare(trimmed) > 0);
+          if (insertAt === -1) return [...prev, created];
+          return [...prev.slice(0, insertAt), created, ...prev.slice(insertAt)];
+        });
+        setTotal((t) => t + 1);
       }
     } catch (error) {
       console.error('Failed to create author:', error);
@@ -213,14 +205,12 @@ function AuthorsManagementPage() {
       if (nameQuery) {
         void reload();
       } else {
-      // Local diff: patch the row's name in place. The list stays at
-      // the row's original position even if the rename moved it
-      // alphabetically — re-sorting client-side would jump the row
-      // away from the user, which is worse UX than a slight ordering
-      // anomaly until next mount.
-      setAuthors((prev) =>
-        prev.map((a) => (a.id === targetId ? { ...a, name: trimmed } : a))
-      );
+        // Local diff: patch the row's name in place. The list stays at
+        // the row's original position even if the rename moved it
+        // alphabetically — re-sorting client-side would jump the row
+        // away from the user, which is worse UX than a slight ordering
+        // anomaly until next mount.
+        setAuthors((prev) => prev.map((a) => (a.id === targetId ? { ...a, name: trimmed } : a)));
       }
     } catch (error) {
       console.error('Failed to update author:', error);
@@ -274,10 +264,10 @@ function AuthorsManagementPage() {
       <PageHeader
         icon={UserIcon}
         title="Authors"
-        subtitle={`— ${tally} ${total === 1 ? 'author' : 'authors'}`}
+        subtitle={`${tally} ${total === 1 ? 'author' : 'authors'}`}
         actions={
           <>
-            <div className="w-56">
+            <div className="w-full sm:w-56">
               <SearchBar
                 value={searchInput}
                 onChange={setSearchInput}
@@ -293,18 +283,18 @@ function AuthorsManagementPage() {
         }
       />
 
-      <div className="flex-1 overflow-hidden px-8 py-6">
+      <div className="flex-1 overflow-hidden px-5 py-4 md:px-6 md:py-5">
         {loading ? (
           <LoadingState />
         ) : authors.length === 0 ? (
           nameQuery ? (
             <EmptyState type="search" message={`No authors match "${nameQuery}".`} />
           ) : (
-          <EmptyState
-            icon={UserIcon}
-            message="No authors yet."
-            action={{ label: 'Add Author', onClick: () => setCreateDialogOpen(true) }}
-          />
+            <EmptyState
+              icon={UserIcon}
+              message="No authors yet."
+              action={{ label: 'Add Author', onClick: () => setCreateDialogOpen(true) }}
+            />
           )
         ) : (
           <div className="rounded-md border h-full flex flex-col overflow-hidden">
@@ -441,8 +431,8 @@ function AuthorsManagementPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Author</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{deletingAuthor?.name}"? They will
-              be removed from any files currently crediting them.
+              Are you sure you want to delete "{deletingAuthor?.name}"? They will be removed from
+              any files currently crediting them.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
