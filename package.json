@@ -2,6 +2,7 @@
   "name": "biblio",
   "private": true,
   "version": "0.10.1",
+  "packageManager": "pnpm@11.21.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
