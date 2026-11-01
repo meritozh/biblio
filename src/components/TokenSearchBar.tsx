@@ -3,7 +3,6 @@ import { Button } from '@/components/ui/button';
 import { Search, X } from 'lucide-react';
 import { describeCondition, type Condition } from '@/lib/filters';
 import {
-  matchFieldKeyword,
   progressContainsCondition,
   suggestFieldValues,
   suggestFields,
@@ -51,6 +50,10 @@ export function TokenSearchBar({
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const [pendingField, setPendingField] = useState<SearchFieldKey | null>(null);
+  // Arrow keys mark the listbox as "actively navigated". Enter only accepts
+  // a highlighted suggestion after that — plain Enter always commits free
+  // text, so aliases like `star` / `by` / `tag` can still be phrase search.
+  const [listNavigated, setListNavigated] = useState(false);
 
   const onCommitRef = useRef(onFreeTextCommit);
   useEffect(() => {
@@ -84,6 +87,7 @@ export function TokenSearchBar({
 
   useEffect(() => {
     setHighlight(0);
+    setListNavigated(false);
   }, [suggestions, pendingField]);
 
   useEffect(() => {
@@ -121,9 +125,17 @@ export function TokenSearchBar({
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Backspace' && freeText === '' && conditions.length > 0 && !pendingField) {
-      event.preventDefault();
-      removeCondition(conditions[conditions.length - 1]!.id);
+    if (event.key === 'Backspace' && freeText === '') {
+      if (pendingField) {
+        event.preventDefault();
+        setPendingField(null);
+        setOpen(false);
+        return;
+      }
+      if (conditions.length > 0) {
+        event.preventDefault();
+        removeCondition(conditions[conditions.length - 1]!.id);
+      }
       return;
     }
 
@@ -141,53 +153,57 @@ export function TokenSearchBar({
     if (event.key === 'ArrowDown' && suggestions.length > 0) {
       event.preventDefault();
       setOpen(true);
-      setHighlight((h) => (h + 1) % suggestions.length);
+      setListNavigated(true);
+      setHighlight((h) => (listNavigated ? (h + 1) % suggestions.length : 0));
       return;
     }
     if (event.key === 'ArrowUp' && suggestions.length > 0) {
       event.preventDefault();
       setOpen(true);
-      setHighlight((h) => (h - 1 + suggestions.length) % suggestions.length);
+      setListNavigated(true);
+      setHighlight((h) =>
+        listNavigated ? (h - 1 + suggestions.length) % suggestions.length : suggestions.length - 1
+      );
+      return;
+    }
+
+    // Tab explicitly accepts the highlighted suggestion (field or value).
+    if (event.key === 'Tab' && open && suggestions[highlight]) {
+      event.preventDefault();
+      selectSuggestion(suggestions[highlight]!);
       return;
     }
 
     if (event.key === 'Enter') {
       event.preventDefault();
-      if (open && suggestions[highlight]) {
+
+      // Value-mode: Enter accepts the navigated/highlighted value, or
+      // commits progress text. Field aliases are never auto-tokenized here.
+      if (pendingField) {
+        if (open && suggestions[highlight] && (listNavigated || suggestions.length === 1)) {
+          selectSuggestion(suggestions[highlight]!);
+          return;
+        }
+        if (pendingField === 'progress') {
+          const condition = progressContainsCondition(freeText);
+          if (condition) {
+            addCondition(condition);
+            return;
+          }
+        }
+        return;
+      }
+
+      // Free-text mode: only accept a suggestion after arrow navigation.
+      // Otherwise commit the typed phrase — including words that happen
+      // to be field aliases (`star wars`, `by the sea`, `tag team`).
+      if (open && listNavigated && suggestions[highlight]) {
         selectSuggestion(suggestions[highlight]!);
         return;
       }
 
-      if (pendingField === 'progress') {
-        const condition = progressContainsCondition(freeText);
-        if (condition) {
-          addCondition(condition);
-          return;
-        }
-      }
-
-      if (!pendingField) {
-        const field = matchFieldKeyword(freeText);
-        if (field) {
-          setPendingField(field.field);
-          onFreeTextChange('');
-          setOpen(true);
-          return;
-        }
-        onFreeTextCommit(freeText);
-        setOpen(false);
-      }
-      return;
-    }
-
-    if (event.key === ' ' && !pendingField) {
-      const field = matchFieldKeyword(freeText);
-      if (field) {
-        event.preventDefault();
-        setPendingField(field.field);
-        onFreeTextChange('');
-        setOpen(true);
-      }
+      onFreeTextCommit(freeText);
+      setOpen(false);
     }
   };
 

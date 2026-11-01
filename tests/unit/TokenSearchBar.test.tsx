@@ -59,7 +59,7 @@ describe('TokenSearchBar', () => {
     expect(onFreeTextCommit).toHaveBeenLastCalledWith('kafka');
   });
 
-  it('turns a field keyword + value into a condition chip', () => {
+  it('turns a clicked field suggestion + value into a condition chip', () => {
     const onFreeTextCommit = vi.fn();
     const onConditionsChange = vi.fn();
     render(
@@ -69,9 +69,8 @@ describe('TokenSearchBar', () => {
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'tag' } });
-    // Exact keyword + Enter enters value mode for that field.
-    fireEvent.keyDown(input, { key: 'Enter' });
-
+    // Explicit click (or Tab) accepts a field — Space/Enter alone must not.
+    fireEvent.click(screen.getByRole('button', { name: /Tags/i }));
     fireEvent.click(screen.getByRole('button', { name: 'sci-fi' }));
 
     expect(onConditionsChange).toHaveBeenCalled();
@@ -81,6 +80,41 @@ describe('TokenSearchBar', () => {
     expect(screen.getByText(/Tags includes sci-fi/i)).toBeInTheDocument();
   });
 
+  it('keeps alias words as free-text phrases on Space and Enter', () => {
+    const onFreeTextCommit = vi.fn();
+    const onConditionsChange = vi.fn();
+    render(
+      <Harness onFreeTextCommit={onFreeTextCommit} onConditionsChange={onConditionsChange} />
+    );
+    const input = screen.getByRole('combobox');
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'star' } });
+    // Space must not tokenize `star` into Favorite — allow "star wars".
+    fireEvent.keyDown(input, { key: ' ' });
+    fireEvent.change(input, { target: { value: 'star ' } });
+    fireEvent.change(input, { target: { value: 'star wars' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(onFreeTextCommit).toHaveBeenCalledWith('star wars');
+    expect(onConditionsChange).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pending field token with Backspace', () => {
+    const onFreeTextCommit = vi.fn();
+    render(<Harness onFreeTextCommit={onFreeTextCommit} />);
+    const input = screen.getByRole('combobox');
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'tag' } });
+    fireEvent.click(screen.getByRole('button', { name: /Tags/i }));
+    // Pending chip uses the field label; value suggestions are separate buttons.
+    expect(screen.getByText('sci-fi')).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: 'Backspace' });
+    expect(screen.queryByText('sci-fi')).not.toBeInTheDocument();
+  });
+
   it('clears free text and conditions together', () => {
     const onFreeTextCommit = vi.fn();
     render(<Harness onFreeTextCommit={onFreeTextCommit} />);
@@ -88,7 +122,7 @@ describe('TokenSearchBar', () => {
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'tag' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(screen.getByRole('button', { name: /Tags/i }));
     fireEvent.click(screen.getByRole('button', { name: 'sci-fi' }));
 
     fireEvent.click(screen.getByRole('button', { name: /clear search/i }));
