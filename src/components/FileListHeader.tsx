@@ -29,7 +29,7 @@ import {
   X,
 } from 'lucide-react';
 import { FilterEditor } from '@/components/FilterEditor';
-import { describeCondition, makeId as makeConditionId, type Condition } from '@/lib/filters';
+import { makeId as makeConditionId, type Condition } from '@/lib/filters';
 import type { SortKey } from '@/stores';
 import type { Author, ViewMode, Tag } from '@/types';
 
@@ -376,29 +376,8 @@ export function FileListHeader({
                 />
               </PopoverContent>
             </Popover>
-            {filter.conditions.map((c) => (
-              <div
-                key={c.id}
-                className="inline-flex h-8 items-center rounded-md bg-secondary/60 transition-colors hover:bg-secondary"
-              >
-                <button
-                  type="button"
-                  onClick={() => filter.setFilterOpen(true)}
-                  className="h-full rounded-l-md pl-3 pr-1.5 text-xs text-foreground/80 outline-none focus-visible:ring-2 focus-visible:ring-ring/35"
-                  aria-label={`Edit condition: ${describeCondition(c, filter.tagsById, filter.authorsById)}`}
-                >
-                  {describeCondition(c, filter.tagsById, filter.authorsById)}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => filter.removeCondition(c.id)}
-                  className="h-full rounded-r-md px-1.5 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/35"
-                  aria-label="Remove condition"
-                >
-                  <X className="h-3 w-3" aria-hidden="true" />
-                </button>
-              </div>
-            ))}
+            {/* Condition chips live in TokenSearchBar (Photos-style). The
+                Filter button still opens the advanced editor + saved presets. */}
           </>
         )}
         <div className="flex-1" />

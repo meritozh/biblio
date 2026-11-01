@@ -3,7 +3,7 @@ import { useStore } from '@tanstack/react-store';
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { FilePicker } from '@/components/FilePicker';
-import { SearchBar } from '@/components/SearchBar';
+import { TokenSearchBar } from '@/components/TokenSearchBar';
 import { FileList } from '@/components/FileList';
 import { fetchFiles, fetchLuckyFiles, type SortKey } from '@/stores';
 import type { Condition } from '@/lib/filters';
@@ -589,12 +589,16 @@ function HomePage() {
         subtitle={`${total} ${total === 1 ? 'volume' : 'volumes'}`}
         actions={
           <>
-            <div className="w-full sm:w-56 lg:w-64">
-              <SearchBar
-                value={searchQuery}
-                onChange={setSearchQuery}
-                onSearch={handleSearchCommit}
-                placeholder="Search title, path…"
+            <div className="w-full min-w-0 sm:w-72 lg:w-[28rem]">
+              <TokenSearchBar
+                conditions={conditions}
+                onConditionsChange={setConditions}
+                freeText={searchQuery}
+                onFreeTextChange={setSearchQuery}
+                onFreeTextCommit={handleSearchCommit}
+                tags={tags}
+                authors={authors}
+                placeholder="Search or filter: tag, author, cache…"
               />
             </div>
             <Button
