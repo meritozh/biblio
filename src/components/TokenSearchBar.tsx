@@ -5,7 +5,8 @@ import { describeCondition, type Condition } from '@/lib/filters';
 import {
   progressContainsCondition,
   suggestFieldValues,
-  suggestFields,
+  suggestSearchList,
+  textAfterTokenPick,
   type SearchFieldKey,
   type SearchSuggestion,
 } from '@/lib/searchTokens';
@@ -35,6 +36,9 @@ interface TokenSearchBarProps {
  * Combobox keyboard model:
  * - `highlight === -1`: no active candidate → Enter commits free text
  * - ArrowUp/Down or hover moves `highlight` onto a candidate → Enter accepts it
+ * - A value candidate becomes a filter chip and refreshes the list
+ * - A field candidate opens that field's values; the typed query stays as a
+ *   chip and keeps searching (it is not discarded)
  * - Aliases like `star` / `tag` stay searchable as phrases unless the user
  *   explicitly navigates the list (or clicks / Tab)
  */
@@ -57,6 +61,8 @@ export function TokenSearchBar({
   /** `-1` = no active candidate (free-text Enter). `>= 0` = list selection. */
   const [highlight, setHighlight] = useState(-1);
   const [pendingField, setPendingField] = useState<SearchFieldKey | null>(null);
+  /** Query parked while picking a field value, so Enter doesn't wipe the search. */
+  const [heldQuery, setHeldQuery] = useState<string | null>(null);
 
   const onCommitRef = useRef(onFreeTextCommit);
   useEffect(() => {
@@ -85,18 +91,13 @@ export function TokenSearchBar({
     if (pendingField) {
       return suggestFieldValues(pendingField, freeText, { tags, authors });
     }
-    return suggestFields(freeText);
+    return suggestSearchList(freeText, { tags, authors });
   }, [open, pendingField, freeText, tags, authors]);
 
-  // Reset active candidate when the query or field-mode changes — not when
-  // the suggestions array merely gets a new identity from a parent re-render
-  // (that used to clear "listNavigated" and made Arrow+Enter fall through to
-  // a free-text commit that felt like the input resetting).
-  useEffect(() => {
-    setHighlight(-1);
-  }, [freeText, pendingField]);
-
   // Clamp highlight if the list shrinks under us (e.g. value filter narrows).
+  // Do not reset highlight when `suggestions` gets a new array identity —
+  // parent re-renders were clearing the armed candidate so Enter committed
+  // free text (or wiped the box) instead of accepting the highlight.
   useEffect(() => {
     if (highlight >= suggestions.length) {
       setHighlight(suggestions.length > 0 ? suggestions.length - 1 : -1);
@@ -113,11 +114,12 @@ export function TokenSearchBar({
     return () => window.removeEventListener('mousedown', onPointerDown);
   }, []);
 
-  const addCondition = (condition: Condition) => {
+  const addCondition = (condition: Condition, nextQuery: string) => {
     onConditionsChange([...conditions, condition]);
     setPendingField(null);
-    onFreeTextChange('');
-    onFreeTextCommit('');
+    setHeldQuery(null);
+    onFreeTextChange(nextQuery);
+    onFreeTextCommit(nextQuery);
     setOpen(false);
     setHighlight(-1);
     inputRef.current?.focus();
@@ -129,14 +131,25 @@ export function TokenSearchBar({
 
   const selectSuggestion = (suggestion: SearchSuggestion) => {
     if (suggestion.kind === 'field') {
+      // Park the typed query and keep it searching. The input clears only so
+      // the value list isn't filtered by the field keyword itself.
+      const current = freeText.trim();
+      if (current) {
+        setHeldQuery(current);
+        onFreeTextCommit(current);
+      }
       setPendingField(suggestion.field);
       onFreeTextChange('');
       setOpen(true);
-      setHighlight(-1);
+      setHighlight(0);
       inputRef.current?.focus();
       return;
     }
-    addCondition(suggestion.condition);
+    const source = pendingField ? (heldQuery ?? '') : freeText;
+    addCondition(
+      suggestion.condition,
+      textAfterTokenPick(source, suggestion.label, suggestion.field)
+    );
   };
 
   const acceptHighlight = (): boolean => {
@@ -156,7 +169,10 @@ export function TokenSearchBar({
     if (event.key === 'Backspace' && freeText === '') {
       if (pendingField) {
         event.preventDefault();
+        const restore = heldQuery ?? '';
         setPendingField(null);
+        setHeldQuery(null);
+        onFreeTextChange(restore);
         setOpen(false);
         setHighlight(-1);
         return;
@@ -170,8 +186,10 @@ export function TokenSearchBar({
 
     if (event.key === 'Escape') {
       if (pendingField) {
+        const restore = heldQuery ?? '';
         setPendingField(null);
-        onFreeTextChange('');
+        setHeldQuery(null);
+        onFreeTextChange(restore);
         setOpen(false);
         setHighlight(-1);
         return;
@@ -205,10 +223,11 @@ export function TokenSearchBar({
 
     if (event.key === 'Enter') {
       event.preventDefault();
+      event.stopPropagation();
 
       if (pendingField) {
-        // Value mode: Enter accepts the active candidate. If the user never
-        // arrowed/hovered, fall back to the sole suggestion or progress text.
+        // Value mode: Enter accepts the armed candidate (arrow, hover, or
+        // the first value highlighted when the field was chosen).
         if (acceptHighlight()) return;
         if (suggestions.length === 1) {
           selectSuggestion(suggestions[0]!);
@@ -217,15 +236,16 @@ export function TokenSearchBar({
         if (pendingField === 'progress') {
           const condition = progressContainsCondition(freeText);
           if (condition) {
-            addCondition(condition);
+            const label = 'text' in condition && condition.text ? condition.text : freeText;
+            addCondition(condition, textAfterTokenPick(heldQuery ?? '', label, 'progress'));
             return;
           }
         }
         return;
       }
 
-      // Free-text mode: only accept a field candidate after arrow/hover
-      // moved highlight off -1. Plain Enter commits the typed phrase.
+      // Free-text mode: only accept a candidate after arrow/hover moved
+      // highlight off -1. Plain Enter commits the typed phrase.
       if (acceptHighlight()) return;
 
       onFreeTextCommit(freeText);
@@ -236,6 +256,7 @@ export function TokenSearchBar({
 
   const handleClear = () => {
     setPendingField(null);
+    setHeldQuery(null);
     onFreeTextChange('');
     onFreeTextCommit('');
     onConditionsChange([]);
@@ -252,7 +273,8 @@ export function TokenSearchBar({
       ? 'Add filter or search…'
       : placeholder;
 
-  const showClear = freeText.length > 0 || conditions.length > 0 || pendingField != null;
+  const showClear =
+    freeText.length > 0 || conditions.length > 0 || pendingField != null || heldQuery != null;
 
   return (
     <div ref={rootRef} className={cn('relative w-full', className)}>
@@ -285,6 +307,12 @@ export function TokenSearchBar({
           </span>
         ))}
 
+        {heldQuery && (
+          <span className="inline-flex h-6 max-w-[180px] items-center rounded-md bg-muted px-1.5 text-[11px] font-medium text-foreground">
+            <span className="truncate">“{heldQuery}”</span>
+          </span>
+        )}
+
         {pendingField && (
           <span className="inline-flex h-6 items-center rounded-md bg-primary/10 px-1.5 text-[11px] font-medium text-primary">
             {pendingField === 'local_cache'
@@ -305,6 +333,8 @@ export function TokenSearchBar({
           value={freeText}
           onChange={(e) => {
             onFreeTextChange(e.target.value);
+            // Typing abandons the armed row so Enter searches the phrase.
+            setHighlight(-1);
             setOpen(true);
           }}
           onFocus={() => setOpen(true)}
@@ -315,14 +345,13 @@ export function TokenSearchBar({
           aria-autocomplete="list"
           aria-controls={listboxId}
           aria-expanded={open && suggestions.length > 0}
-          aria-activedescendant={
-            highlight >= 0 ? `${listboxId}-option-${highlight}` : undefined
-          }
+          aria-activedescendant={highlight >= 0 ? `${listboxId}-option-${highlight}` : undefined}
           role="combobox"
         />
 
         {showClear && (
           <Button
+            type="button"
             variant="ghost"
             size="icon"
             className="h-7 w-7 shrink-0"
@@ -344,7 +373,21 @@ export function TokenSearchBar({
             const selected = index === highlight;
             const label = suggestion.label;
             const hint =
-              suggestion.kind === 'field' ? suggestion.aliases[0] : undefined;
+              suggestion.kind === 'field'
+                ? suggestion.aliases[0]
+                : suggestion.field === 'tags'
+                  ? 'Tag'
+                  : suggestion.field === 'authors'
+                    ? 'Author'
+                    : suggestion.field === 'favorite'
+                      ? 'Favorite'
+                      : suggestion.field === 'local_cache'
+                        ? 'Cache'
+                        : suggestion.field === 'file_status'
+                          ? 'Status'
+                          : suggestion.field === 'storage_kind'
+                            ? 'Storage'
+                            : undefined;
             return (
               <li
                 key={`${suggestion.kind}-${label}-${index}`}

@@ -5,12 +5,8 @@ import { TokenSearchBar } from '@/components/TokenSearchBar';
 import type { Condition } from '@/lib/filters';
 import type { Author, Tag } from '@/types';
 
-const tags: Tag[] = [
-  { id: 1, name: 'sci-fi', color: null, created_at: '2026-01-01T00:00:00Z' },
-];
-const authors: Author[] = [
-  { id: 10, name: '村上春树', created_at: '2026-01-01T00:00:00Z' },
-];
+const tags: Tag[] = [{ id: 1, name: 'sci-fi', color: null, created_at: '2026-01-01T00:00:00Z' }];
+const authors: Author[] = [{ id: 10, name: '村上春树', created_at: '2026-01-01T00:00:00Z' }];
 
 function Harness({
   onFreeTextCommit,
@@ -68,15 +64,13 @@ describe('TokenSearchBar', () => {
   it('turns a clicked field suggestion + value into a condition chip', () => {
     const onFreeTextCommit = vi.fn();
     const onConditionsChange = vi.fn();
-    render(
-      <Harness onFreeTextCommit={onFreeTextCommit} onConditionsChange={onConditionsChange} />
-    );
+    render(<Harness onFreeTextCommit={onFreeTextCommit} onConditionsChange={onConditionsChange} />);
     const input = screen.getByRole('combobox');
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'tag' } });
     fireEvent.click(screen.getByRole('button', { name: /Tags/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'sci-fi' }));
+    fireEvent.click(screen.getByRole('button', { name: /sci-fi/i }));
 
     expect(onConditionsChange).toHaveBeenCalled();
     const last = onConditionsChange.mock.calls.at(-1)?.[0] as Condition[];
@@ -88,9 +82,7 @@ describe('TokenSearchBar', () => {
   it('keeps alias words as free-text phrases on Space and Enter', () => {
     const onFreeTextCommit = vi.fn();
     const onConditionsChange = vi.fn();
-    render(
-      <Harness onFreeTextCommit={onFreeTextCommit} onConditionsChange={onConditionsChange} />
-    );
+    render(<Harness onFreeTextCommit={onFreeTextCommit} onConditionsChange={onConditionsChange} />);
     const input = screen.getByRole('combobox');
 
     fireEvent.focus(input);
@@ -109,9 +101,7 @@ describe('TokenSearchBar', () => {
   it('selects the arrow-highlighted field with Enter and keeps a pending chip', () => {
     const onFreeTextCommit = vi.fn();
     const onConditionsChange = vi.fn();
-    render(
-      <Harness onFreeTextCommit={onFreeTextCommit} onConditionsChange={onConditionsChange} />
-    );
+    render(<Harness onFreeTextCommit={onFreeTextCommit} onConditionsChange={onConditionsChange} />);
     const input = screen.getByRole('combobox');
 
     fireEvent.focus(input);
@@ -119,9 +109,13 @@ describe('TokenSearchBar', () => {
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'Enter' });
 
-    // Field accepted → pending Tags chip; free text cleared for value entry.
+    // Field accepted → pending Tags chip. The typed query is parked, not discarded,
+    // and the search stays on that text until a value is chosen.
     expect(screen.getByText('Tags')).toBeInTheDocument();
+    expect(screen.getByText('“tag”')).toBeInTheDocument();
     expect((input as HTMLInputElement).value).toBe('');
+    expect(onFreeTextCommit).toHaveBeenCalledWith('tag');
+    expect(onFreeTextCommit).not.toHaveBeenCalledWith('');
     expect(onConditionsChange).not.toHaveBeenCalled();
   });
 
@@ -163,17 +157,14 @@ describe('TokenSearchBar', () => {
   it('accepts a value with Enter after arrow-selecting a field token', () => {
     const onFreeTextCommit = vi.fn();
     const onConditionsChange = vi.fn();
-    render(
-      <Harness onFreeTextCommit={onFreeTextCommit} onConditionsChange={onConditionsChange} />
-    );
+    render(<Harness onFreeTextCommit={onFreeTextCommit} onConditionsChange={onConditionsChange} />);
     const input = screen.getByRole('combobox');
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'tag' } });
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'Enter' });
-    // Value list open; Arrow then Enter picks sci-fi (or sole suggestion fallback).
-    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    // Value list opens with the first tag armed — Enter applies it (no second arrow).
     fireEvent.keyDown(input, { key: 'Enter' });
 
     expect(onConditionsChange).toHaveBeenCalled();
@@ -183,23 +174,39 @@ describe('TokenSearchBar', () => {
     expect(screen.getByText(/Tags includes sci-fi/i)).toBeInTheDocument();
   });
 
-  it('accepts a hovered field suggestion with Enter', () => {
+  it('applies an arrow-highlighted value with one Enter and searches', () => {
+    const onFreeTextCommit = vi.fn();
     const onConditionsChange = vi.fn();
-    render(
-      <Harness onFreeTextCommit={vi.fn()} onConditionsChange={onConditionsChange} />
-    );
+    render(<Harness onFreeTextCommit={onFreeTextCommit} onConditionsChange={onConditionsChange} />);
     const input = screen.getByRole('combobox');
 
     fireEvent.focus(input);
-    fireEvent.change(input, { target: { value: 'fav' } });
-    fireEvent.mouseEnter(screen.getByRole('button', { name: /Favorite/i }));
-    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.change(input, { target: { value: 'sci' } });
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'Enter' });
 
     const last = onConditionsChange.mock.calls.at(-1)?.[0] as Condition[];
     expect(last).toHaveLength(1);
-    expect(last[0]).toMatchObject({ field: 'favorite', op: 'is' });
+    expect(last[0]).toMatchObject({ field: 'tags', op: 'includes', tagId: 1 });
+    expect(screen.getByText(/Tags includes sci-fi/i)).toBeInTheDocument();
+    // The pick consumed the query; it must not leave a blank search with no chip.
+    expect(onFreeTextCommit).toHaveBeenCalledWith('');
+    expect((input as HTMLInputElement).value).toBe('');
+  });
+
+  it('accepts a hovered value suggestion with Enter', () => {
+    const onConditionsChange = vi.fn();
+    render(<Harness onFreeTextCommit={vi.fn()} onConditionsChange={onConditionsChange} />);
+    const input = screen.getByRole('combobox');
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'fav' } });
+    fireEvent.mouseEnter(screen.getByRole('button', { name: /^Favorited/i }));
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    const last = onConditionsChange.mock.calls.at(-1)?.[0] as Condition[];
+    expect(last).toHaveLength(1);
+    expect(last[0]).toMatchObject({ field: 'favorite', op: 'is', value: true });
   });
 
   it('cancels a pending field token with Backspace', () => {
@@ -224,7 +231,7 @@ describe('TokenSearchBar', () => {
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'tag' } });
     fireEvent.click(screen.getByRole('button', { name: /Tags/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'sci-fi' }));
+    fireEvent.click(screen.getByRole('button', { name: /sci-fi/i }));
 
     fireEvent.click(screen.getByRole('button', { name: /clear search/i }));
     expect(onFreeTextCommit).toHaveBeenCalledWith('');
