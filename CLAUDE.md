@@ -35,9 +35,9 @@ pnpm tauri:build # Build production app
 
 TypeScript 5.x (frontend), Rust 1.75+ (Tauri backend): Follow standard conventions
 
-**Design System**: Colors defined in `src/index.css` using Tailwind 4.x `@theme` blocks. Primary palette: ivory background (#FFFDF5), espresso brown primary (#3D3629), bronze accent (#8B7355). Typography: Cormorant Garamond (headings), Nunito Sans (body) self-hosted via `@fontsource/*` packages and imported at the top of `src/index.css`. Production CSP keeps `font-src 'self'` only — to add a new weight, add an `@import '@fontsource/<family>/<weight>.css'` line alongside the existing ones.
+**Design System**: Colors defined in `src/index.css` using Tailwind 4.x `@theme` blocks. Two switchable palettes live on `html[data-theme]` (`porcelain` | `graphite`), combined with `.dark` for appearance. Porcelain Soft: cool porcelain surfaces + mist-blue primary, Plus Jakarta Sans. Warm Graphite: warm stone neutrals + sage primary, Outfit display / Source Sans 3 body. Users pick the palette in Settings → Theme; light/dark/system remains under Appearance. Fonts are self-hosted via `@fontsource/*` (`font-src 'self'` in production CSP) — add new weights with an `@import` at the top of `src/index.css`.
 
-**UI Components**: shadcn/ui primitives in `src/components/ui/`. Use rounded-xl borders, subtle shadows, smooth transitions (duration-200). Focus states use ring utilities.
+**UI Components**: shadcn/ui primitives in `src/components/ui/`. Prefer soft radius (theme `--radius`), subtle single-layer shadows, smooth transitions (duration-200). Focus states use ring utilities.
 
 ## Gotchas
 

@@ -23,8 +23,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@fontsource/cormorant-garamond": "^5.2.11",
-    "@fontsource/nunito-sans": "^5.2.7",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/outfit": "^5.3.0",
+    "@fontsource/plus-jakarta-sans": "^5.3.0",
+    "@fontsource/source-sans-3": "^5.3.1",
     "@radix-ui/react-alert-dialog": "^1.1.23",
     "@radix-ui/react-context-menu": "^2.3.7",
     "@radix-ui/react-dialog": "^1.1.15",
