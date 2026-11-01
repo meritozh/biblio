@@ -60,6 +60,9 @@ export function TokenSearchBar({
   const [open, setOpen] = useState(false);
   /** `-1` = no active candidate (free-text Enter). `>= 0` = list selection. */
   const [highlight, setHighlight] = useState(-1);
+  /** True only after arrow/hover. Auto-arming the first value for Enter must
+   *  not make Tab accept that row and trap focus. */
+  const [highlightChosen, setHighlightChosen] = useState(false);
   const [pendingField, setPendingField] = useState<SearchFieldKey | null>(null);
   /** Query parked while picking a field value, so Enter doesn't wipe the search. */
   const [heldQuery, setHeldQuery] = useState<string | null>(null);
@@ -122,6 +125,7 @@ export function TokenSearchBar({
     onFreeTextCommit(nextQuery);
     setOpen(false);
     setHighlight(-1);
+    setHighlightChosen(false);
     inputRef.current?.focus();
   };
 
@@ -141,7 +145,9 @@ export function TokenSearchBar({
       setPendingField(suggestion.field);
       onFreeTextChange('');
       setOpen(true);
+      // Arm the first value for a follow-up Enter, but not for Tab.
       setHighlight(0);
+      setHighlightChosen(false);
       inputRef.current?.focus();
       return;
     }
@@ -175,6 +181,7 @@ export function TokenSearchBar({
         onFreeTextChange(restore);
         setOpen(false);
         setHighlight(-1);
+        setHighlightChosen(false);
         return;
       }
       if (conditions.length > 0) {
@@ -192,30 +199,41 @@ export function TokenSearchBar({
         onFreeTextChange(restore);
         setOpen(false);
         setHighlight(-1);
+        setHighlightChosen(false);
         return;
       }
       setOpen(false);
       setHighlight(-1);
+      setHighlightChosen(false);
       return;
     }
 
     if (event.key === 'ArrowDown' && suggestions.length > 0) {
       event.preventDefault();
       setOpen(true);
+      setHighlightChosen(true);
       setHighlight((h) => (h < 0 ? 0 : (h + 1) % suggestions.length));
       return;
     }
     if (event.key === 'ArrowUp' && suggestions.length > 0) {
       event.preventDefault();
       setOpen(true);
+      setHighlightChosen(true);
       setHighlight((h) =>
         h < 0 ? suggestions.length - 1 : (h - 1 + suggestions.length) % suggestions.length
       );
       return;
     }
 
-    // Tab explicitly accepts the highlighted suggestion (field or value).
-    if (event.key === 'Tab' && open && highlight >= 0 && suggestions[highlight]) {
+    // Tab accepts only a row the user arrowed to or hovered. The first value
+    // armed after a field pick is for Enter; Tab must leave the combobox.
+    if (
+      event.key === 'Tab' &&
+      open &&
+      highlightChosen &&
+      highlight >= 0 &&
+      suggestions[highlight]
+    ) {
       event.preventDefault();
       selectSuggestion(suggestions[highlight]!);
       return;
@@ -251,6 +269,7 @@ export function TokenSearchBar({
       onFreeTextCommit(freeText);
       setOpen(false);
       setHighlight(-1);
+      setHighlightChosen(false);
     }
   };
 
@@ -262,6 +281,7 @@ export function TokenSearchBar({
     onConditionsChange([]);
     setOpen(false);
     setHighlight(-1);
+    setHighlightChosen(false);
     inputRef.current?.focus();
   };
 
@@ -335,6 +355,7 @@ export function TokenSearchBar({
             onFreeTextChange(e.target.value);
             // Typing abandons the armed row so Enter searches the phrase.
             setHighlight(-1);
+            setHighlightChosen(false);
             setOpen(true);
           }}
           onFocus={() => setOpen(true)}
@@ -401,7 +422,10 @@ export function TokenSearchBar({
                     'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-sm',
                     selected ? 'bg-accent text-accent-foreground' : 'hover:bg-secondary/70'
                   )}
-                  onMouseEnter={() => setHighlight(index)}
+                  onMouseEnter={() => {
+                    setHighlight(index);
+                    setHighlightChosen(true);
+                  }}
                   onClick={() => selectSuggestion(suggestion)}
                 >
                   <span className="truncate font-medium">{label}</span>
