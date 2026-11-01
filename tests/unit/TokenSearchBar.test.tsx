@@ -174,6 +174,41 @@ describe('TokenSearchBar', () => {
     expect(screen.getByText(/Tags includes sci-fi/i)).toBeInTheDocument();
   });
 
+  it('does not apply the auto-armed first value when Tab follows a field pick', () => {
+    const onConditionsChange = vi.fn();
+    render(<Harness onFreeTextCommit={vi.fn()} onConditionsChange={onConditionsChange} />);
+    const input = screen.getByRole('combobox');
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'tag' } });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.getByText('Tags')).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: 'Tab' });
+
+    expect(onConditionsChange).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Tags includes sci-fi/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Tags')).toBeInTheDocument();
+  });
+
+  it('Tab applies a value only after the user arrows to it', () => {
+    const onConditionsChange = vi.fn();
+    render(<Harness onFreeTextCommit={vi.fn()} onConditionsChange={onConditionsChange} />);
+    const input = screen.getByRole('combobox');
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'tag' } });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Tab' });
+
+    const last = onConditionsChange.mock.calls.at(-1)?.[0] as Condition[];
+    expect(last).toHaveLength(1);
+    expect(last[0]).toMatchObject({ field: 'tags', op: 'includes' });
+  });
+
   it('applies an arrow-highlighted value with one Enter and searches', () => {
     const onFreeTextCommit = vi.fn();
     const onConditionsChange = vi.fn();
