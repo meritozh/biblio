@@ -177,10 +177,12 @@ export function TokenSearchBar({
     if (event.key === 'Enter') {
       event.preventDefault();
 
-      // Value-mode: Enter accepts the navigated/highlighted value, or
-      // commits progress text. Field aliases are never auto-tokenized here.
+      // Value-mode: the user already picked a field chip, so Enter accepts
+      // the highlighted value (no second arrow pass). `listNavigated` is
+      // reset when suggestions swap to values after field selection — requiring
+      // it here cleared the free-text buffer and then ate the confirming Enter.
       if (pendingField) {
-        if (open && suggestions[highlight] && (listNavigated || suggestions.length === 1)) {
+        if (open && suggestions[highlight]) {
           selectSuggestion(suggestions[highlight]!);
           return;
         }
@@ -194,9 +196,9 @@ export function TokenSearchBar({
         return;
       }
 
-      // Free-text mode: only accept a suggestion after arrow navigation.
-      // Otherwise commit the typed phrase — including words that happen
-      // to be field aliases (`star wars`, `by the sea`, `tag team`).
+      // Free-text mode: only accept a field suggestion after arrow / hover
+      // navigation. Plain Enter commits the typed phrase — including words
+      // that happen to be field aliases (`star wars`, `by the sea`, `tag team`).
       if (open && listNavigated && suggestions[highlight]) {
         selectSuggestion(suggestions[highlight]!);
         return;
@@ -325,7 +327,12 @@ export function TokenSearchBar({
                     'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-sm',
                     selected ? 'bg-accent text-accent-foreground' : 'hover:bg-secondary/70'
                   )}
-                  onMouseEnter={() => setHighlight(index)}
+                  onMouseEnter={() => {
+                    setHighlight(index);
+                    // Hover counts as explicit navigation so Enter can accept
+                    // a field suggestion without a prior ArrowDown.
+                    setListNavigated(true);
+                  }}
                   onClick={() => selectSuggestion(suggestion)}
                 >
                   <span className="truncate font-medium">{label}</span>
