@@ -4,6 +4,14 @@ use super::*;
 /// indexed term to match.
 const TRIGRAM_MIN_CHARS: usize = 3;
 
+/// Latin tokens shorter than this stay exact-only — edit-distance expansion
+/// on 3-char words is too noisy (almost every neighbor hits something).
+const FUZZY_MIN_CHARS: usize = 4;
+
+/// Cap fuzzy expansions per token so a long typo doesn't explode the MATCH
+/// expression into hundreds of OR clauses.
+const FUZZY_VARIANT_CAP: usize = 16;
+
 /// What kind of SQL filter to apply for a typed search query. Returned by
 /// [`prepare_search_filter`] so `file_search` can pick the matching SQL.
 pub(super) enum SearchFilter {
@@ -21,12 +29,16 @@ pub(super) enum SearchFilter {
 /// Strategy:
 ///   1. Replace every FTS5 operator character (`"'`:()-+*^`) with a space
 ///      so we never accidentally parse a user's punctuation as syntax.
-///   2. Split on whitespace; if the longest remaining token is < 3 chars,
-///      fall back to `LIKE '%q%'` against the trimmed raw query — trigram
-///      indexes 3-character windows and returns nothing for shorter input.
-///   3. Otherwise quote each token and AND them together. The trigram
-///      tokenizer matches substrings inside indexed text, so we don't need
-///      a `*` prefix marker.
+///   2. Split on whitespace; if no remaining token is ≥ 3 chars, fall back
+///      to `LIKE '%q%'` against the trimmed raw query — trigram indexes
+///      3-character windows and returns nothing for shorter input.
+///   3. Otherwise quote each ≥3-char token and AND them together. The
+///      trigram tokenizer matches substrings inside indexed text, so we
+///      don't need a `*` prefix marker.
+///   4. For Latin alphanumeric tokens ≥ 4 chars, OR in edit-distance-1
+///      variants (single deletion + adjacent transposition) so typos like
+///      `kafaka` still hit `kafka`. CJK stays exact — a wrong character is
+///      a different word, not a typo in the Latin sense.
 ///
 /// Returns None if the query has no usable content (all whitespace, all
 /// punctuation, etc.) — callers should treat that as "no filter" rather
@@ -53,8 +65,9 @@ pub(super) fn prepare_search_filter(raw: &str) -> Option<SearchFilter> {
     // token can never MATCH and — ANDed with the rest — would zero out the
     // whole query (e.g. "JP 火影忍者" returned nothing). Keep only tokens long
     // enough for the index; drop the shorter ones from the FTS expression.
-    let fts_terms: Vec<&&str> = terms
+    let fts_terms: Vec<&str> = terms
         .iter()
+        .copied()
         .filter(|t| t.chars().count() >= TRIGRAM_MIN_CHARS)
         .collect();
 
@@ -73,11 +86,75 @@ pub(super) fn prepare_search_filter(raw: &str) -> Option<SearchFilter> {
         return Some(SearchFilter::Like(format!("%{}%", pattern)));
     }
 
-    // Quote each term so spaces, slashes, and other token-internal
-    // punctuation are searched literally rather than parsed as FTS5
-    // syntax. Trigram needs the entire term as a contiguous substring.
-    let quoted: Vec<String> = fts_terms.iter().map(|t| format!("\"{}\"", t)).collect();
-    Some(SearchFilter::Fts(quoted.join(" ")))
+    // Each token becomes either `"exact"` or `("exact" OR "fuzzy" …)`.
+    // Tokens are ANDed (implicit FTS5 juxtaposition) so multi-word queries
+    // still require every word to match somewhere in name/path.
+    let clauses: Vec<String> = fts_terms.iter().map(|t| fts_clause_for_term(t)).collect();
+    Some(SearchFilter::Fts(clauses.join(" ")))
+}
+
+fn quote_fts_term(term: &str) -> String {
+    format!("\"{}\"", term)
+}
+
+/// Latin alphanumeric tokens are eligible for typo expansion. Everything
+/// else (CJK, punctuation leftovers, short words) stays exact-only.
+fn is_fuzzy_eligible(term: &str) -> bool {
+    let len = term.chars().count();
+    len >= FUZZY_MIN_CHARS && term.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// Build the MATCH clause for one token, optionally OR-ing edit-distance-1
+/// neighbors for Latin typos.
+fn fts_clause_for_term(term: &str) -> String {
+    let exact = quote_fts_term(term);
+    if !is_fuzzy_eligible(term) {
+        return exact;
+    }
+
+    let variants = edit_distance_1_variants(term);
+    if variants.is_empty() {
+        return exact;
+    }
+
+    let mut parts = Vec::with_capacity(1 + variants.len());
+    parts.push(exact);
+    for variant in variants {
+        parts.push(quote_fts_term(&variant));
+    }
+    format!("({})", parts.join(" OR "))
+}
+
+/// Generate deletion + adjacent-transposition variants. Substitutions and
+/// insertions are skipped: the fan-out is huge and trigram already covers
+/// many near-miss substrings for free.
+fn edit_distance_1_variants(term: &str) -> Vec<String> {
+    let chars: Vec<char> = term.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+
+    for i in 0..chars.len() {
+        let deleted: String = chars
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, c)| *c)
+            .collect();
+        if deleted.chars().count() >= TRIGRAM_MIN_CHARS {
+            out.push(deleted);
+        }
+    }
+
+    for i in 0..chars.len().saturating_sub(1) {
+        let mut swapped = chars.clone();
+        swapped.swap(i, i + 1);
+        out.push(swapped.into_iter().collect());
+    }
+
+    out.sort_unstable();
+    out.dedup();
+    out.retain(|v| v != term);
+    out.truncate(FUZZY_VARIANT_CAP);
+    out
 }
 
 #[tauri::command]

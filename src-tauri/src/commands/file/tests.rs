@@ -68,6 +68,7 @@ mod filename_tests {
     fn search_filter_single_token_quoted_for_fts() {
         // Trigram tokenizer matches substrings inside indexed text, so the
         // quoted whole-token form is enough — no `*` prefix marker needed.
+        // CJK stays exact (no Latin-style typo expansion).
         assert_eq!(fts_expr("三体老师").as_deref(), Some("\"三体老师\""));
     }
 
@@ -81,10 +82,13 @@ mod filename_tests {
 
     #[test]
     fn search_filter_strips_fts5_operators() {
-        assert_eq!(
-            fts_expr("hello(world):today").as_deref(),
-            Some("\"hello\" \"world\" \"today\"")
-        );
+        let expr = fts_expr("hello(world):today").expect("fts");
+        // Operators become whitespace splits; each Latin token ≥4 chars is
+        // wrapped in a fuzzy OR-group that still includes the exact term.
+        assert!(expr.contains("\"hello\""));
+        assert!(expr.contains("\"world\""));
+        assert!(expr.contains("\"today\""));
+        assert!(expr.contains(" OR "));
     }
 
     #[test]
@@ -108,6 +112,33 @@ mod filename_tests {
         assert!(prepare_search_filter("").is_none());
         assert!(prepare_search_filter("   ").is_none());
         assert!(prepare_search_filter("\"\"()").is_none());
+    }
+
+    #[test]
+    fn search_filter_latin_typo_expands_with_or_group() {
+        let expr = fts_expr("kafaka").expect("fts");
+        // Exact term plus a deletion/transposition neighbor that recovers
+        // the intended spelling (`kafka` via deleting the extra `a`).
+        assert!(expr.starts_with('('));
+        assert!(expr.contains("\"kafaka\""));
+        assert!(expr.contains("\"kafka\""));
+        assert!(expr.contains(" OR "));
+    }
+
+    #[test]
+    fn search_filter_short_latin_stays_exact() {
+        // 3-char Latin is trigram-eligible but below the fuzzy threshold.
+        assert_eq!(fts_expr("cat").as_deref(), Some("\"cat\""));
+    }
+
+    #[test]
+    fn search_filter_fuzzy_tokens_still_and_across_words() {
+        let expr = fts_expr("kafaka murakami").expect("fts");
+        // Two OR-groups joined by whitespace → FTS5 AND.
+        let groups: Vec<&str> = expr.split(") (").collect();
+        assert_eq!(groups.len(), 2, "expected two AND-ed OR groups: {expr}");
+        assert!(expr.contains("\"kafaka\""));
+        assert!(expr.contains("\"murakami\""));
     }
 }
 
