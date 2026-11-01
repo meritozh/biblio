@@ -58,8 +58,8 @@ function serializeConditions(conditions: ReadonlyArray<Condition>): unknown[] {
 
 export async function fetchFiles(params?: {
   category_id?: number | null;
-  /** Free-text search query. When non-empty, routes through the FTS-backed
-   *  file_search command; otherwise the default paginated file_list. */
+  /** Free-text search query. Passed to the unified `file_list` command;
+   *  blank / absent means plain list, non-blank applies FTS / LIKE. */
   query?: string;
   /** Server-side sort. Falls back to ('created', desc=true) on the backend. */
   sort_by?: SortKey;
@@ -69,24 +69,14 @@ export async function fetchFiles(params?: {
   limit?: number;
   offset?: number;
 }): Promise<{ files: FileEntry[]; total: number }> {
-  const query = params?.query?.trim();
+  const query = params?.query?.trim() || undefined;
   const conditions = params?.conditions && params.conditions.length > 0
     ? serializeConditions(params.conditions)
     : undefined;
   try {
-    if (query) {
-      return await invoke<{ files: FileEntry[]; total: number }>('file_search', {
-        query,
-        categoryId: params?.category_id,
-        sortBy: params?.sort_by,
-        sortDesc: params?.sort_desc,
-        conditions,
-        limit: params?.limit,
-        offset: params?.offset,
-      });
-    }
     return await invoke<{ files: FileEntry[]; total: number }>('file_list', {
       categoryId: params?.category_id,
+      query,
       sortBy: params?.sort_by,
       sortDesc: params?.sort_desc,
       conditions,

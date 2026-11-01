@@ -19,12 +19,33 @@ describe('favorite IPC contracts', () => {
 
     expect(mockInvoke).toHaveBeenCalledWith('file_list', {
       categoryId: 1,
+      query: undefined,
       sortBy: undefined,
       sortDesc: undefined,
       conditions: [{ field: 'favorite', op: 'is', value: true }],
       limit: undefined,
       offset: undefined,
     });
+  });
+
+  it('passes free-text query through the unified file_list command', async () => {
+    mockInvoke.mockResolvedValue({ files: [], total: 0 });
+
+    await fetchFiles({ category_id: 2, query: '  kafka  ' });
+
+    expect(mockInvoke).toHaveBeenCalledWith('file_list', {
+      categoryId: 2,
+      query: 'kafka',
+      sortBy: undefined,
+      sortDesc: undefined,
+      conditions: undefined,
+      limit: undefined,
+      offset: undefined,
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      'file_search',
+      expect.anything(),
+    );
   });
 
   it('toggles favorite state through one narrow command', async () => {

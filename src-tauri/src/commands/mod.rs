@@ -134,11 +134,9 @@ pub struct MetadataInput {
     pub data_type: Option<String>,
 }
 
-/// Wire-format DTO: the frontend sends `metadataFilters: [{ key, value }]`
-/// on `file_search`, and the backend currently ignores the filter set
-/// (the `_metadata_filters` parameter is underscored). Keep the type so
-/// the IPC contract doesn't drift — removing it would error the
-/// frontend's `metadata_filters` payload at deserialization time.
+/// Wire-format DTO kept for the `file_search` thin alias's unused
+/// `_metadata_filters` parameter so older IPC payloads still deserialize.
+/// New callers should use `file_list` with `query` + `conditions` instead.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct MetadataFilter {

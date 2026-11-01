@@ -251,7 +251,7 @@ function HomePage() {
   }, [viewMode, selectedCategoryId, selectedCategorySchema.slug]);
 
   // Search filter for collections view. Flat view continues to search
-  // via the FTS-backed `file_search` (driven by `debouncedQuery` →
+  // via the FTS-backed `file_list` query (driven by `debouncedQuery` →
   // `viewKey` → `useView` → `fetchFiles`); but in 'author' / 'name_prefix'
   // mode the grid renders collection cards, not files. Keep a collection
   // visible when either its title or any hydrated member row matches.
