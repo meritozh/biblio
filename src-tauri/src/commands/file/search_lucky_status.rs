@@ -13,7 +13,8 @@ const FUZZY_MIN_CHARS: usize = 4;
 const FUZZY_VARIANT_CAP: usize = 16;
 
 /// What kind of SQL filter to apply for a typed search query. Returned by
-/// [`prepare_search_filter`] so `file_search` can pick the matching SQL.
+/// [`prepare_search_filter`] so `file_list` / `file_lucky` can pick the
+/// matching SQL.
 pub(super) enum SearchFilter {
     /// Use FTS5 `MATCH` with the given expression. Fast, ranked.
     Fts(String),
@@ -157,12 +158,15 @@ fn edit_distance_1_variants(term: &str) -> Vec<String> {
     out
 }
 
+/// Thin alias over [`listing::file_list`] with a required `query`. Kept so
+/// older callers / integration tests keep working; new code should invoke
+/// `file_list` with an optional `query` instead.
 #[tauri::command]
 pub async fn file_search(
     app: AppHandle,
     query: String,
     category_id: Option<i64>,
-    _tag_ids: Option<Vec<i64>>,
+    tag_ids: Option<Vec<i64>>,
     _metadata_filters: Option<Vec<MetadataFilter>>,
     sort_by: Option<String>,
     sort_desc: Option<bool>,
@@ -170,107 +174,19 @@ pub async fn file_search(
     limit: Option<i32>,
     offset: Option<i32>,
 ) -> Result<FileListResponse, String> {
-    let instances = app.state::<DbInstances>();
-    let pool = get_sqlite_pool(&instances, "sqlite:biblio.db")?;
-
-    let limit = limit.unwrap_or(50);
-    let offset = offset.unwrap_or(0);
-    // The aliased form is needed because the search query joins `files_fts`
-    // and references columns through `f.`. `field:<key>` adds a metadata
-    // JOIN for custom-schema-field sorting.
-    let sort_desc = sort_desc.unwrap_or(true);
-    let (sort_join, order_by) = match sort_by.as_deref() {
-        Some(s) if s.starts_with("field:") => {
-            match custom_sort_clause(&pool, s, sort_desc, "f").await {
-                Some((join, order)) => (join, order),
-                None => (String::new(), order_by_clause(sort_by.as_deref(), sort_desc, "f")),
-            }
-        }
-        _ => (String::new(), order_by_clause(sort_by.as_deref(), sort_desc, "f")),
-    };
-    let (filter_sql, filter_binds) = build_filter_sql(conditions.as_deref().unwrap_or(&[]), "f");
-
-    // If the user's query sanitizes to nothing, return an empty result set
-    // with total = 0. The frontend routes empty queries to `file_list`, so
-    // this path really only covers the all-punctuation / all-whitespace
-    // edge case.
-    let Some(filter) = prepare_search_filter(&query) else {
-        return Ok(FileListResponse {
-            files: Vec::new(),
-            total: 0,
-        });
-    };
-
-    // Same pattern as file_list: build the WHERE once and share it between
-    // the row query and the count query so `total` matches what's loadable.
-    let mut where_tail = String::new();
-    if let Some(cat_id) = category_id {
-        where_tail.push_str(&format!(" AND f.category_id = {}", cat_id));
-    }
-    where_tail.push_str(&filter_sql);
-
-    let (row_query, count_query, bind_value) = match &filter {
-        SearchFilter::Fts(expr) => (
-            format!(
-                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.is_favorite, f.created_at, f.updated_at \
-                 FROM files f \
-                 JOIN files_fts ON files_fts.rowid = f.id{} \
-                 WHERE files_fts MATCH ?{} \
-                 {} LIMIT {} OFFSET {}",
-                sort_join, where_tail, order_by, limit, offset
-            ),
-            format!(
-                "SELECT COUNT(*) FROM files f \
-                 JOIN files_fts ON files_fts.rowid = f.id \
-                 WHERE files_fts MATCH ?{}",
-                where_tail
-            ),
-            expr.clone(),
-        ),
-        SearchFilter::Like(pattern) => (
-            format!(
-                "SELECT f.id, f.path, f.display_name, f.category_id, f.file_status, f.in_storage, f.original_path, f.progress, f.storage_kind, f.remote_provider, f.local_cache_path, f.is_favorite, f.created_at, f.updated_at \
-                 FROM files f{} \
-                 WHERE (f.display_name LIKE ? ESCAPE '\\' OR f.path LIKE ? ESCAPE '\\'){} \
-                 {} LIMIT {} OFFSET {}",
-                sort_join, where_tail, order_by, limit, offset
-            ),
-            format!(
-                "SELECT COUNT(*) FROM files f \
-                 WHERE (f.display_name LIKE ? ESCAPE '\\' OR f.path LIKE ? ESCAPE '\\'){}",
-                where_tail
-            ),
-            pattern.clone(),
-        ),
-    };
-
-    let mut row_stmt = sqlx::query_as::<_, FileEntry>(&row_query).bind(&bind_value);
-    if matches!(filter, SearchFilter::Like(_)) {
-        row_stmt = row_stmt.bind(&bind_value);
-    }
-    for b in &filter_binds {
-        row_stmt = row_stmt.bind(b);
-    }
-    let files: Vec<FileEntry> = row_stmt.fetch_all(&pool).await.map_err(|e| e.to_string())?;
-
-    let mut count_stmt = sqlx::query_as::<_, (i64,)>(&count_query).bind(&bind_value);
-    if matches!(filter, SearchFilter::Like(_)) {
-        count_stmt = count_stmt.bind(&bind_value);
-    }
-    for b in &filter_binds {
-        count_stmt = count_stmt.bind(b);
-    }
-    let total: (i64,) = count_stmt
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let items = hydrate_file_items(&pool, files).await?;
-
-    Ok(FileListResponse {
-        files: items,
-        total: total.0,
-    })
+    super::listing::file_list(
+        app,
+        category_id,
+        tag_ids,
+        None,
+        sort_by,
+        sort_desc,
+        conditions,
+        Some(query),
+        limit,
+        offset,
+    )
+    .await
 }
 
 #[tauri::command]
