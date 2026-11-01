@@ -15,12 +15,18 @@ const authors: Author[] = [
 function Harness({
   onFreeTextCommit,
   onConditionsChange,
+  unstableLists = false,
 }: {
   onFreeTextCommit: (q: string) => void;
   onConditionsChange?: (c: Condition[]) => void;
+  unstableLists?: boolean;
 }) {
   const [freeText, setFreeText] = useState('');
   const [conditions, setConditions] = useState<Condition[]>([]);
+  // Simulate parent re-renders that pass new tags/authors array identities
+  // (e.g. after a debounced search fetch). Should not kill arrow navigation.
+  const tagProp = unstableLists ? tags.map((t) => ({ ...t })) : tags;
+  const authorProp = unstableLists ? authors.map((a) => ({ ...a })) : authors;
   return (
     <TokenSearchBar
       conditions={conditions}
@@ -31,8 +37,8 @@ function Harness({
       freeText={freeText}
       onFreeTextChange={setFreeText}
       onFreeTextCommit={onFreeTextCommit}
-      tags={tags}
-      authors={authors}
+      tags={tagProp}
+      authors={authorProp}
       debounceMs={300}
     />
   );
@@ -69,7 +75,6 @@ describe('TokenSearchBar', () => {
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'tag' } });
-    // Explicit click (or Tab) accepts a field — Space/Enter alone must not.
     fireEvent.click(screen.getByRole('button', { name: /Tags/i }));
     fireEvent.click(screen.getByRole('button', { name: 'sci-fi' }));
 
@@ -90,7 +95,6 @@ describe('TokenSearchBar', () => {
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'star' } });
-    // Space must not tokenize `star` into Favorite — allow "star wars".
     fireEvent.keyDown(input, { key: ' ' });
     fireEvent.change(input, { target: { value: 'star ' } });
     fireEvent.change(input, { target: { value: 'star wars' } });
@@ -98,6 +102,62 @@ describe('TokenSearchBar', () => {
 
     expect(onFreeTextCommit).toHaveBeenCalledWith('star wars');
     expect(onConditionsChange).not.toHaveBeenCalled();
+    // Plain Enter must not wipe the typed phrase.
+    expect((input as HTMLInputElement).value).toBe('star wars');
+  });
+
+  it('selects the arrow-highlighted field with Enter and keeps a pending chip', () => {
+    const onFreeTextCommit = vi.fn();
+    const onConditionsChange = vi.fn();
+    render(
+      <Harness onFreeTextCommit={onFreeTextCommit} onConditionsChange={onConditionsChange} />
+    );
+    const input = screen.getByRole('combobox');
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'tag' } });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    // Field accepted → pending Tags chip; free text cleared for value entry.
+    expect(screen.getByText('Tags')).toBeInTheDocument();
+    expect((input as HTMLInputElement).value).toBe('');
+    expect(onConditionsChange).not.toHaveBeenCalled();
+  });
+
+  it('keeps arrow highlight across parent re-renders then accepts with Enter', () => {
+    const onFreeTextCommit = vi.fn();
+    const onConditionsChange = vi.fn();
+    const { rerender } = render(
+      <Harness
+        onFreeTextCommit={onFreeTextCommit}
+        onConditionsChange={onConditionsChange}
+        unstableLists
+      />
+    );
+    const input = screen.getByRole('combobox');
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'tag' } });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+
+    // Debounced search / store updates re-render the parent with new array
+    // identities — highlight must survive so Enter still accepts.
+    rerender(
+      <Harness
+        onFreeTextCommit={onFreeTextCommit}
+        onConditionsChange={onConditionsChange}
+        unstableLists
+      />
+    );
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.getByText('Tags')).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+    const last = onConditionsChange.mock.calls.at(-1)?.[0] as Condition[];
+    expect(last).toHaveLength(1);
+    expect(last[0]).toMatchObject({ field: 'tags', op: 'includes', tagId: 1 });
   });
 
   it('accepts a value with Enter after arrow-selecting a field token', () => {
@@ -110,12 +170,10 @@ describe('TokenSearchBar', () => {
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'tag' } });
-    // Explicit arrow navigation unlocks Enter for field acceptance.
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'Enter' });
-    // Pending Tags chip; value list is open with the first tag highlighted.
-    // Enter must accept that value without requiring a second ArrowDown —
-    // listNavigated resets when suggestions swap after field selection.
+    // Value list open; Arrow then Enter picks sci-fi (or sole suggestion fallback).
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'Enter' });
 
     expect(onConditionsChange).toHaveBeenCalled();
@@ -136,7 +194,7 @@ describe('TokenSearchBar', () => {
     fireEvent.change(input, { target: { value: 'fav' } });
     fireEvent.mouseEnter(screen.getByRole('button', { name: /Favorite/i }));
     fireEvent.keyDown(input, { key: 'Enter' });
-    // Favorite value mode — two options; Enter accepts the highlighted one.
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'Enter' });
 
     const last = onConditionsChange.mock.calls.at(-1)?.[0] as Condition[];
@@ -152,7 +210,6 @@ describe('TokenSearchBar', () => {
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'tag' } });
     fireEvent.click(screen.getByRole('button', { name: /Tags/i }));
-    // Pending chip uses the field label; value suggestions are separate buttons.
     expect(screen.getByText('sci-fi')).toBeInTheDocument();
 
     fireEvent.keyDown(input, { key: 'Backspace' });
