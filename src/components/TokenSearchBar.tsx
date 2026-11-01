@@ -31,6 +31,12 @@ interface TokenSearchBarProps {
 /**
  * iOS Photos-style search: field keywords become filter chips via
  * autocomplete; leftover text is free-text search over title/path.
+ *
+ * Combobox keyboard model:
+ * - `highlight === -1`: no active candidate → Enter commits free text
+ * - ArrowUp/Down or hover moves `highlight` onto a candidate → Enter accepts it
+ * - Aliases like `star` / `tag` stay searchable as phrases unless the user
+ *   explicitly navigates the list (or clicks / Tab)
  */
 export function TokenSearchBar({
   conditions,
@@ -48,12 +54,9 @@ export function TokenSearchBar({
   const inputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [highlight, setHighlight] = useState(0);
+  /** `-1` = no active candidate (free-text Enter). `>= 0` = list selection. */
+  const [highlight, setHighlight] = useState(-1);
   const [pendingField, setPendingField] = useState<SearchFieldKey | null>(null);
-  // Arrow keys mark the listbox as "actively navigated". Enter only accepts
-  // a highlighted suggestion after that — plain Enter always commits free
-  // text, so aliases like `star` / `by` / `tag` can still be phrase search.
-  const [listNavigated, setListNavigated] = useState(false);
 
   const onCommitRef = useRef(onFreeTextCommit);
   useEffect(() => {
@@ -85,10 +88,20 @@ export function TokenSearchBar({
     return suggestFields(freeText);
   }, [open, pendingField, freeText, tags, authors]);
 
+  // Reset active candidate when the query or field-mode changes — not when
+  // the suggestions array merely gets a new identity from a parent re-render
+  // (that used to clear "listNavigated" and made Arrow+Enter fall through to
+  // a free-text commit that felt like the input resetting).
   useEffect(() => {
-    setHighlight(0);
-    setListNavigated(false);
-  }, [suggestions, pendingField]);
+    setHighlight(-1);
+  }, [freeText, pendingField]);
+
+  // Clamp highlight if the list shrinks under us (e.g. value filter narrows).
+  useEffect(() => {
+    if (highlight >= suggestions.length) {
+      setHighlight(suggestions.length > 0 ? suggestions.length - 1 : -1);
+    }
+  }, [suggestions.length, highlight]);
 
   useEffect(() => {
     const onPointerDown = (event: MouseEvent) => {
@@ -106,6 +119,7 @@ export function TokenSearchBar({
     onFreeTextChange('');
     onFreeTextCommit('');
     setOpen(false);
+    setHighlight(-1);
     inputRef.current?.focus();
   };
 
@@ -118,18 +132,33 @@ export function TokenSearchBar({
       setPendingField(suggestion.field);
       onFreeTextChange('');
       setOpen(true);
+      setHighlight(-1);
       inputRef.current?.focus();
       return;
     }
     addCondition(suggestion.condition);
   };
 
+  const acceptHighlight = (): boolean => {
+    if (!open || highlight < 0) return false;
+    const suggestion = suggestions[highlight];
+    if (!suggestion) return false;
+    selectSuggestion(suggestion);
+    return true;
+  };
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    // Don't steal Enter/Backspace while an IME candidate window is open.
+    if (event.nativeEvent.isComposing || event.keyCode === 229) {
+      return;
+    }
+
     if (event.key === 'Backspace' && freeText === '') {
       if (pendingField) {
         event.preventDefault();
         setPendingField(null);
         setOpen(false);
+        setHighlight(-1);
         return;
       }
       if (conditions.length > 0) {
@@ -144,31 +173,31 @@ export function TokenSearchBar({
         setPendingField(null);
         onFreeTextChange('');
         setOpen(false);
+        setHighlight(-1);
         return;
       }
       setOpen(false);
+      setHighlight(-1);
       return;
     }
 
     if (event.key === 'ArrowDown' && suggestions.length > 0) {
       event.preventDefault();
       setOpen(true);
-      setListNavigated(true);
-      setHighlight((h) => (listNavigated ? (h + 1) % suggestions.length : 0));
+      setHighlight((h) => (h < 0 ? 0 : (h + 1) % suggestions.length));
       return;
     }
     if (event.key === 'ArrowUp' && suggestions.length > 0) {
       event.preventDefault();
       setOpen(true);
-      setListNavigated(true);
       setHighlight((h) =>
-        listNavigated ? (h - 1 + suggestions.length) % suggestions.length : suggestions.length - 1
+        h < 0 ? suggestions.length - 1 : (h - 1 + suggestions.length) % suggestions.length
       );
       return;
     }
 
     // Tab explicitly accepts the highlighted suggestion (field or value).
-    if (event.key === 'Tab' && open && suggestions[highlight]) {
+    if (event.key === 'Tab' && open && highlight >= 0 && suggestions[highlight]) {
       event.preventDefault();
       selectSuggestion(suggestions[highlight]!);
       return;
@@ -177,13 +206,12 @@ export function TokenSearchBar({
     if (event.key === 'Enter') {
       event.preventDefault();
 
-      // Value-mode: the user already picked a field chip, so Enter accepts
-      // the highlighted value (no second arrow pass). `listNavigated` is
-      // reset when suggestions swap to values after field selection — requiring
-      // it here cleared the free-text buffer and then ate the confirming Enter.
       if (pendingField) {
-        if (open && suggestions[highlight]) {
-          selectSuggestion(suggestions[highlight]!);
+        // Value mode: Enter accepts the active candidate. If the user never
+        // arrowed/hovered, fall back to the sole suggestion or progress text.
+        if (acceptHighlight()) return;
+        if (suggestions.length === 1) {
+          selectSuggestion(suggestions[0]!);
           return;
         }
         if (pendingField === 'progress') {
@@ -196,16 +224,13 @@ export function TokenSearchBar({
         return;
       }
 
-      // Free-text mode: only accept a field suggestion after arrow / hover
-      // navigation. Plain Enter commits the typed phrase — including words
-      // that happen to be field aliases (`star wars`, `by the sea`, `tag team`).
-      if (open && listNavigated && suggestions[highlight]) {
-        selectSuggestion(suggestions[highlight]!);
-        return;
-      }
+      // Free-text mode: only accept a field candidate after arrow/hover
+      // moved highlight off -1. Plain Enter commits the typed phrase.
+      if (acceptHighlight()) return;
 
       onFreeTextCommit(freeText);
       setOpen(false);
+      setHighlight(-1);
     }
   };
 
@@ -215,6 +240,7 @@ export function TokenSearchBar({
     onFreeTextCommit('');
     onConditionsChange([]);
     setOpen(false);
+    setHighlight(-1);
     inputRef.current?.focus();
   };
 
@@ -273,7 +299,9 @@ export function TokenSearchBar({
 
         <input
           ref={inputRef}
-          type="search"
+          // `type="text"` — WebKit's search input can clear itself on Enter;
+          // we already hide the native clear control and own commit ourselves.
+          type="text"
           value={freeText}
           onChange={(e) => {
             onFreeTextChange(e.target.value);
@@ -282,11 +310,14 @@ export function TokenSearchBar({
           onFocus={() => setOpen(true)}
           onKeyDown={handleKeyDown}
           placeholder={inputPlaceholder}
-          className="min-w-[8rem] flex-1 bg-transparent py-1 text-[13px] outline-none placeholder:text-muted-foreground/80 [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
+          className="min-w-[8rem] flex-1 bg-transparent py-1 text-[13px] outline-none placeholder:text-muted-foreground/80"
           aria-label="Search files and filters"
           aria-autocomplete="list"
           aria-controls={listboxId}
           aria-expanded={open && suggestions.length > 0}
+          aria-activedescendant={
+            highlight >= 0 ? `${listboxId}-option-${highlight}` : undefined
+          }
           role="combobox"
         />
 
@@ -311,28 +342,23 @@ export function TokenSearchBar({
         >
           {suggestions.map((suggestion, index) => {
             const selected = index === highlight;
-            const label =
-              suggestion.kind === 'field'
-                ? suggestion.label
-                : suggestion.label;
+            const label = suggestion.label;
             const hint =
-              suggestion.kind === 'field'
-                ? suggestion.aliases[0]
-                : undefined;
+              suggestion.kind === 'field' ? suggestion.aliases[0] : undefined;
             return (
-              <li key={`${suggestion.kind}-${label}-${index}`} role="option" aria-selected={selected}>
+              <li
+                key={`${suggestion.kind}-${label}-${index}`}
+                id={`${listboxId}-option-${index}`}
+                role="option"
+                aria-selected={selected}
+              >
                 <button
                   type="button"
                   className={cn(
                     'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-sm',
                     selected ? 'bg-accent text-accent-foreground' : 'hover:bg-secondary/70'
                   )}
-                  onMouseEnter={() => {
-                    setHighlight(index);
-                    // Hover counts as explicit navigation so Enter can accept
-                    // a field suggestion without a prior ArrowDown.
-                    setListNavigated(true);
-                  }}
+                  onMouseEnter={() => setHighlight(index)}
                   onClick={() => selectSuggestion(suggestion)}
                 >
                   <span className="truncate font-medium">{label}</span>
