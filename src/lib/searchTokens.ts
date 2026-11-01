@@ -18,13 +18,7 @@ import {
 import type { Author, FileStatus, StorageKind, Tag } from '@/types';
 
 export type SearchFieldKey =
-  | 'authors'
-  | 'tags'
-  | 'local_cache'
-  | 'file_status'
-  | 'storage_kind'
-  | 'favorite'
-  | 'progress';
+  'authors' | 'tags' | 'local_cache' | 'file_status' | 'storage_kind' | 'favorite' | 'progress';
 
 export interface FieldSuggestion {
   kind: 'field';
@@ -97,9 +91,50 @@ export function suggestFields(query: string): FieldSuggestion[] {
   if (!q) return [...FIELD_CATALOG];
   return FIELD_CATALOG.filter(
     (f) =>
-      f.label.toLowerCase().startsWith(q) ||
-      f.aliases.some((a) => a.startsWith(q) || a.includes(q))
+      f.label.toLowerCase().startsWith(q) || f.aliases.some((a) => a.startsWith(q) || a.includes(q))
   );
+}
+
+const CONCRETE_FIELDS: readonly SearchFieldKey[] = [
+  'tags',
+  'authors',
+  'favorite',
+  'local_cache',
+  'file_status',
+  'storage_kind',
+];
+
+/**
+ * Free-text autocomplete. Concrete values (a tag, an author, Favorited, …)
+ * come first so Arrow+Enter can apply a finished filter. Field rows are the
+ * drill-in when the query only matches a keyword.
+ */
+export function suggestSearchList(
+  query: string,
+  opts: {
+    tags?: ReadonlyArray<Tag>;
+    authors?: ReadonlyArray<Author>;
+  } = {}
+): SearchSuggestion[] {
+  const q = normalize(query);
+  const concrete = q
+    ? CONCRETE_FIELDS.flatMap((field) => suggestFieldValues(field, query, opts))
+    : [];
+  return [...concrete, ...suggestFields(query)].slice(0, 12);
+}
+
+/**
+ * Text to keep as free-text search after a token is applied.
+ * A pure field keyword (`tag`) or a query that only picked the value
+ * (`sci` → `sci-fi`) is consumed. Any other phrase is kept.
+ */
+export function textAfterTokenPick(text: string, label: string, field: SearchFieldKey): string {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  const keyword = matchFieldKeyword(trimmed);
+  if (keyword?.field === field) return '';
+  if (label.toLowerCase().includes(trimmed.toLowerCase())) return '';
+  return trimmed;
 }
 
 /** Exact field keyword match (e.g. user typed `tag` + space/enter). */
@@ -107,8 +142,7 @@ export function matchFieldKeyword(query: string): FieldSuggestion | null {
   const q = normalize(query);
   if (!q) return null;
   return (
-    FIELD_CATALOG.find((f) => f.aliases.some((a) => a === q) || f.label.toLowerCase() === q) ??
-    null
+    FIELD_CATALOG.find((f) => f.aliases.some((a) => a === q) || f.label.toLowerCase() === q) ?? null
   );
 }
 
@@ -204,19 +238,17 @@ export function suggestFieldValues(
         } satisfies Condition,
       }));
     case 'favorite':
-      return FAVORITE_OPTIONS.filter((o) => !q || o.label.toLowerCase().includes(q)).map(
-        (o) => ({
-          kind: 'value' as const,
-          field,
-          label: o.label,
-          condition: {
-            id: makeId(),
-            field: 'favorite',
-            op: 'is',
-            value: o.value,
-          } satisfies Condition,
-        })
-      );
+      return FAVORITE_OPTIONS.filter((o) => !q || o.label.toLowerCase().includes(q)).map((o) => ({
+        kind: 'value' as const,
+        field,
+        label: o.label,
+        condition: {
+          id: makeId(),
+          field: 'favorite',
+          op: 'is',
+          value: o.value,
+        } satisfies Condition,
+      }));
     case 'progress': {
       if (!q) return [];
       return [
