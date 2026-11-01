@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Plus, X } from 'lucide-react';
+import { Bookmark, Plus, Trash2, X } from 'lucide-react';
 import {
   FIELD_LABELS,
   FAVORITE_OPTIONS,
@@ -21,6 +21,7 @@ import {
   OPS_BY_FIELD,
   OP_LABELS,
   STORAGE_KIND_OPTIONS,
+  describeCondition,
   newCondition,
   withField,
   withOp,
@@ -28,6 +29,13 @@ import {
   type Field,
   type Op,
 } from '@/lib/filters';
+import {
+  clonePresetConditions,
+  deleteSavedFilter,
+  listSavedFilters,
+  saveFilterPreset,
+  type SavedFilter,
+} from '@/lib/savedFilters';
 import { PaginatedPicker, type PickerPage } from '@/components/PaginatedPicker';
 import { authorList, tagList } from '@/lib/tauri';
 import type { FileStatus, StorageKind, Tag } from '@/types';
@@ -68,6 +76,9 @@ export function FilterEditor({
   // set on Apply. Live mode (the default) treats the prop array as the
   // single source of truth and writes through on every edit.
   const [draft, setDraft] = useState<Condition[]>(() => conditions.slice());
+  const [saved, setSaved] = useState<SavedFilter[]>(() => listSavedFilters());
+  const [saveName, setSaveName] = useState('');
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Re-sync the draft when the parent's `conditions` change while the
   // editor is mounted — typically only fires when the popover re-opens
@@ -79,6 +90,12 @@ export function FilterEditor({
   }, [bufferUntilApply, conditions]);
 
   const working = bufferUntilApply ? draft : conditions;
+
+  const tagsById = useMemo(() => new Map(tags.map((t) => [t.id, t])), [tags]);
+  const authorsById = useMemo(
+    () => new Map(authors.map((a) => [a.id, a])),
+    [authors]
+  );
 
   const commit = (next: Condition[]) => {
     if (bufferUntilApply) {
@@ -101,6 +118,28 @@ export function FilterEditor({
     commit([]);
   };
 
+  const refreshSaved = () => setSaved(listSavedFilters());
+
+  const handleSavePreset = () => {
+    try {
+      saveFilterPreset(saveName, working.slice());
+      setSaveName('');
+      setSaveError(null);
+      refreshSaved();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const handleApplyPreset = (preset: SavedFilter) => {
+    commit(clonePresetConditions(preset.conditions));
+  };
+
+  const handleDeletePreset = (id: string) => {
+    deleteSavedFilter(id);
+    refreshSaved();
+  };
+
   const handleApply = () => {
     onConditionsChange(draft);
     onClose?.();
@@ -111,52 +150,70 @@ export function FilterEditor({
   };
 
   return (
-    <div className="space-y-3 w-[460px]">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Filter conditions
-        </span>
-        {working.length > 0 && (
-          <button
-            type="button"
-            onClick={clearAll}
-            className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
-          >
-            Clear all
-          </button>
+    <div className="space-y-4 w-[460px]">
+      <SavedFiltersSection
+        presets={saved}
+        working={working}
+        saveName={saveName}
+        saveError={saveError}
+        tagsById={tagsById}
+        authorsById={authorsById}
+        onSaveNameChange={(value) => {
+          setSaveName(value);
+          setSaveError(null);
+        }}
+        onSave={handleSavePreset}
+        onApply={handleApplyPreset}
+        onDelete={handleDeletePreset}
+      />
+
+      <div className="space-y-3 border-t pt-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            Filter conditions
+          </span>
+          {working.length > 0 && (
+            <button
+              type="button"
+              onClick={clearAll}
+              className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+        {working.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-2">
+            No filters yet. Add a condition to narrow the library.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {working.map((c, i) => (
+              <li key={c.id}>
+                <ConditionRow
+                  condition={c}
+                  onChange={(next) => updateAt(i, next)}
+                  onRemove={() => removeAt(i)}
+                  tags={tags}
+                  authors={authors}
+                  customFields={customFields}
+                />
+              </li>
+            ))}
+          </ul>
         )}
-      </div>
-      {working.length === 0 ? (
-        <p className="text-xs text-muted-foreground py-2">
-          No filters yet. Add a condition to narrow the library.
-        </p>
-      ) : (
-        <ul className="space-y-2">
-          {working.map((c, i) => (
-            <li key={c.id}>
-              <ConditionRow
-                condition={c}
-                onChange={(next) => updateAt(i, next)}
-                onRemove={() => removeAt(i)}
-                tags={tags}
-                authors={authors}
-                customFields={customFields}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="pt-1">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 text-xs"
-          onClick={addCondition}
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Add condition
-        </Button>
+        <div className="pt-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={addCondition}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add condition
+          </Button>
+        </div>
       </div>
       {bufferUntilApply && (
         <div className="flex items-center justify-end gap-2 pt-2 border-t">
@@ -179,6 +236,105 @@ export function FilterEditor({
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+function SavedFiltersSection({
+  presets,
+  working,
+  saveName,
+  saveError,
+  tagsById,
+  authorsById,
+  onSaveNameChange,
+  onSave,
+  onApply,
+  onDelete,
+}: {
+  presets: SavedFilter[];
+  working: ReadonlyArray<Condition>;
+  saveName: string;
+  saveError: string | null;
+  tagsById: Map<number, Tag>;
+  authorsById: Map<number, { id: number; name: string }>;
+  onSaveNameChange: (value: string) => void;
+  onSave: () => void;
+  onApply: (preset: SavedFilter) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5">
+        <Bookmark className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Saved filters
+        </span>
+      </div>
+
+      {presets.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          Save the current conditions to reuse them later.
+        </p>
+      ) : (
+        <ul className="space-y-1.5 max-h-36 overflow-y-auto scrollbar-hidden">
+          {presets.map((preset) => (
+            <li
+              key={preset.id}
+              className="flex items-start gap-2 rounded-lg border border-border/60 bg-card px-2.5 py-2"
+            >
+              <button
+                type="button"
+                className="min-w-0 flex-1 text-left"
+                onClick={() => onApply(preset)}
+                title="Apply saved filter"
+              >
+                <div className="text-xs font-medium text-foreground truncate">{preset.name}</div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground line-clamp-2">
+                  {preset.conditions
+                    .map((c) => describeCondition(c, tagsById, authorsById))
+                    .join(' · ')}
+                </div>
+              </button>
+              <button
+                type="button"
+                className="shrink-0 rounded-md p-1 text-muted-foreground hover:text-destructive"
+                aria-label={`Delete saved filter ${preset.name}`}
+                onClick={() => onDelete(preset.id)}
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="flex items-center gap-2">
+        <Input
+          value={saveName}
+          onChange={(e) => onSaveNameChange(e.target.value)}
+          placeholder="Name this filter…"
+          className="h-8 text-xs"
+          aria-label="Saved filter name"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              onSave();
+            }
+          }}
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          className="h-8 shrink-0 text-xs"
+          disabled={working.length === 0 || saveName.trim().length === 0}
+          onClick={onSave}
+        >
+          Save
+        </Button>
+      </div>
+      {saveError && <p className="text-[11px] text-destructive">{saveError}</p>}
     </div>
   );
 }
