@@ -100,6 +100,50 @@ describe('TokenSearchBar', () => {
     expect(onConditionsChange).not.toHaveBeenCalled();
   });
 
+  it('accepts a value with Enter after arrow-selecting a field token', () => {
+    const onFreeTextCommit = vi.fn();
+    const onConditionsChange = vi.fn();
+    render(
+      <Harness onFreeTextCommit={onFreeTextCommit} onConditionsChange={onConditionsChange} />
+    );
+    const input = screen.getByRole('combobox');
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'tag' } });
+    // Explicit arrow navigation unlocks Enter for field acceptance.
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    // Pending Tags chip; value list is open with the first tag highlighted.
+    // Enter must accept that value without requiring a second ArrowDown —
+    // listNavigated resets when suggestions swap after field selection.
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(onConditionsChange).toHaveBeenCalled();
+    const last = onConditionsChange.mock.calls.at(-1)?.[0] as Condition[];
+    expect(last).toHaveLength(1);
+    expect(last[0]).toMatchObject({ field: 'tags', op: 'includes', tagId: 1 });
+    expect(screen.getByText(/Tags includes sci-fi/i)).toBeInTheDocument();
+  });
+
+  it('accepts a hovered field suggestion with Enter', () => {
+    const onConditionsChange = vi.fn();
+    render(
+      <Harness onFreeTextCommit={vi.fn()} onConditionsChange={onConditionsChange} />
+    );
+    const input = screen.getByRole('combobox');
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'fav' } });
+    fireEvent.mouseEnter(screen.getByRole('button', { name: /Favorite/i }));
+    fireEvent.keyDown(input, { key: 'Enter' });
+    // Favorite value mode — two options; Enter accepts the highlighted one.
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    const last = onConditionsChange.mock.calls.at(-1)?.[0] as Condition[];
+    expect(last).toHaveLength(1);
+    expect(last[0]).toMatchObject({ field: 'favorite', op: 'is' });
+  });
+
   it('cancels a pending field token with Backspace', () => {
     const onFreeTextCommit = vi.fn();
     render(<Harness onFreeTextCommit={onFreeTextCommit} />);
