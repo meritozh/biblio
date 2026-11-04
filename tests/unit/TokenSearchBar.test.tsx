@@ -77,6 +77,7 @@ describe('TokenSearchBar', () => {
     expect(last).toHaveLength(1);
     expect(last[0]).toMatchObject({ field: 'tags', op: 'includes', tagId: 1 });
     expect(screen.getByText(/Tags includes sci-fi/i)).toBeInTheDocument();
+    expect((input as HTMLInputElement).value).toBe('tag');
   });
 
   it('keeps alias words as free-text phrases on Space and Enter', () => {
@@ -109,12 +110,9 @@ describe('TokenSearchBar', () => {
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'Enter' });
 
-    // Field accepted → pending Tags chip. The typed query is parked, not discarded,
-    // and the search stays on that text until a value is chosen.
+    // Field accepted → pending Tags chip. The typed query stays in the box.
     expect(screen.getByText('Tags')).toBeInTheDocument();
-    expect(screen.getByText('“tag”')).toBeInTheDocument();
-    expect((input as HTMLInputElement).value).toBe('');
-    expect(onFreeTextCommit).toHaveBeenCalledWith('tag');
+    expect((input as HTMLInputElement).value).toBe('tag');
     expect(onFreeTextCommit).not.toHaveBeenCalledWith('');
     expect(onConditionsChange).not.toHaveBeenCalled();
   });
@@ -147,11 +145,15 @@ describe('TokenSearchBar', () => {
 
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(screen.getByText('Tags')).toBeInTheDocument();
+    expect((input as HTMLInputElement).value).toBe('tag');
+    expect(onConditionsChange).not.toHaveBeenCalled();
 
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'Enter' });
     const last = onConditionsChange.mock.calls.at(-1)?.[0] as Condition[];
     expect(last).toHaveLength(1);
     expect(last[0]).toMatchObject({ field: 'tags', op: 'includes', tagId: 1 });
+    expect((input as HTMLInputElement).value).toBe('tag');
   });
 
   it('accepts a value with Enter after arrow-selecting a field token', () => {
@@ -164,7 +166,12 @@ describe('TokenSearchBar', () => {
     fireEvent.change(input, { target: { value: 'tag' } });
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'Enter' });
-    // Value list opens with the first tag armed — Enter applies it (no second arrow).
+    expect((input as HTMLInputElement).value).toBe('tag');
+    // Second Enter must not invent a value. Arrow onto one, then Enter.
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onConditionsChange).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'Enter' });
 
     expect(onConditionsChange).toHaveBeenCalled();
@@ -172,6 +179,8 @@ describe('TokenSearchBar', () => {
     expect(last).toHaveLength(1);
     expect(last[0]).toMatchObject({ field: 'tags', op: 'includes', tagId: 1 });
     expect(screen.getByText(/Tags includes sci-fi/i)).toBeInTheDocument();
+    expect((input as HTMLInputElement).value).toBe('tag');
+    expect(onFreeTextCommit).toHaveBeenCalledWith('tag');
   });
 
   it('does not apply the auto-armed first value when Tab follows a field pick', () => {
@@ -224,9 +233,8 @@ describe('TokenSearchBar', () => {
     expect(last).toHaveLength(1);
     expect(last[0]).toMatchObject({ field: 'tags', op: 'includes', tagId: 1 });
     expect(screen.getByText(/Tags includes sci-fi/i)).toBeInTheDocument();
-    // The pick consumed the query; it must not leave a blank search with no chip.
-    expect(onFreeTextCommit).toHaveBeenCalledWith('');
-    expect((input as HTMLInputElement).value).toBe('');
+    expect(onFreeTextCommit).toHaveBeenCalledWith('sci');
+    expect((input as HTMLInputElement).value).toBe('sci');
   });
 
   it('accepts a hovered value suggestion with Enter', () => {
@@ -242,9 +250,10 @@ describe('TokenSearchBar', () => {
     const last = onConditionsChange.mock.calls.at(-1)?.[0] as Condition[];
     expect(last).toHaveLength(1);
     expect(last[0]).toMatchObject({ field: 'favorite', op: 'is', value: true });
+    expect((input as HTMLInputElement).value).toBe('fav');
   });
 
-  it('cancels a pending field token with Backspace', () => {
+  it('cancels a pending field token with Escape and keeps the typed text', () => {
     const onFreeTextCommit = vi.fn();
     render(<Harness onFreeTextCommit={onFreeTextCommit} />);
     const input = screen.getByRole('combobox');
@@ -254,8 +263,9 @@ describe('TokenSearchBar', () => {
     fireEvent.click(screen.getByRole('button', { name: /Tags/i }));
     expect(screen.getByText('sci-fi')).toBeInTheDocument();
 
-    fireEvent.keyDown(input, { key: 'Backspace' });
+    fireEvent.keyDown(input, { key: 'Escape' });
     expect(screen.queryByText('sci-fi')).not.toBeInTheDocument();
+    expect((input as HTMLInputElement).value).toBe('tag');
   });
 
   it('clears free text and conditions together', () => {
