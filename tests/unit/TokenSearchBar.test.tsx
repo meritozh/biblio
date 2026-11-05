@@ -263,6 +263,46 @@ describe('TokenSearchBar', () => {
     expect((input as HTMLInputElement).value).toBe('fav');
   });
 
+  it('does not turn the leftover progress keyword into a filter', () => {
+    const onConditionsChange = vi.fn();
+    render(<Harness onFreeTextCommit={vi.fn()} onConditionsChange={onConditionsChange} />);
+    const input = screen.getByRole('combobox');
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'progress' } });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(onConditionsChange).not.toHaveBeenCalled();
+    expect((input as HTMLInputElement).value).toBe('progress');
+  });
+
+  it('uses only text typed after the field keyword to filter values and progress', () => {
+    const onConditionsChange = vi.fn();
+    render(<Harness onFreeTextCommit={vi.fn()} onConditionsChange={onConditionsChange} />);
+    const input = screen.getByRole('combobox');
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'tag' } });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    // Next keystroke used to search for the whole "tags" string and hide every tag.
+    fireEvent.change(input, { target: { value: 'tags' } });
+    expect(screen.getByText('sci-fi')).toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: 'Escape' });
+    fireEvent.change(input, { target: { value: 'progress' } });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.change(input, { target: { value: 'progress完结' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    const last = onConditionsChange.mock.calls.at(-1)?.[0] as Condition[];
+    expect(last).toHaveLength(1);
+    expect(last[0]).toMatchObject({ field: 'progress', op: 'contains', text: '完结' });
+  });
+
   it('cancels a pending field token with Escape and keeps the typed text', () => {
     const onFreeTextCommit = vi.fn();
     render(<Harness onFreeTextCommit={onFreeTextCommit} />);

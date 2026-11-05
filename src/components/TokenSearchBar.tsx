@@ -3,7 +3,6 @@ import { Button } from '@/components/ui/button';
 import { Search, X } from 'lucide-react';
 import { describeCondition, type Condition } from '@/lib/filters';
 import {
-  matchFieldKeyword,
   progressContainsCondition,
   suggestFieldValues,
   suggestSearchList,
@@ -38,16 +37,22 @@ interface TokenSearchBarProps {
  * - ArrowUp/Down or hover moves `highlight` onto a candidate → Enter accepts it
  * - A value candidate becomes a filter chip. The typed text stays in the box
  *   and is committed with the chip, so the list refreshes and nothing is wiped
- * - A field candidate opens that field's values without clearing the box
+ * - A field candidate opens that field's values without clearing the box.
+ *   Characters typed after that are the value filter; the keyword itself is not.
  * - Aliases like `star` / `tag` stay searchable as phrases unless the user
  *   explicitly navigates the list (or clicks / Tab)
  */
 
-/** Value-list filter. A bare field keyword (`tag`) must not hide every value. */
-function valueQueryFor(field: SearchFieldKey, text: string): string {
-  const trimmed = text.trim();
-  if (matchFieldKeyword(trimmed)?.field === field) return '';
-  return trimmed;
+/**
+ * Text used to narrow values after a field is opened.
+ * `prefix` is the box contents at the moment the field was chosen. Only the
+ * suffix typed afterwards counts, so `tag` + `s` filters by `s`, and a bare
+ * `progress` is not a progress-contains value.
+ */
+function valueQueryAfterField(prefix: string, text: string): string {
+  if (text === prefix || text.trim() === prefix.trim()) return '';
+  if (text.startsWith(prefix)) return text.slice(prefix.length).trimStart();
+  return text.trim();
 }
 export function TokenSearchBar({
   conditions,
@@ -77,6 +82,9 @@ export function TokenSearchBar({
    *  not make Tab accept that row and trap focus. */
   const [highlightChosen, setHighlightChosen] = useState(false);
   const [pendingField, setPendingField] = useState<SearchFieldKey | null>(null);
+  /** Box contents when the pending field was opened. Value filtering and
+   *  progress Enter use only what was typed after this. */
+  const [fieldPrefix, setFieldPrefix] = useState<string | null>(null);
 
   const onCommitRef = useRef(onFreeTextCommit);
   useEffect(() => {
@@ -101,13 +109,13 @@ export function TokenSearchBar({
   const suggestions: SearchSuggestion[] = useMemo(() => {
     if (!open) return [];
     if (pendingField) {
-      return suggestFieldValues(pendingField, valueQueryFor(pendingField, freeText), {
+      return suggestFieldValues(pendingField, valueQueryAfterField(fieldPrefix ?? '', freeText), {
         tags,
         authors,
       });
     }
     return suggestSearchList(freeText, { tags, authors });
-  }, [open, pendingField, freeText, tags, authors]);
+  }, [open, pendingField, fieldPrefix, freeText, tags, authors]);
 
   // Clamp highlight if the list shrinks under us (e.g. value filter narrows).
   // Do not reset highlight when `suggestions` gets a new array identity —
@@ -129,9 +137,14 @@ export function TokenSearchBar({
     return () => window.removeEventListener('mousedown', onPointerDown);
   }, []);
 
+  const leaveField = () => {
+    setPendingField(null);
+    setFieldPrefix(null);
+  };
+
   const addCondition = (condition: Condition) => {
     onConditionsChange([...conditions, condition]);
-    setPendingField(null);
+    leaveField();
     // Keep whatever the user typed. The chip is added beside it, and the
     // current text is committed so the list refreshes with both.
     onFreeTextCommit(freeText);
@@ -150,6 +163,7 @@ export function TokenSearchBar({
       // Open the value list. Do not clear the box — that was the "Enter reset
       // the search" bug. A bare keyword is ignored when filtering values.
       setPendingField(suggestion.field);
+      setFieldPrefix(freeText);
       setOpen(true);
       setHighlight(-1);
       setHighlightChosen(false);
@@ -176,7 +190,7 @@ export function TokenSearchBar({
     if (event.key === 'Backspace' && freeText === '') {
       if (pendingField) {
         event.preventDefault();
-        setPendingField(null);
+        leaveField();
         setOpen(false);
         setHighlight(-1);
         setHighlightChosen(false);
@@ -191,7 +205,7 @@ export function TokenSearchBar({
 
     if (event.key === 'Escape') {
       if (pendingField) {
-        setPendingField(null);
+        leaveField();
         setOpen(false);
         setHighlight(-1);
         setHighlightChosen(false);
@@ -243,7 +257,8 @@ export function TokenSearchBar({
         // just because the value list opened, and do not clear the text.
         if (acceptHighlight()) return;
         if (pendingField === 'progress') {
-          const condition = progressContainsCondition(freeText);
+          const typed = valueQueryAfterField(fieldPrefix ?? '', freeText);
+          const condition = progressContainsCondition(typed);
           if (condition) {
             addCondition(condition);
             return;
@@ -264,7 +279,7 @@ export function TokenSearchBar({
   };
 
   const handleClear = () => {
-    setPendingField(null);
+    leaveField();
     onFreeTextChange('');
     onFreeTextCommit('');
     onConditionsChange([]);
