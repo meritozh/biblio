@@ -49,6 +49,16 @@ describe('TokenSearchBar', () => {
     vi.useRealTimers();
   });
 
+  it('turns off the platform typo tip so ArrowDown reaches the list', () => {
+    render(<Harness onFreeTextCommit={vi.fn()} />);
+    const input = screen.getByRole('combobox');
+
+    expect(input).toHaveAttribute('spellcheck', 'false');
+    expect(input).toHaveAttribute('autocorrect', 'off');
+    expect(input).toHaveAttribute('autocomplete', 'off');
+    expect(input).toHaveAttribute('writingsuggestions', 'false');
+  });
+
   it('commits free text after debounce', () => {
     const onFreeTextCommit = vi.fn();
     render(<Harness onFreeTextCommit={onFreeTextCommit} />);

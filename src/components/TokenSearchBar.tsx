@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Search, X } from 'lucide-react';
 import { describeCondition, type Condition } from '@/lib/filters';
@@ -63,6 +63,12 @@ export function TokenSearchBar({
 }: TokenSearchBarProps) {
   const listboxId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
+  const setInputRef = useCallback((node: HTMLInputElement | null) => {
+    inputRef.current = node;
+    // Not in React's input typings. macOS uses this to show the typo /
+    // writing-suggestion popup that swallows ArrowDown.
+    node?.setAttribute('writingsuggestions', 'false');
+  }, []);
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   /** `-1` = no active candidate (free-text Enter). `>= 0` = list selection. */
@@ -322,10 +328,16 @@ export function TokenSearchBar({
         )}
 
         <input
-          ref={inputRef}
+          ref={setInputRef}
           // `type="text"` — WebKit's search input can clear itself on Enter;
           // we already hide the native clear control and own commit ourselves.
+          // Spellcheck is off: on macOS the typo tip consumes ArrowDown
+          // before this combobox sees it. `writingsuggestions` is set in the ref.
           type="text"
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          autoComplete="off"
           value={freeText}
           onChange={(e) => {
             onFreeTextChange(e.target.value);
