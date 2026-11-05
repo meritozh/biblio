@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Search, X } from 'lucide-react';
 import { describeCondition, type Condition } from '@/lib/filters';
@@ -6,7 +6,6 @@ import {
   progressContainsCondition,
   suggestFieldValues,
   suggestSearchList,
-  textAfterTokenPick,
   type SearchFieldKey,
   type SearchSuggestion,
 } from '@/lib/searchTokens';
@@ -36,12 +35,25 @@ interface TokenSearchBarProps {
  * Combobox keyboard model:
  * - `highlight === -1`: no active candidate → Enter commits free text
  * - ArrowUp/Down or hover moves `highlight` onto a candidate → Enter accepts it
- * - A value candidate becomes a filter chip and refreshes the list
- * - A field candidate opens that field's values; the typed query stays as a
- *   chip and keeps searching (it is not discarded)
+ * - A value candidate becomes a filter chip. The typed text stays in the box
+ *   and is committed with the chip, so the list refreshes and nothing is wiped
+ * - A field candidate opens that field's values without clearing the box.
+ *   Characters typed after that are the value filter; the keyword itself is not.
  * - Aliases like `star` / `tag` stay searchable as phrases unless the user
  *   explicitly navigates the list (or clicks / Tab)
  */
+
+/**
+ * Text used to narrow values after a field is opened.
+ * `prefix` is the box contents at the moment the field was chosen. Only the
+ * suffix typed afterwards counts, so `tag` + `s` filters by `s`, and a bare
+ * `progress` is not a progress-contains value.
+ */
+function valueQueryAfterField(prefix: string, text: string): string {
+  if (text === prefix || text.trim() === prefix.trim()) return '';
+  if (text.startsWith(prefix)) return text.slice(prefix.length).trimStart();
+  return text.trim();
+}
 export function TokenSearchBar({
   conditions,
   onConditionsChange,
@@ -56,6 +68,12 @@ export function TokenSearchBar({
 }: TokenSearchBarProps) {
   const listboxId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
+  const setInputRef = useCallback((node: HTMLInputElement | null) => {
+    inputRef.current = node;
+    // Not in React's input typings. macOS uses this to show the typo /
+    // writing-suggestion popup that swallows ArrowDown.
+    node?.setAttribute('writingsuggestions', 'false');
+  }, []);
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   /** `-1` = no active candidate (free-text Enter). `>= 0` = list selection. */
@@ -64,8 +82,9 @@ export function TokenSearchBar({
    *  not make Tab accept that row and trap focus. */
   const [highlightChosen, setHighlightChosen] = useState(false);
   const [pendingField, setPendingField] = useState<SearchFieldKey | null>(null);
-  /** Query parked while picking a field value, so Enter doesn't wipe the search. */
-  const [heldQuery, setHeldQuery] = useState<string | null>(null);
+  /** Box contents when the pending field was opened. Value filtering and
+   *  progress Enter use only what was typed after this. */
+  const [fieldPrefix, setFieldPrefix] = useState<string | null>(null);
 
   const onCommitRef = useRef(onFreeTextCommit);
   useEffect(() => {
@@ -78,13 +97,11 @@ export function TokenSearchBar({
       isFirstRun.current = false;
       return;
     }
-    // Don't debounce-commit while composing a structured token value.
-    if (pendingField) return;
     const id = window.setTimeout(() => {
       onCommitRef.current(freeText);
     }, debounceMs);
     return () => window.clearTimeout(id);
-  }, [freeText, debounceMs, pendingField]);
+  }, [freeText, debounceMs]);
 
   const tagsById = useMemo(() => new Map(tags.map((t) => [t.id, t])), [tags]);
   const authorsById = useMemo(() => new Map(authors.map((a) => [a.id, a])), [authors]);
@@ -92,10 +109,13 @@ export function TokenSearchBar({
   const suggestions: SearchSuggestion[] = useMemo(() => {
     if (!open) return [];
     if (pendingField) {
-      return suggestFieldValues(pendingField, freeText, { tags, authors });
+      return suggestFieldValues(pendingField, valueQueryAfterField(fieldPrefix ?? '', freeText), {
+        tags,
+        authors,
+      });
     }
     return suggestSearchList(freeText, { tags, authors });
-  }, [open, pendingField, freeText, tags, authors]);
+  }, [open, pendingField, fieldPrefix, freeText, tags, authors]);
 
   // Clamp highlight if the list shrinks under us (e.g. value filter narrows).
   // Do not reset highlight when `suggestions` gets a new array identity —
@@ -117,12 +137,17 @@ export function TokenSearchBar({
     return () => window.removeEventListener('mousedown', onPointerDown);
   }, []);
 
-  const addCondition = (condition: Condition, nextQuery: string) => {
-    onConditionsChange([...conditions, condition]);
+  const leaveField = () => {
     setPendingField(null);
-    setHeldQuery(null);
-    onFreeTextChange(nextQuery);
-    onFreeTextCommit(nextQuery);
+    setFieldPrefix(null);
+  };
+
+  const addCondition = (condition: Condition) => {
+    onConditionsChange([...conditions, condition]);
+    leaveField();
+    // Keep whatever the user typed. The chip is added beside it, and the
+    // current text is committed so the list refreshes with both.
+    onFreeTextCommit(freeText);
     setOpen(false);
     setHighlight(-1);
     setHighlightChosen(false);
@@ -135,27 +160,17 @@ export function TokenSearchBar({
 
   const selectSuggestion = (suggestion: SearchSuggestion) => {
     if (suggestion.kind === 'field') {
-      // Park the typed query and keep it searching. The input clears only so
-      // the value list isn't filtered by the field keyword itself.
-      const current = freeText.trim();
-      if (current) {
-        setHeldQuery(current);
-        onFreeTextCommit(current);
-      }
+      // Open the value list. Do not clear the box — that was the "Enter reset
+      // the search" bug. A bare keyword is ignored when filtering values.
       setPendingField(suggestion.field);
-      onFreeTextChange('');
+      setFieldPrefix(freeText);
       setOpen(true);
-      // Arm the first value for a follow-up Enter, but not for Tab.
-      setHighlight(0);
+      setHighlight(-1);
       setHighlightChosen(false);
       inputRef.current?.focus();
       return;
     }
-    const source = pendingField ? (heldQuery ?? '') : freeText;
-    addCondition(
-      suggestion.condition,
-      textAfterTokenPick(source, suggestion.label, suggestion.field)
-    );
+    addCondition(suggestion.condition);
   };
 
   const acceptHighlight = (): boolean => {
@@ -175,10 +190,7 @@ export function TokenSearchBar({
     if (event.key === 'Backspace' && freeText === '') {
       if (pendingField) {
         event.preventDefault();
-        const restore = heldQuery ?? '';
-        setPendingField(null);
-        setHeldQuery(null);
-        onFreeTextChange(restore);
+        leaveField();
         setOpen(false);
         setHighlight(-1);
         setHighlightChosen(false);
@@ -193,10 +205,7 @@ export function TokenSearchBar({
 
     if (event.key === 'Escape') {
       if (pendingField) {
-        const restore = heldQuery ?? '';
-        setPendingField(null);
-        setHeldQuery(null);
-        onFreeTextChange(restore);
+        leaveField();
         setOpen(false);
         setHighlight(-1);
         setHighlightChosen(false);
@@ -225,8 +234,8 @@ export function TokenSearchBar({
       return;
     }
 
-    // Tab accepts only a row the user arrowed to or hovered. The first value
-    // armed after a field pick is for Enter; Tab must leave the combobox.
+    // Tab accepts only a row the user arrowed to or hovered. Opening a field
+    // does not arm a value, so Tab leaves the combobox.
     if (
       event.key === 'Tab' &&
       open &&
@@ -244,18 +253,14 @@ export function TokenSearchBar({
       event.stopPropagation();
 
       if (pendingField) {
-        // Value mode: Enter accepts the armed candidate (arrow, hover, or
-        // the first value highlighted when the field was chosen).
+        // Only a row the user arrowed to or hovered. Do not apply index 0
+        // just because the value list opened, and do not clear the text.
         if (acceptHighlight()) return;
-        if (suggestions.length === 1) {
-          selectSuggestion(suggestions[0]!);
-          return;
-        }
         if (pendingField === 'progress') {
-          const condition = progressContainsCondition(freeText);
+          const typed = valueQueryAfterField(fieldPrefix ?? '', freeText);
+          const condition = progressContainsCondition(typed);
           if (condition) {
-            const label = 'text' in condition && condition.text ? condition.text : freeText;
-            addCondition(condition, textAfterTokenPick(heldQuery ?? '', label, 'progress'));
+            addCondition(condition);
             return;
           }
         }
@@ -274,8 +279,7 @@ export function TokenSearchBar({
   };
 
   const handleClear = () => {
-    setPendingField(null);
-    setHeldQuery(null);
+    leaveField();
     onFreeTextChange('');
     onFreeTextCommit('');
     onConditionsChange([]);
@@ -293,8 +297,7 @@ export function TokenSearchBar({
       ? 'Add filter or search…'
       : placeholder;
 
-  const showClear =
-    freeText.length > 0 || conditions.length > 0 || pendingField != null || heldQuery != null;
+  const showClear = freeText.length > 0 || conditions.length > 0 || pendingField != null;
 
   return (
     <div ref={rootRef} className={cn('relative w-full', className)}>
@@ -327,12 +330,6 @@ export function TokenSearchBar({
           </span>
         ))}
 
-        {heldQuery && (
-          <span className="inline-flex h-6 max-w-[180px] items-center rounded-md bg-muted px-1.5 text-[11px] font-medium text-foreground">
-            <span className="truncate">“{heldQuery}”</span>
-          </span>
-        )}
-
         {pendingField && (
           <span className="inline-flex h-6 items-center rounded-md bg-primary/10 px-1.5 text-[11px] font-medium text-primary">
             {pendingField === 'local_cache'
@@ -346,10 +343,16 @@ export function TokenSearchBar({
         )}
 
         <input
-          ref={inputRef}
+          ref={setInputRef}
           // `type="text"` — WebKit's search input can clear itself on Enter;
           // we already hide the native clear control and own commit ourselves.
+          // Spellcheck is off: on macOS the typo tip consumes ArrowDown
+          // before this combobox sees it. `writingsuggestions` is set in the ref.
           type="text"
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          autoComplete="off"
           value={freeText}
           onChange={(e) => {
             onFreeTextChange(e.target.value);

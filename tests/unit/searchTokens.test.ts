@@ -4,7 +4,6 @@ import {
   suggestFieldValues,
   suggestFields,
   suggestSearchList,
-  textAfterTokenPick,
 } from '@/lib/searchTokens';
 import type { Author, Tag } from '@/types';
 
@@ -34,12 +33,6 @@ describe('searchTokens', () => {
   it('lists a concrete tag value ahead of the field drill-in', () => {
     const hits = suggestSearchList('sci', { tags, authors });
     expect(hits[0]).toMatchObject({ kind: 'value', field: 'tags', label: 'sci-fi' });
-  });
-
-  it('consumes a keyword or a value prefix and keeps other phrases', () => {
-    expect(textAfterTokenPick('tag', 'sci-fi', 'tags')).toBe('');
-    expect(textAfterTokenPick('sci', 'sci-fi', 'tags')).toBe('');
-    expect(textAfterTokenPick('star wars', 'Favorited', 'favorite')).toBe('star wars');
   });
 
   it('suggests author and tag values', () => {

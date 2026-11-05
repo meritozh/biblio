@@ -123,20 +123,6 @@ export function suggestSearchList(
   return [...concrete, ...suggestFields(query)].slice(0, 12);
 }
 
-/**
- * Text to keep as free-text search after a token is applied.
- * A pure field keyword (`tag`) or a query that only picked the value
- * (`sci` → `sci-fi`) is consumed. Any other phrase is kept.
- */
-export function textAfterTokenPick(text: string, label: string, field: SearchFieldKey): string {
-  const trimmed = text.trim();
-  if (!trimmed) return '';
-  const keyword = matchFieldKeyword(trimmed);
-  if (keyword?.field === field) return '';
-  if (label.toLowerCase().includes(trimmed.toLowerCase())) return '';
-  return trimmed;
-}
-
 /** Exact field keyword match (e.g. user typed `tag` + space/enter). */
 export function matchFieldKeyword(query: string): FieldSuggestion | null {
   const q = normalize(query);
