@@ -303,6 +303,33 @@ describe('TokenSearchBar', () => {
     expect(last[0]).toMatchObject({ field: 'progress', op: 'contains', text: '完结' });
   });
 
+  it('keeps a rewritten value that starts like the discarded keyword', () => {
+    const onConditionsChange = vi.fn();
+    render(<Harness onFreeTextCommit={vi.fn()} onConditionsChange={onConditionsChange} />);
+    const input = screen.getByRole('combobox');
+
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'tag' } });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    // Delete into the keyword, then type a new query that still starts with it.
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.change(input, { target: { value: 'tags' } });
+    expect(screen.queryByText('sci-fi')).not.toBeInTheDocument();
+
+    fireEvent.keyDown(input, { key: 'Escape' });
+    fireEvent.change(input, { target: { value: 'progress' } });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.change(input, { target: { value: 'progress' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    const last = onConditionsChange.mock.calls.at(-1)?.[0] as Condition[];
+    expect(last).toHaveLength(1);
+    expect(last[0]).toMatchObject({ field: 'progress', op: 'contains', text: 'progress' });
+  });
+
   it('cancels a pending field token with Escape and keeps the typed text', () => {
     const onFreeTextCommit = vi.fn();
     render(<Harness onFreeTextCommit={onFreeTextCommit} />);

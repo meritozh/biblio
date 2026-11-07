@@ -45,15 +45,18 @@ interface TokenSearchBarProps {
 
 /**
  * Text used to narrow values after a field is opened.
- * `prefix` is the box contents at the moment the field was chosen. Only the
- * suffix typed afterwards counts, so `tag` + `s` filters by `s`, and a bare
- * `progress` is not a progress-contains value.
+ * While the user is still extending the original keyword (`tag` → `tags`),
+ * only the suffix counts. Once they delete into that keyword, the frozen
+ * prefix is dropped so a rewritten value — even one that starts the same
+ * way, or the keyword typed again as a real progress value — is used whole.
  */
-function valueQueryAfterField(prefix: string, text: string): string {
+function valueQueryAfterField(prefix: string, text: string, released: boolean): string {
+  if (released) return text.trim();
   if (text === prefix || text.trim() === prefix.trim()) return '';
   if (text.startsWith(prefix)) return text.slice(prefix.length).trimStart();
   return text.trim();
 }
+
 export function TokenSearchBar({
   conditions,
   onConditionsChange,
@@ -83,8 +86,10 @@ export function TokenSearchBar({
   const [highlightChosen, setHighlightChosen] = useState(false);
   const [pendingField, setPendingField] = useState<SearchFieldKey | null>(null);
   /** Box contents when the pending field was opened. Value filtering and
-   *  progress Enter use only what was typed after this. */
+   *  progress Enter use only what was typed after this, until the user
+   *  deletes into that snapshot. */
   const [fieldPrefix, setFieldPrefix] = useState<string | null>(null);
+  const [prefixReleased, setPrefixReleased] = useState(false);
 
   const onCommitRef = useRef(onFreeTextCommit);
   useEffect(() => {
@@ -103,19 +108,25 @@ export function TokenSearchBar({
     return () => window.clearTimeout(id);
   }, [freeText, debounceMs]);
 
+  useEffect(() => {
+    if (fieldPrefix == null || prefixReleased) return;
+    if (!freeText.startsWith(fieldPrefix)) setPrefixReleased(true);
+  }, [freeText, fieldPrefix, prefixReleased]);
+
   const tagsById = useMemo(() => new Map(tags.map((t) => [t.id, t])), [tags]);
   const authorsById = useMemo(() => new Map(authors.map((a) => [a.id, a])), [authors]);
 
   const suggestions: SearchSuggestion[] = useMemo(() => {
     if (!open) return [];
     if (pendingField) {
-      return suggestFieldValues(pendingField, valueQueryAfterField(fieldPrefix ?? '', freeText), {
-        tags,
-        authors,
-      });
+      return suggestFieldValues(
+        pendingField,
+        valueQueryAfterField(fieldPrefix ?? '', freeText, prefixReleased),
+        { tags, authors }
+      );
     }
     return suggestSearchList(freeText, { tags, authors });
-  }, [open, pendingField, fieldPrefix, freeText, tags, authors]);
+  }, [open, pendingField, fieldPrefix, prefixReleased, freeText, tags, authors]);
 
   // Clamp highlight if the list shrinks under us (e.g. value filter narrows).
   // Do not reset highlight when `suggestions` gets a new array identity —
@@ -140,6 +151,7 @@ export function TokenSearchBar({
   const leaveField = () => {
     setPendingField(null);
     setFieldPrefix(null);
+    setPrefixReleased(false);
   };
 
   const addCondition = (condition: Condition) => {
@@ -164,6 +176,7 @@ export function TokenSearchBar({
       // the search" bug. A bare keyword is ignored when filtering values.
       setPendingField(suggestion.field);
       setFieldPrefix(freeText);
+      setPrefixReleased(false);
       setOpen(true);
       setHighlight(-1);
       setHighlightChosen(false);
@@ -257,7 +270,7 @@ export function TokenSearchBar({
         // just because the value list opened, and do not clear the text.
         if (acceptHighlight()) return;
         if (pendingField === 'progress') {
-          const typed = valueQueryAfterField(fieldPrefix ?? '', freeText);
+          const typed = valueQueryAfterField(fieldPrefix ?? '', freeText, prefixReleased);
           const condition = progressContainsCondition(typed);
           if (condition) {
             addCondition(condition);
