@@ -16,7 +16,7 @@ pub fn screen(app: App) -> AnyElement {
     scroll()
         .flex_1()
         .min_h_0()
-        .child(stack().child(title("Settings")).child(dynamic(move || {
+        .child(stack().child(heading("Settings")).child(dynamic(move || {
             app.revision.get();
             let db = app.db();
             app.load(
@@ -28,12 +28,15 @@ pub fn screen(app: App) -> AnyElement {
                         prefs::settings_get(db.clone(), "import_mode".into())
                             .await?
                             .unwrap_or_else(|| "move".into()),
+                        prefs::settings_get(db.clone(), "theme".into())
+                            .await?
+                            .unwrap_or_else(|| "system".into()),
                         llm::llm_config_get(db.clone()).await?,
                         remote::remote_config_get(db.clone()).await?,
                         recovery::db_get_stats(db).await?,
                     ))
                 },
-                move |(path, mode, config, remote, stats)| {
+                move |(path, mode, scheme, config, remote, stats)| {
                     let root = signal(path.clone());
                     let mut modes = wrap().child(label(format!("Import mode · {mode}")));
                     for mode in ["copy", "move"] {
@@ -45,23 +48,40 @@ pub fn screen(app: App) -> AnyElement {
                             ))
                         }));
                     }
-                    let mut themes = wrap().child(label("Appearance"));
+                    let scheme = signal(scheme.clone());
+                    let mut themes = wrap().child(label("Mode"));
                     for mode in ["system", "light", "dark"] {
-                        themes = themes.child(button(mode, move || {
-                            app.local_job(
-                                prefs::settings_set(app.db(), "theme".into(), mode.into()),
-                                move |_| set_color_scheme(appearance(mode)),
-                            )
-                        }));
+                        themes = themes.child(choice(
+                            mode,
+                            move || scheme.with(|s| s == mode),
+                            move || {
+                                app.local_job(
+                                    prefs::settings_set(app.db(), "theme".into(), mode.into()),
+                                    move |_| {
+                                        set_color_scheme(appearance(mode));
+                                        scheme.set(mode.into());
+                                    },
+                                )
+                            },
+                        ));
                     }
+                    let mut palettes = wrap().child(label("Palette"));
                     let palette = use_context::<Palette>().expect("workspace palette");
                     for (key, name) in [("porcelain", "Porcelain"), ("graphite", "Graphite")] {
-                        themes = themes.child(button(name, move || {
-                            app.job(
-                                prefs::settings_set(app.db(), "design-theme".into(), key.into()),
-                                move |_| palette.0.set(key == "graphite"),
-                            )
-                        }));
+                        palettes = palettes.child(choice(
+                            name,
+                            move || palette.0.get() == (key == "graphite"),
+                            move || {
+                                app.job(
+                                    prefs::settings_set(
+                                        app.db(),
+                                        "design-theme".into(),
+                                        key.into(),
+                                    ),
+                                    move |_| palette.0.set(key == "graphite"),
+                                )
+                            },
+                        ));
                     }
                     let (enabled, on) = check("Use LLM on import", config.enabled);
                     let (analyze, content) = check("Analyze file contents", config.analyze_content);
@@ -69,6 +89,8 @@ pub fn screen(app: App) -> AnyElement {
                     let model = signal(config.model.clone());
                     let secret = signal(config.api_key.clone());
                     stack()
+                        .max_w(px(760.))
+                        .child(section("Storage"))
                         .child(field("Storage folder", root))
                         .child(
                             wrap()
@@ -77,7 +99,7 @@ pub fn screen(app: App) -> AnyElement {
                                         root.set(dir.to_string_lossy().into_owned());
                                     }
                                 }))
-                                .child(button("Save storage folder", move || {
+                                .child(primary("Save storage folder", move || {
                                     app.save(prefs::settings_set(
                                         app.db(),
                                         "storage_path".into(),
@@ -86,8 +108,10 @@ pub fn screen(app: App) -> AnyElement {
                                 })),
                         )
                         .child(modes)
+                        .child(section("Appearance"))
                         .child(themes)
-                        .child(title("LLM"))
+                        .child(palettes)
+                        .child(section("Language model"))
                         .child(on)
                         .child(content)
                         .child(field("Base URL", url))
@@ -95,7 +119,7 @@ pub fn screen(app: App) -> AnyElement {
                         .child(input("API key", secret).masked(true))
                         .child(
                             wrap()
-                                .child(button("Save LLM settings", move || {
+                                .child(primary("Save LLM settings", move || {
                                     app.save(llm::llm_config_set(
                                         app.db(),
                                         llm::LlmConfig {
@@ -115,7 +139,7 @@ pub fn screen(app: App) -> AnyElement {
                                 })),
                         )
                         .child(remote_form(app, remote))
-                        .child(title("Database"))
+                        .child(section("Database"))
                         .child(label(format!(
                             "{} files · {} tags · {} categories · {} bytes",
                             stats.file_count,
@@ -149,7 +173,7 @@ pub fn screen(app: App) -> AnyElement {
         .into_element()
 }
 fn remote_form(app: App, config: &remote::RemoteConfig) -> AnyElement {
-    let mut s = stack().child(title("Baidu Netdisk"));
+    let mut s = stack().child(section("Baidu Netdisk"));
     if config.enabled {
         let key = signal(None::<String>);
         s = s

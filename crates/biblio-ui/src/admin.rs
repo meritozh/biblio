@@ -19,8 +19,13 @@ pub fn screen(app: App, page: Page) -> AnyElement {
     stack()
         .flex_1()
         .min_h_0()
-        .child(title(name))
-        .child(scroll().flex_1().min_h_0().child(body))
+        .child(heading(name))
+        .child(
+            scroll()
+                .flex_1()
+                .min_h_0()
+                .child(stack().max_w(px(840.)).child(body)),
+        )
         .into_element()
 }
 
@@ -37,7 +42,7 @@ fn names(app: App, tags: bool) -> AnyElement {
         .child(
             row()
                 .child(input("New name", new))
-                .child(button("Create", move || {
+                .child(primary("Create", move || {
                     let name = new.get_untracked();
                     let db = app.db();
                     app.local_job(
@@ -189,7 +194,7 @@ fn category_form(
         options = options.child(button(&s.schema.name, move || slug.set(id.clone())));
     }
     stack()
-        .child(label(if id.is_some() {
+        .child(section(if id.is_some() {
             "Edit category"
         } else {
             "New category"
@@ -199,7 +204,7 @@ fn category_form(
         .child(text(move || format!("Schema · {}", slug.get())).text_color(ink))
         .child(options)
         .child(field("View defaults (JSON)", config))
-        .child(button(
+        .child(primary(
             if id.is_some() {
                 "Update category"
             } else {
@@ -273,7 +278,7 @@ fn prompt_form(app: App, p: Option<PromptDraft>) -> AnyElement {
     let content = signal(c);
     let slug = signal(s);
     let step = signal(k);
-    let mut actions = wrap().child(button(
+    let mut actions = wrap().child(primary(
         if id == 0 {
             "Create prompt"
         } else {

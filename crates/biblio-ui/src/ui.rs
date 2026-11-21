@@ -1,3 +1,5 @@
+use crate::artwork::{Icon, icon};
+pub use crate::theme::*;
 use nsh_core::prelude::*;
 
 pub fn row() -> View {
@@ -9,67 +11,134 @@ pub fn wrap() -> View {
 pub fn stack() -> View {
     view().gap_3().min_w_0()
 }
-#[derive(Clone, Copy)]
-pub struct Palette(pub Signal<bool>);
-fn theme(light: u32, night: u32, warm: u32, warm_night: u32) -> Rgba {
-    let graphite = use_context::<Palette>().is_some_and(|p| p.0.get());
-    rgb(match (graphite, dark()) {
-        (false, false) => light,
-        (false, true) => night,
-        (true, false) => warm,
-        (true, true) => warm_night,
-    })
-}
-pub fn ink() -> Rgba {
-    theme(0x1b2430, 0xe0e5e9, 0x2a2723, 0xedeae4)
-}
-pub fn paper() -> Rgba {
-    theme(0xf4f6f8, 0x192026, 0xf3f2ef, 0x171513)
-}
-pub fn surface() -> Rgba {
-    theme(0xe8edf1, 0x28323b, 0xebe9e4, 0x2a2723)
-}
+pub const DISPLAY_FACE: &str = "Georgia, serif";
+
 pub fn label(s: impl Into<String>) -> Text {
-    text(s.into()).text_sm().text_color(ink)
+    text(s.into()).text_size(px(14.)).text_color(ink)
+}
+pub fn note(s: impl Into<String>) -> Text {
+    label(s).text_color(secondary)
 }
 pub fn title(s: impl Into<String>) -> Text {
     text(s.into())
-        .text_2xl()
-        .font_weight(FontWeight::SEMIBOLD)
+        .font_family(DISPLAY_FACE)
+        .text_size(px(34.))
         .text_color(ink)
 }
-pub fn button(caption: impl Into<String>, action: impl Fn() + 'static) -> nsh_base::ButtonElement {
-    let caption = caption.into();
+pub fn subheading(s: impl Into<String>) -> Text {
+    title(s).text_size(px(22.))
+}
+pub fn heading_bar() -> View {
+    wrap()
+        .justify_between()
+        .pb_3()
+        .border_b_1()
+        .border_color(rule)
+}
+pub fn heading(s: impl Into<String>) -> View {
+    heading_bar().child(title(s))
+}
+pub fn section(s: impl Into<String>) -> View {
+    stack()
+        .pt_4()
+        .pb_2()
+        .border_b_1()
+        .border_color(rule)
+        .child(subheading(s))
+}
+
+fn face(
+    caption: String,
+    action: impl Fn() + 'static,
+    bg: fn() -> Rgba,
+    fg: fn() -> Rgba,
+    edge: fn() -> Rgba,
+    glyph: Option<Icon>,
+) -> nsh_base::ButtonElement {
+    let mut contents = row().justify_center().gap_2();
+    if let Some(glyph) = glyph {
+        contents = contents.child(icon(glyph, fg));
+    }
     nsh_base::button()
         .accessibility_label(caption.clone())
+        .on_press(action)
+        .self_start()
         .px_3()
         .py_2()
+        .min_h(px(36.))
+        .min_w_0()
+        .justify_center()
         .rounded_md()
-        .bg(surface)
-        .hover(|s| s.opacity(0.80))
-        .focus(|s| s.border_1().border_color(rgb(0x668ba4)))
-        .on_press(action)
-        .child(label(caption))
+        .bg(bg)
+        .border_1()
+        .border_color(edge)
+        .hover(|s| s.opacity(0.84))
+        .active(|s| s.opacity(0.74).scale(0.98))
+        .focus(|s| s.outline(px(2.)).outline_color(accent))
+        .child(
+            contents.child(
+                label(caption)
+                    .text_color(fg)
+                    .font_weight(FontWeight::MEDIUM),
+            ),
+        )
+}
+pub fn button(caption: impl Into<String>, action: impl Fn() + 'static) -> nsh_base::ButtonElement {
+    face(caption.into(), action, sheet, ink, rule, None)
+}
+pub fn primary(caption: impl Into<String>, action: impl Fn() + 'static) -> nsh_base::ButtonElement {
+    face(caption.into(), action, accent, on_accent, accent, None)
+}
+pub fn import_button(action: impl Fn() + 'static) -> nsh_base::ButtonElement {
+    face(
+        "Import files".into(),
+        action,
+        accent,
+        on_accent,
+        accent,
+        Some(Icon::Plus),
+    )
+}
+pub fn choice(
+    caption: impl Into<String>,
+    selected: impl Fn() -> bool + Copy + 'static,
+    action: impl Fn() + 'static,
+) -> nsh_base::ButtonElement {
+    button(caption, action)
+        .selected(selected)
+        .bg(move || if selected() { stock(0) } else { sheet() })
+        .border_color(move || if selected() { accent() } else { rule() })
+}
+pub fn input_face() -> Input {
+    nsh_base::input()
+        .placeholder_color(|| Hsla::from(secondary()))
+        .caret_color(|| Hsla::from(accent()))
+        .bg(sheet)
+        .text_color(ink)
+        .text_size(px(14.))
+        .border_1()
+        .border_color(rule)
+        .rounded_md()
+        .focus(|s| s.outline(px(2.)).outline_color(accent))
+        .px_3()
+        .py_2()
+        .min_h(px(38.))
+        .min_w_0()
 }
 pub fn input(hint: &str, value: Signal<String>) -> Input {
-    nsh_base::input()
+    input_face()
         .label(hint.to_owned())
         .placeholder(hint.to_owned())
         .value(move || value.get())
         .auto_correct(false)
         .auto_capitalize(AutoCapitalize::None)
         .on_change(move |s: &str| value.set(s.into()))
-        .bg(paper)
-        .text_color(ink)
-        .border_1()
-        .border_color(rgb(0x8899a4))
-        .rounded_md()
-        .px_3()
-        .py_2()
-        .min_h(px(36.))
 }
 pub fn field(name: &str, value: Signal<String>) -> View {
-    stack().gap_1().child(label(name)).child(input(name, value))
+    stack()
+        .gap_1()
+        .child(label(name).font_weight(FontWeight::MEDIUM))
+        .child(input(name, value))
 }
 pub fn check(name: &str, initial: bool) -> (Signal<bool>, AnyElement) {
     let name = name.to_owned();
@@ -90,11 +159,18 @@ pub fn confirm(caption: impl Into<String>, action: impl Fn() + 'static) -> AnyEl
     dynamic(move || {
         if pending.get() {
             let action = action.clone();
-            row()
-                .child(button(format!("Confirm {caption}"), move || {
-                    pending.set(false);
-                    action();
-                }))
+            wrap()
+                .child(face(
+                    format!("Confirm {caption}"),
+                    move || {
+                        pending.set(false);
+                        action();
+                    },
+                    sheet,
+                    danger,
+                    danger,
+                    None,
+                ))
                 .child(button("Cancel", move || pending.set(false)))
                 .into_element()
         } else {

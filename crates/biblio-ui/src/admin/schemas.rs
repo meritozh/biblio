@@ -167,13 +167,10 @@ fn editor(
                     })
                 };
                 let editor = |hint: &'static str, initial: String, k: &'static str| {
-                    nsh_base::input()
+                    input_face()
                         .default_value(initial)
                         .label(hint)
                         .placeholder(hint)
-                        .text_color(ink)
-                        .bg(surface)
-                        .p_2()
                         .on_change(move |s: &str| update(k, s))
                 };
                 let mut line = wrap()
@@ -309,7 +306,7 @@ fn editor(
             },
         );
     };
-    body = body.child(button("Save schema", save));
+    body = body.child(primary("Save schema", save));
     if existing {
         body = body.child(button("Export schema", move || {
             if let Some(path) = rfd::FileDialog::new()

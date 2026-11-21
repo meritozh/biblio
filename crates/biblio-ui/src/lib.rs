@@ -1,5 +1,6 @@
 mod admin;
 mod app;
+mod artwork;
 mod catalog;
 mod detail;
 mod filters;
@@ -7,6 +8,7 @@ mod imports;
 mod search;
 mod selection;
 mod settings;
+mod theme;
 mod ui;
 
 use nsh_core::{element::Root, prelude::*};

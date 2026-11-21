@@ -76,7 +76,7 @@ mod filename_tests {
     fn search_filter_multiple_tokens_anded_with_quotes() {
         assert_eq!(
             fts_expr("三体老师 刘慈欣").as_deref(),
-            Some("\"三体老师\" \"刘慈欣\"")
+            Some("\"三体老师\" AND \"刘慈欣\"")
         );
     }
 
@@ -134,8 +134,7 @@ mod filename_tests {
     #[test]
     fn search_filter_fuzzy_tokens_still_and_across_words() {
         let expr = fts_expr("kafaka murakami").expect("fts");
-        // Two OR-groups joined by whitespace → FTS5 AND.
-        let groups: Vec<&str> = expr.split(") (").collect();
+        let groups: Vec<&str> = expr.split(") AND (").collect();
         assert_eq!(groups.len(), 2, "expected two AND-ed OR groups: {expr}");
         assert!(expr.contains("\"kafaka\""));
         assert!(expr.contains("\"murakami\""));

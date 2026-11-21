@@ -49,10 +49,14 @@ impl Selection {
     }
     pub fn bar(self, app: App) -> AnyElement {
         stack()
-            .child(button("Select files", move || {
-                self.active.update(|v| *v = !*v);
-                self.clear();
-            }))
+            .child(choice(
+                "Select files",
+                move || self.active.get(),
+                move || {
+                    self.active.update(|v| *v = !*v);
+                    self.clear();
+                },
+            ))
             .child(when(
                 move || self.active.get(),
                 move || {

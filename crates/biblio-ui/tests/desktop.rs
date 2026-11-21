@@ -25,7 +25,7 @@ fn import_search_favorite_edit_and_reopen() -> Result<(), String> {
     let source = dir.path().join("Autumn catalogue.txt");
     std::fs::write(&source, "Test import").unwrap();
     let mut app = window(&config);
-    app.wait_for("No matching files")?;
+    app.wait_for("Your library is empty")?;
     app.press("label:Settings")?;
     app.wait_for("label:Storage folder")?;
     app.type_text("label:Storage folder", storage.to_str().unwrap())?;
@@ -40,7 +40,7 @@ fn import_search_favorite_edit_and_reopen() -> Result<(), String> {
     app.press("label:Create category")?;
     app.wait_for("label:Books")?;
     app.press("label:Books")?;
-    app.wait_for("No matching files")?;
+    app.wait_for("This category is empty")?;
     app.press("label:Import files")?;
     app.wait_for("label:Analyze selected files")?;
     app.drop_files(
@@ -89,7 +89,7 @@ fn import_search_favorite_edit_and_reopen() -> Result<(), String> {
 fn keyboard_filter_survives_navigation_and_preset_reopens() -> Result<(), String> {
     let profile = tempfile::tempdir().unwrap();
     let mut app = window(profile.path());
-    app.wait_for("No matching files")?;
+    app.wait_for("Your library is empty")?;
     app.type_text("label:Search library", "star")?;
     app.wait_for("label:Favorite…")?;
     app.press_key("down")?;
@@ -118,4 +118,27 @@ fn keyboard_filter_survives_navigation_and_preset_reopens() -> Result<(), String
     reopened.press("label:Reading list")?;
     reopened.wait_for("label:favorite is true ×")?;
     Ok(())
+}
+
+#[test]
+fn compact_navigation_preserves_search_and_reaches_settings() -> Result<(), String> {
+    let profile = tempfile::tempdir().unwrap();
+    let mut app = window(profile.path());
+    app.wait_for("Your library is empty")?;
+    app.type_text("label:Search library", "absent title")?;
+    app.submit("label:Search library")?;
+    app.wait_for("No matching files")?;
+    app.set_viewport(size(px(375.), px(680.)))?;
+    app.press("label:Navigation")?;
+    app.wait_for("label:Settings")?;
+    app.press("label:Navigation")?;
+    app.wait_for("No matching files")?;
+    app.press("label:Clear")?;
+    app.wait_for("Your library is empty")?;
+    app.press("label:Navigation")?;
+    app.press("label:Settings")?;
+    app.wait_for("label:Storage folder")?;
+    app.set_viewport(size(px(1200.), px(800.)))?;
+    app.press("label:All files")?;
+    app.wait_for("Your library is empty")
 }

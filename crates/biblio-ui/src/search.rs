@@ -1,3 +1,4 @@
+use crate::artwork::{Icon, icon};
 use crate::{app::App, ui::*};
 use biblio_core::{
     Library,
@@ -245,7 +246,7 @@ pub fn bar(app: App, committed: Signal<String>, chips: Signal<Vec<Chip>>) -> Any
             active.set(None);
         });
     });
-    let entry = nsh_base::input()
+    let entry = input_face()
         .label("Search library")
         .submit_behavior(SubmitBehavior::Submit)
         .placeholder("Search titles, paths, tags or authors")
@@ -284,24 +285,42 @@ pub fn bar(app: App, committed: Signal<String>, chips: Signal<Vec<Chip>>) -> Any
                 accept()
             }
         })
-        .text_color(ink)
-        .bg(paper)
-        .border_1()
-        .border_color(rgb(0x8899a4))
-        .rounded_md()
-        .px_3()
-        .py_2()
+        .pl(px(38.))
+        .min_h(px(42.))
         .flex_1();
     stack()
-        .child(row().child(entry).child(button("Clear", move || {
-            field.set(None);
-            prefix.set(None);
-            active.set(None);
-            buffer.set(String::new());
-            committed.set(String::new());
-            chips.set(vec![]);
-            open.set(false);
-        })))
+        .gap_1()
+        .child(
+            row()
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w_0()
+                        .justify_center()
+                        .child(entry)
+                        .child(
+                            view()
+                                .absolute()
+                                .left(px(12.))
+                                .pointer_events(PointerEvents::None)
+                                .child(icon(Icon::Search, secondary)),
+                        ),
+                )
+                .child(when(
+                    move || !buffer.with(String::is_empty) || !chips.with(Vec::is_empty),
+                    move || {
+                        button("Clear", move || {
+                            field.set(None);
+                            prefix.set(None);
+                            active.set(None);
+                            buffer.set(String::new());
+                            committed.set(String::new());
+                            chips.set(vec![]);
+                            open.set(false);
+                        })
+                    },
+                )),
+        )
         .child(dynamic(move || {
             let mut r = wrap();
             if open.get() {

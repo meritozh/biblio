@@ -1,3 +1,4 @@
+use crate::artwork::{Icon, icon, index_mark};
 use crate::{admin, catalog, detail, imports, settings, ui::*};
 use biblio_core::{
     Library,
@@ -223,75 +224,240 @@ pub fn start(dir: PathBuf) -> AnyElement {
         .into_element()
 }
 fn workspace(app: App) -> AnyElement {
-    let mut sidebar = stack()
-        .w(px(208.))
+    let menu = signal(false);
+    let compact = computed(|| window().width < px(760.));
+    let sidebar = move || navigation(app, menu);
+    let main = stack()
+        .style_with(move |s| {
+            if compact.get() && menu.get() {
+                s.hidden()
+            } else {
+                s
+            }
+        })
+        .flex_1()
+        .min_h_0()
+        .px(move || px(if compact.get() { 16. } else { 32. }))
+        .py(move || px(if compact.get() { 12. } else { 24. }))
+        .child(dynamic(move || {
+            let page = app.page.get();
+            untracked(|| match page {
+                Page::Library => catalog::screen(app),
+                Page::File(id) => detail::screen(app, id),
+                Page::Import => imports::screen(app),
+                Page::Settings => settings::screen(app),
+                page => admin::screen(app, page),
+            })
+        }))
+        .child(when(
+            move || !app.message.with(String::is_empty),
+            move || {
+                row()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(rule)
+                    .child(text(move || app.message.get()).text_sm().text_color(ink))
+            },
+        ));
+    stack()
+        .w_full()
         .h_full()
-        .p_4()
-        .bg(surface)
-        .child(title("Biblio"))
-        .child(nav_item(app, "All files", Page::Library, None))
+        .gap_0()
+        .bg(paper)
+        .child(when(
+            move || compact.get(),
+            move || {
+                row()
+                    .justify_between()
+                    .bg(cloth)
+                    .px_4()
+                    .py_2()
+                    .child(wordmark())
+                    .child(nav_button(
+                        "Navigation",
+                        Icon::Menu,
+                        move || menu.get(),
+                        move || menu.update(|v| *v = !*v),
+                    ))
+            },
+        ))
+        .child(
+            row()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .items_stretch()
+                .gap_0()
+                .child(when(
+                    move || !compact.get() || menu.get(),
+                    move || {
+                        scroll()
+                            .w(move || {
+                                if compact.get() {
+                                    window().width
+                                } else {
+                                    px(224.)
+                                }
+                            })
+                            .flex_shrink_0()
+                            .h_full()
+                            .bg(cloth)
+                            .child(sidebar())
+                    },
+                ))
+                .child(main),
+        )
+        .into_element()
+}
+
+fn wordmark() -> View {
+    row()
+        .gap_2()
+        .child(index_mark(true))
+        .child(title("Biblio").text_size(px(29.)).text_color(rail_ink))
+}
+
+fn nav_group(name: &str) -> Text {
+    text(name.to_owned())
+        .text_size(px(12.))
+        .letter_spacing(px(1.2))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(rail_muted)
+}
+
+fn navigation(app: App, menu: Signal<bool>) -> View {
+    let mut library = stack()
+        .gap_1()
+        .child(nav_group("LIBRARY"))
+        .child(nav_item(
+            app,
+            menu,
+            "All files",
+            Icon::Library,
+            Page::Library,
+            None,
+        ))
         .child(dynamic(move || {
             app.revision.get();
             app.load(category_list(app.db()), move |categories| {
                 let mut list = stack().gap_1();
                 for cat in categories {
-                    let id = cat.id;
-                    list = list.child(nav_item(app, &cat.name, Page::Library, Some(id)));
+                    list = list.child(nav_item(
+                        app,
+                        menu,
+                        &cat.name,
+                        Icon::Category,
+                        Page::Library,
+                        Some(cat.id),
+                    ));
                 }
                 list.into_element()
             })
         }));
-    for (target, name) in [
-        (Page::Import, "Import"),
-        (Page::Categories, "Categories"),
-        (Page::Tags, "Tags"),
-        (Page::Authors, "Authors"),
-        (Page::Schemas, "Schemas"),
-        (Page::Prompts, "Prompts"),
-        (Page::Cleanup, "Cleanup"),
-        (Page::Settings, "Settings"),
+    library = library.child(nav_item(
+        app,
+        menu,
+        "Import",
+        Icon::Import,
+        Page::Import,
+        None,
+    ));
+    let mut organize = stack().gap_1().child(nav_group("ORGANIZE"));
+    for (target, name, glyph) in [
+        (Page::Categories, "Categories", Icon::Categories),
+        (Page::Tags, "Tags", Icon::Tags),
+        (Page::Authors, "Authors", Icon::Authors),
+        (Page::Schemas, "Schemas", Icon::Schemas),
+        (Page::Prompts, "Prompts", Icon::Prompts),
     ] {
-        sidebar = sidebar.child(nav_item(app, name, target, None));
+        organize = organize.child(nav_item(app, menu, name, glyph, target, None));
     }
-    view()
-        .flex_1()
-        .flex_row()
-        .w_full()
-        .h_full()
-        .bg(paper)
-        .child(scroll().w(px(208.)).h_full().child(sidebar))
+    stack()
+        .px_4()
+        .py_6()
+        .gap_6()
+        .child(when(
+            || window().width >= px(760.),
+            || {
+                row()
+                    .pb_4()
+                    .border_b_1()
+                    .border_color(current)
+                    .child(wordmark())
+            },
+        ))
+        .child(library)
+        .child(organize)
         .child(
             stack()
-                .flex_1()
-                .h_full()
-                .p_4()
-                .child(dynamic(move || {
-                    let page = app.page.get();
-                    untracked(|| match page {
-                        Page::Library => catalog::screen(app),
-                        Page::File(id) => detail::screen(app, id),
-                        Page::Import => imports::screen(app),
-                        Page::Settings => settings::screen(app),
-                        page => admin::screen(app, page),
-                    })
-                }))
-                .child(text(move || app.message.get()).text_sm().text_color(ink)),
+                .gap_1()
+                .child(nav_group("WORKSPACE"))
+                .child(nav_item(
+                    app,
+                    menu,
+                    "Cleanup",
+                    Icon::Cleanup,
+                    Page::Cleanup,
+                    None,
+                ))
+                .child(nav_item(
+                    app,
+                    menu,
+                    "Settings",
+                    Icon::Settings,
+                    Page::Settings,
+                    None,
+                )),
         )
-        .into_element()
 }
 
-fn nav_item(app: App, name: &str, target: Page, category: Option<i64>) -> impl IntoElement {
-    button(name, move || {
+fn nav_button(
+    name: &str,
+    glyph: Icon,
+    selected: impl Fn() -> bool + Copy + 'static,
+    action: impl Fn() + 'static,
+) -> nsh_base::ButtonElement {
+    nsh_base::button()
+        .accessibility_label(name.to_owned())
+        .selected(selected)
+        .on_press(action)
+        .rounded_md()
+        .px_3()
+        .py_2()
+        .min_h(px(36.))
+        .justify_center()
+        .bg(move || if selected() { current() } else { cloth() })
+        .hover(|s| s.bg(current))
+        .active(|s| s.opacity(0.78))
+        .focus(|s| s.outline(px(2.)).outline_color(rail_muted))
+        .child(row().gap_3().child(icon(glyph, rail_muted)).child(
+            label(name).text_color(rail_ink).style_with(move |s| {
+                s.font_weight(if selected() {
+                    FontWeight::SEMIBOLD
+                } else {
+                    FontWeight::NORMAL
+                })
+            }),
+        ))
+}
+
+fn nav_item(
+    app: App,
+    menu: Signal<bool>,
+    name: &str,
+    glyph: Icon,
+    target: Page,
+    category: Option<i64>,
+) -> impl IntoElement {
+    let selected = move || match (target, app.page.get()) {
+        (Page::Library, Page::Library | Page::File(_)) => app.category.get() == category,
+        (_, page) => target == page,
+    };
+    nav_button(name, glyph, selected, move || {
         if target == Page::Library {
             app.category.set(category);
         }
         app.page.set(target);
-    })
-    .bg(move || {
-        if app.page.get() == target && (target != Page::Library || app.category.get() == category) {
-            paper()
-        } else {
-            surface()
-        }
+        menu.set(false);
     })
 }

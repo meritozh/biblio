@@ -39,7 +39,11 @@ type Presets = BTreeMap<String, Vec<FilterCondition>>;
 pub fn editor(app: App, chips: Signal<Vec<Chip>>) -> AnyElement {
     let opened = signal(false);
     stack()
-        .child(button("Filters", move || opened.update(|v| *v = !*v)))
+        .child(choice(
+            "Filters",
+            move || opened.get(),
+            move || opened.update(|v| *v = !*v),
+        ))
         .child(when(
             move || opened.get(),
             move || {

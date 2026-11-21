@@ -25,25 +25,17 @@ pub fn card_face(app: App, file: &api::FileListItem) -> AnyElement {
     let id = file.id;
     let title = file.display_name.clone();
     let progress = file.progress.clone().unwrap_or_default();
-    // Match the previous shell's tagSeed and gradientFromSeed.
-    let mut ids = file.tags.iter().map(|t| t.id).collect::<Vec<_>>();
-    ids.sort_unstable();
-    let key = if ids.is_empty() {
-        format!("f{id}")
-    } else {
-        ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
-    };
-    let seed = key.bytes().fold(0x811c9dc5u32, |hash, b| {
-        (hash ^ u32::from(b)).wrapping_mul(0x01000193)
-    });
-    let hue = seed % 360;
-    let to = (hue + 30 + (seed >> 8) % 60) % 360;
-    let from_color = format!("oklch(0.92 0.075 {hue})")
-        .parse::<Rgba>()
-        .unwrap_or(rgb(0xe0e9da));
-    let to_color = format!("oklch(0.78 0.10 {to})")
-        .parse::<Rgba>()
-        .unwrap_or(rgb(0xb6cbbf));
+    let mut tag_ids = file.tags.iter().map(|tag| tag.id).collect::<Vec<_>>();
+    tag_ids.sort_unstable();
+    let seed = tag_ids
+        .into_iter()
+        .reduce(|a, b| a.wrapping_mul(31).wrapping_add(b))
+        .unwrap_or(id) as usize;
+    let extension = std::path::Path::new(&file.path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_uppercase();
     let preview = app.load(cover_uri(app.db(), id), move |uri| {
         if let Some(uri) = uri {
             return stack()
@@ -52,27 +44,28 @@ pub fn card_face(app: App, file: &api::FileListItem) -> AnyElement {
                 .child(label(&title))
                 .into_element();
         }
-        view()
-            .h(px(142.))
+        stack()
+            .h(px(152.))
             .w_full()
-            .px_3()
-            .justify_center()
-            .items_center()
-            .gap_2()
+            .justify_between()
+            .p_3()
+            .gap_1()
             .rounded_md()
-            .bg_linear(deg(((seed >> 16) % 12 * 15) as f32))
-            .gradient_from(from_color)
-            .gradient_to(to_color)
+            .bg(move || stock(seed))
             .child(
-                text(title.clone())
-                    .text_center()
-                    .number_of_lines(5)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x302a26)),
+                row()
+                    .pb_1()
+                    .border_b_1()
+                    .border_color(secondary)
+                    .child(note(extension.clone()).text_xs().number_of_lines(1)),
             )
+            .child(subheading(&title).number_of_lines(3))
             .child(
-                (!progress.is_empty())
-                    .then(|| text(progress.clone()).text_xs().text_color(rgb(0x433c36))),
+                row()
+                    .pt_1()
+                    .border_t_1()
+                    .border_color(secondary)
+                    .child(note(progress.clone()).text_xs().number_of_lines(1)),
             )
             .into_element()
     });
@@ -80,6 +73,10 @@ pub fn card_face(app: App, file: &api::FileListItem) -> AnyElement {
         .accessibility_label(file.display_name.clone())
         .on_press(move || app.page.set(Page::File(id)))
         .w_full()
+        .rounded_md()
+        .hover(|s| s.opacity(0.88))
+        .active(|s| s.opacity(0.78))
+        .focus(|s| s.outline(px(2.)).outline_color(accent))
         .child(preview)
         .into_element()
 }
@@ -111,8 +108,8 @@ fn form(app: App, file: &api::FileWithDetails) -> AnyElement {
     let original = file.category_id;
     let favorite = file.is_favorite;
     let mut body = stack()
-        .child(title(&file.display_name))
-        .child(label(&file.path))
+        .child(heading(&file.display_name))
+        .child(note(&file.path))
         .child(cover(app, id, 180.))
         .child(
             wrap()
@@ -133,7 +130,7 @@ fn form(app: App, file: &api::FileWithDetails) -> AnyElement {
         .child(field("Title", name))
         .child(field("Progress", progress))
         .child(category_picker(app, cat))
-        .child(button("Save file", move || {
+        .child(primary("Save file", move || {
             app.save(file::update_favorite::file_update(
                 app.db(),
                 id,
@@ -182,7 +179,7 @@ fn form(app: App, file: &api::FileWithDetails) -> AnyElement {
         }
         let q = signal(String::new());
         body = body
-            .child(label(kind))
+            .child(section(kind))
             .child(attached)
             .child(input(&format!("Find {kind}"), q))
             .child(dynamic(move || {

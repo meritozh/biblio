@@ -1,3 +1,4 @@
+use crate::artwork::{favorite_mark, index_mark};
 use crate::{
     app::{App, Page},
     detail, imports, search,
@@ -111,10 +112,26 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
     let display_tools = move || {
         let schema_filter = schema_filter.clone();
         let mut tools = wrap()
-            .child(button("Name", move || sort.set("name".into())))
-            .child(button("Created", move || sort.set("created".into())))
-            .child(button("Updated", move || sort.set("updated".into())))
-            .child(button("Reverse sort", move || desc.update(|v| *v = !*v)))
+            .child(choice(
+                "Name",
+                move || sort.with(|s| s == "name"),
+                move || sort.set("name".into()),
+            ))
+            .child(choice(
+                "Created",
+                move || sort.with(|s| s == "created"),
+                move || sort.set("created".into()),
+            ))
+            .child(choice(
+                "Updated",
+                move || sort.with(|s| s == "updated"),
+                move || sort.set("updated".into()),
+            ))
+            .child(choice(
+                "Reverse sort",
+                move || desc.get(),
+                move || desc.update(|v| *v = !*v),
+            ))
             .child(app.load(
                 biblio_core::commands::schemas::schema_list(app.db()),
                 move |schemas| {
@@ -141,7 +158,8 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
                     extra.into_element()
                 },
             ))
-            .child(button("Grid / list", move || grid.update(|v| *v = !*v)))
+            .child(choice("Grid", move || grid.get(), move || grid.set(true)))
+            .child(choice("List", move || !grid.get(), move || grid.set(false)))
             .child(button("Pick at random", move || {
                 lucky.set(true);
                 app.refresh();
@@ -163,21 +181,20 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
         }
         tools
     };
-    stack()
-        .flex_1()
-        .min_h_0()
-        .child(title(title_text))
+    let tools_and_results = stack()
         .child(search::bar(app, query, chips))
         .child(
             wrap()
                 .items_start()
-                .child(button("Import files", move || app.page.set(Page::Import)))
-                .child(button("View options", move || options.update(|v| *v = !*v)))
+                .child(choice(
+                    "View options",
+                    move || options.get(),
+                    move || options.update(|v| *v = !*v),
+                ))
                 .child(crate::filters::editor(app, chips))
                 .child(selection.bar(app)),
         )
         .child(when(move || options.get(), display_tools))
-        .on_file_drop(move |e: &FileDropEvent| imports::drop_urls(app, &e.uris))
         .child(dynamic(move || {
             app.revision.get();
             let q = query.get();
@@ -190,6 +207,9 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
                 return app.load(
                     file::collections::collection_list(db, group, schema.clone(), cat_id),
                     move |groups| {
+                        if groups.is_empty() {
+                            return empty_shelf(false, cat_id.is_some());
+                        }
                         let mut body = stack();
                         for group in groups {
                             let ids = group.file_ids.clone();
@@ -204,13 +224,14 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
                                     move || group_page(app, ids.clone(), is_grid, selection),
                                 ));
                         }
-                        scroll().flex_1().min_h_0().child(body).into_element()
+                        body.into_element()
                     },
                 );
             }
             let pos = offset.get();
             let key = sort.get();
             let reverse = desc.get();
+            let filtered = !q.trim().is_empty() || !filters.is_empty();
             app.load(
                 async move {
                     if random {
@@ -243,8 +264,12 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
                 },
                 move |page| {
                     let ids = page.files.iter().map(|f| f.id).collect::<Vec<_>>();
-                    let mut pager = row()
-                        .child(label(format!(
+                    let mut pager = wrap()
+                        .pt_3()
+                        .pb_2()
+                        .border_b_1()
+                        .border_color(rule)
+                        .child(note(format!(
                             "{} {}",
                             page.total,
                             if page.total == 1 { "file" } else { "files" }
@@ -266,20 +291,66 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
                     if i64::from(pos + PAGE_SIZE) < page.total {
                         pager = pager.child(button("Next", move || offset.set(pos + PAGE_SIZE)));
                     }
-                    stack()
-                        .flex_1()
-                        .min_h_0()
-                        .child(pager)
-                        .child(scroll().flex_1().min_h_0().child(file_rows(
-                            app,
-                            &page.files,
-                            is_grid,
-                            selection,
-                        )))
-                        .into_element()
+                    let results = if page.total == 0 {
+                        empty_shelf(filtered, cat_id.is_some())
+                    } else {
+                        file_rows(app, &page.files, is_grid, selection)
+                    };
+                    stack().child(pager).child(results).into_element()
                 },
             )
-        }))
+        }));
+    stack()
+        .flex_1()
+        .min_h_0()
+        .on_file_drop(move |e: &FileDropEvent| imports::drop_urls(app, &e.uris))
+        .child(
+            heading_bar()
+                .child(title(title_text))
+                .child(import_button(move || app.page.set(Page::Import))),
+        )
+        .child(scroll().flex_1().min_h_0().child(tools_and_results))
+        .into_element()
+}
+
+fn empty_shelf(filtered: bool, category: bool) -> AnyElement {
+    let (heading, help) = if filtered {
+        (
+            "No matching files",
+            "Try another search or remove a filter.",
+        )
+    } else if category {
+        (
+            "This category is empty",
+            "Drop files here to import them into this category.",
+        )
+    } else {
+        (
+            "Your library is empty",
+            "Drop files here or choose Import files to start your collection.",
+        )
+    };
+    stack()
+        .w_full()
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .py_6()
+        .px_4()
+        .min_h(move || {
+            px(if window().width < px(760.) {
+                204.
+            } else {
+                284.
+            })
+        })
+        .bg(sheet)
+        .border_1()
+        .border_color(rule)
+        .rounded_lg()
+        .child(index_mark(false))
+        .child(subheading(heading).text_center())
+        .child(note(help).text_center())
         .into_element()
 }
 
@@ -311,7 +382,14 @@ fn file_rows(
     grid: bool,
     selection: Selection,
 ) -> AnyElement {
-    let mut list = if grid { wrap().items_start() } else { stack() };
+    let mut list = if grid {
+        view()
+            .grid()
+            .grid_template_columns("repeat(auto-fill, minmax(200px, 1fr))")
+            .gap_3()
+    } else {
+        stack().gap_0()
+    };
     if files.is_empty() {
         return label("No matching files").into_element();
     }
@@ -319,13 +397,13 @@ fn file_rows(
         i64,
         Vec<(String, String)>,
     >::new()));
-    list = list.child(app.load(
+    let metadata = app.load(
         file::listing::card_metadata(app.db(), files.iter().map(|f| f.id).collect()),
         move |values| {
             extra.set(std::rc::Rc::new(values.clone()));
             view().hidden().into_element()
         },
-    ));
+    );
     for file in files {
         let id = file.id;
         let favorite = file.is_favorite;
@@ -337,13 +415,16 @@ fn file_rows(
             .join(", ");
         let mut card = if grid {
             stack()
-                .w(px(218.))
+                .w_full()
+                .gap_2()
                 .p_3()
-                .bg(surface)
-                .rounded_md()
+                .bg(sheet)
+                .border_1()
+                .border_color(rule)
+                .rounded_lg()
                 .child(detail::card_face(app, file))
         } else {
-            row().p_2()
+            wrap().p_2().border_b_1().border_color(rule)
         };
         card = card.child(selection.control(id));
         if !grid {
@@ -352,35 +433,62 @@ fn file_rows(
             }));
         }
         if !authors.is_empty() {
-            card = card.child(label(authors));
+            card = card.child(note(authors));
         }
         card = card.child(dynamic(move || {
             let values = extra.get();
             let mut fields = stack().gap_1();
-            if let Some(items) = values.get(&id) {
+            if let Some(items) = values.get(&id).filter(|v| !v.is_empty()) {
                 for (name, value) in items {
-                    fields = fields.child(label(format!("{name} · {value}")));
+                    fields = fields.child(note(format!("{name} · {value}")));
                 }
+                fields
+            } else {
+                view().hidden()
             }
-            fields
         }));
-        card = card
-            .child(label(format!(
-                "{} · {}",
-                file.storage_kind.as_deref().unwrap_or("local"),
-                file.file_status
-            )))
-            .child(button(
-                if favorite { "Unfavorite" } else { "Favorite" },
-                move || {
-                    app.save(file::update_favorite::file_set_favorite(
-                        app.db(),
-                        id,
-                        !favorite,
-                    ))
-                },
-            ));
+        let caption = if favorite { "Unfavorite" } else { "Favorite" };
+        let toggle = nsh_base::button()
+            .accessibility_label(caption)
+            .selected(favorite)
+            .w(px(36.))
+            .h(px(36.))
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .hover(|s| s.bg(paper))
+            .active(|s| s.opacity(0.7))
+            .focus(|s| s.outline(px(2.)).outline_color(accent))
+            .on_press(move || {
+                app.save(file::update_favorite::file_set_favorite(
+                    app.db(),
+                    id,
+                    !favorite,
+                ))
+            })
+            .child(
+                view()
+                    .tooltip(
+                        view()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(cloth)
+                            .child(label(caption).text_color(rail_ink)),
+                    )
+                    .child(favorite_mark(favorite)),
+            );
+        card = card.child(
+            row()
+                .justify_between()
+                .child(note(format!(
+                    "{} · {}",
+                    file.storage_kind.as_deref().unwrap_or("local"),
+                    file.file_status
+                )))
+                .child(toggle),
+        );
         list = list.child(card);
     }
-    list.into_element()
+    stack().gap_0().child(metadata).child(list).into_element()
 }

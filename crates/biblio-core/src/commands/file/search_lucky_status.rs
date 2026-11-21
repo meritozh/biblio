@@ -88,10 +88,9 @@ pub(super) fn prepare_search_filter(raw: &str) -> Option<SearchFilter> {
     }
 
     // Each token becomes either `"exact"` or `("exact" OR "fuzzy" …)`.
-    // Tokens are ANDed (implicit FTS5 juxtaposition) so multi-word queries
-    // still require every word to match somewhere in name/path.
+    // FTS5 requires an explicit AND next to parenthesized OR groups.
     let clauses: Vec<String> = fts_terms.iter().map(|t| fts_clause_for_term(t)).collect();
-    Some(SearchFilter::Fts(clauses.join(" ")))
+    Some(SearchFilter::Fts(clauses.join(" AND ")))
 }
 
 fn quote_fts_term(term: &str) -> String {

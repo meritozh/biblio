@@ -42,9 +42,10 @@ fn add_sources(app: App, paths: Vec<String>) {
 }
 pub fn screen(app: App) -> AnyElement {
     let first = computed(move || app.pending.with(|v| v.first().map(|p| p.path.clone())));
-    let mut controls = wrap();
+    let dragging = signal(false);
+    let mut pickers = wrap().justify_center();
     for (name, folder) in [("Choose files", false), ("Choose folders", true)] {
-        controls = controls.child(button(name, move || {
+        pickers = pickers.child(button(name, move || {
             let dialog = rfd::FileDialog::new();
             let paths = if folder {
                 dialog.pick_folders()
@@ -62,8 +63,21 @@ pub fn screen(app: App) -> AnyElement {
             }
         }));
     }
-    controls = controls
-        .child(button("Analyze selected files", move || analyze(app)))
+    let drop_area = stack()
+        .items_center()
+        .justify_center()
+        .py_6()
+        .px_4()
+        .min_h(px(176.))
+        .border_1()
+        .rounded_lg()
+        .border_color(move || if dragging.get() { accent() } else { rule() })
+        .bg(move || if dragging.get() { stock(0) } else { sheet() })
+        .child(crate::artwork::icon(crate::artwork::Icon::Import, accent))
+        .child(subheading("Drop files or folders here").text_center())
+        .child(pickers);
+    let controls = wrap()
+        .child(primary("Analyze selected files", move || analyze(app)))
         .child(confirm("Discard import batch", move || {
             let db = app.db();
             app.job(
@@ -83,12 +97,17 @@ pub fn screen(app: App) -> AnyElement {
     scroll()
         .flex_1()
         .min_h_0()
-        .on_file_drop(move |e: &FileDropEvent| drop_urls(app, &e.uris))
+        .on_file_drag_enter(move |_: &()| dragging.set(true))
+        .on_file_drag_leave(move |_: &()| dragging.set(false))
+        .on_file_drop(move |e: &FileDropEvent| {
+            dragging.set(false);
+            drop_urls(app, &e.uris);
+        })
         .child(
             stack()
-                .child(title("Import"))
+                .child(heading("Import"))
                 .child(detail::category_picker(app, app.category))
-                .child(controls)
+                .child(drop_area)
                 .child(
                     text(move || {
                         format!(
@@ -98,8 +117,9 @@ pub fn screen(app: App) -> AnyElement {
                             app.pending.with(Vec::len)
                         )
                     })
-                    .text_color(ink),
+                    .text_color(secondary),
                 )
+                .child(controls)
                 .child(dynamic(move || {
                     if first.get().is_some() {
                         let item = app.pending.get_untracked().remove(0);
@@ -229,7 +249,7 @@ fn review(app: App, item: FilePreparedImport) -> AnyElement {
     let suggestions = signal(String::new());
     let path = item.path.clone();
     let mut body = stack()
-        .child(title("Review import"))
+        .child(section("Review import"))
         .child(label(&path))
         .child(field("Title", name))
         .child(detail::category_picker(app, category))
@@ -423,7 +443,7 @@ fn review(app: App, item: FilePreparedImport) -> AnyElement {
             },
         );
     };
-    let mut actions = wrap().child(button("Import this file", move || commit(None)));
+    let mut actions = wrap().child(primary("Import this file", move || commit(None)));
     if let Some(id) = dupe {
         actions = actions.child(confirm("Replace existing file", move || commit(Some(id))));
         let source = path.clone();
