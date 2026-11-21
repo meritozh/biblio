@@ -119,21 +119,6 @@ pub fn ghost(caption: impl Into<String>, action: impl Fn() + 'static) -> nsh_bas
 pub fn primary(caption: impl Into<String>, action: impl Fn() + 'static) -> nsh_base::ButtonElement {
     control(caption, Variant::Primary, ButtonSize::Md, None, action)
 }
-/// A default button with a leading icon.
-pub fn icon_label(
-    caption: impl Into<String>,
-    glyph: Icon,
-    action: impl Fn() + 'static,
-) -> nsh_base::ButtonElement {
-    control(
-        caption,
-        Variant::Default,
-        ButtonSize::Md,
-        Some(glyph),
-        action,
-    )
-}
-
 /// A square, icon-only button. `name` is its accessible name and tooltip;
 /// `shortcut`, when given, joins the tooltip.
 pub fn icon_button(
@@ -162,26 +147,6 @@ pub fn icon_button(
                 .tooltip(hint(tip))
                 .child(icon(glyph, secondary)),
         )
-}
-
-/// A two-state toolbar button (Select files): pressed shows the tint fill
-/// and an accent keyline, and screen readers hear it selected.
-pub fn toggle_button(
-    caption: impl Into<String>,
-    glyph: Icon,
-    on: impl Fn() -> bool + Copy + 'static,
-    action: impl Fn() + 'static,
-) -> nsh_base::ButtonElement {
-    control(
-        caption,
-        Variant::Default,
-        ButtonSize::Md,
-        Some(glyph),
-        action,
-    )
-    .selected(on)
-    .bg(move || if on() { tint() } else { clear() })
-    .border_color(move || if on() { accent() } else { keyline() })
 }
 
 /// A choice chip: a small button that stays selected.

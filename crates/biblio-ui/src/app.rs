@@ -118,6 +118,44 @@ impl App {
             self.refresh();
         });
     }
+    /// [`App::save`], then `then` (close the dialog that saved).
+    pub fn save_then<T: Send + 'static>(
+        self,
+        f: impl Future<Output = Result<T, String>> + Send + 'static,
+        then: impl FnOnce() + 'static,
+    ) {
+        self.local_job(f, move |_| {
+            then();
+            self.message.set("Saved".into());
+            self.refresh();
+        });
+    }
+    /// The latest result of `f`'s future: loaded at once, and again (the
+    /// load running dropped) whenever a signal `f` reads changes. `None`
+    /// until the first load ends.
+    pub fn resource<T: Send + 'static, F>(
+        self,
+        f: impl Fn() -> F + 'static,
+    ) -> Signal<Option<Rc<Result<T, String>>>>
+    where
+        F: Future<Output = Result<T, String>> + Send + 'static,
+    {
+        let out = signal_with(None::<Rc<Result<T, String>>>, SignalEquals::Never);
+        effect(move || {
+            let task = run_service(f());
+            let abort = task.abort_handle();
+            cleanup(move || abort.abort());
+            spawn(async move {
+                match task.await {
+                    Err(e) if e.is_cancelled() => {}
+                    done => out.set(Some(Rc::new(
+                        done.map_err(|e| e.to_string()).and_then(|r| r),
+                    ))),
+                }
+            });
+        });
+        out
+    }
     pub fn load<T: Send + 'static>(
         self,
         f: impl Future<Output = Result<T, String>> + Send + 'static,
@@ -324,30 +362,6 @@ fn chrome(app: App, menu: Signal<bool>) {
     ]);
 }
 
-/// The height of the band the hidden title bar leaves at the top of the
-/// window: what the host reports, else the height asked for on macOS.
-fn band() -> Points {
-    let reported = title_bar().top;
-    if reported > px(0.) {
-        reported
-    } else if os() == Os::MacOs {
-        px(52.)
-    } else {
-        px(0.)
-    }
-}
-/// The width the window controls take at the band's leading end.
-fn controls() -> Points {
-    let reported = title_bar().left;
-    if reported > px(0.) {
-        reported
-    } else if os() == Os::MacOs {
-        px(78.)
-    } else {
-        px(0.)
-    }
-}
-
 /// Opens the library (if elsewhere) and focuses its search field.
 fn find(app: App, menu: Signal<bool>) {
     menu.set(false);
@@ -381,7 +395,7 @@ fn shortcuts(app: App, menu: Signal<bool>) {
 fn status_bar(app: App) -> View {
     row()
         .min_h(px(28.))
-        .px(move || px(if compact() { 16. } else { 40. }))
+        .px(inset)
         .border_t_1()
         .border_color(rule)
         .bg(paper)
@@ -405,31 +419,16 @@ fn workspace(app: App) -> AnyElement {
     shortcuts(app, menu);
     chrome(app, menu);
     let narrow = computed(compact);
-    let page = stack()
-        .flex_1()
-        .min_w_0()
-        .min_h_0()
-        .gap_0()
-        .px(move || px(if narrow.get() { 16. } else { 40. }))
-        .pt(move || {
-            px(if narrow.get() {
-                16.
-            } else if band() > px(0.) {
-                4.
-            } else {
-                28.
-            })
+    let page = view().flex_1().min_w_0().min_h_0().child(dynamic(move || {
+        let page = app.page.get();
+        untracked(|| match page {
+            Page::Library => catalog::screen(app),
+            Page::File(id) => detail::screen(app, id),
+            Page::Import => imports::screen(app),
+            Page::Settings => settings::screen(app),
+            page => admin::screen(app, page),
         })
-        .child(dynamic(move || {
-            let page = app.page.get();
-            untracked(|| match page {
-                Page::Library => catalog::screen(app),
-                Page::File(id) => detail::screen(app, id),
-                Page::Import => imports::screen(app),
-                Page::Settings => settings::screen(app),
-                page => admin::screen(app, page),
-            })
-        }));
+    }));
     let main = view()
         .style_with(move |s| {
             if narrow.get() && menu.get() {
@@ -441,10 +440,6 @@ fn workspace(app: App) -> AnyElement {
         .flex_1()
         .min_w_0()
         .min_h_0()
-        .child(when(
-            move || !narrow.get() && band() > px(0.),
-            move || view().h(band()).flex_shrink_0().window_drag(true),
-        ))
         .child(page)
         .child(when(
             move || app.busy.get() || !app.message.with(String::is_empty),
@@ -504,13 +499,13 @@ fn wordmark() -> View {
 fn nav_group(name: &str) -> Text {
     caption(name.to_owned())
         .font_weight(FontWeight::SEMIBOLD)
-        .px_2()
-        .pb_1()
+        .px(px(10.))
+        .pb(px(6.))
 }
 
 fn navigation(app: App, menu: Signal<bool>, narrow: Memo<bool>) -> View {
-    let mut library = view()
-        .gap(px(1.))
+    let library = view()
+        .gap(px(2.))
         .child(nav_group("Library"))
         .child(nav_item(
             app,
@@ -523,13 +518,13 @@ fn navigation(app: App, menu: Signal<bool>, narrow: Memo<bool>) -> View {
         .child(dynamic(move || {
             app.revision.get();
             app.load(category_list(app.db()), move |categories| {
-                let mut list = view().gap(px(1.));
+                let mut list = view().gap(px(2.));
                 for cat in categories {
                     list = list.child(nav_item(
                         app,
                         menu,
                         &cat.name,
-                        Icon::Category,
+                        Icon::Book,
                         Page::Library,
                         Some(cat.id),
                     ));
@@ -537,38 +532,34 @@ fn navigation(app: App, menu: Signal<bool>, narrow: Memo<bool>) -> View {
                 list.into_element()
             })
         }));
-    library = library.child(nav_item(
-        app,
-        menu,
-        "Import",
-        Icon::Import,
-        Page::Import,
-        None,
-    ));
-    let mut organize = view().gap(px(1.)).child(nav_group("Organize"));
-    for (target, name, glyph) in [
-        (Page::Categories, "Categories", Icon::Categories),
-        (Page::Tags, "Tags", Icon::Tags),
-        (Page::Authors, "Authors", Icon::Authors),
-        (Page::Schemas, "Schemas", Icon::Schemas),
-        (Page::Prompts, "Prompts", Icon::Prompts),
-    ] {
-        organize = organize.child(nav_item(app, menu, name, glyph, target, None));
-    }
+    let group = |name: &str, items: &[(Page, &str, Icon)]| {
+        let mut list = view().gap(px(2.)).child(nav_group(name));
+        for &(target, caption_text, glyph) in items {
+            list = list.child(nav_item(app, menu, caption_text, glyph, target, None));
+        }
+        list
+    };
+    let manage = group(
+        "Manage",
+        &[
+            (Page::Categories, "Categories", Icon::Categories),
+            (Page::Tags, "Tags", Icon::Tags),
+            (Page::Authors, "Authors", Icon::Authors),
+            (Page::Cleanup, "Cleanup", Icon::Cleanup),
+        ],
+    );
+    let advanced = group(
+        "Advanced",
+        &[
+            (Page::Schemas, "Schemas", Icon::Schemas),
+            (Page::Prompts, "Prompts", Icon::Prompts),
+        ],
+    );
     let footer = view()
-        .gap(px(1.))
         .px_3()
         .py_3()
         .border_t_1()
         .border_color(rule)
-        .child(nav_item(
-            app,
-            menu,
-            "Cleanup",
-            Icon::Cleanup,
-            Page::Cleanup,
-            None,
-        ))
         .child(nav_item(
             app,
             menu,
@@ -592,27 +583,43 @@ fn navigation(app: App, menu: Signal<bool>, narrow: Memo<bool>) -> View {
         .border_r_1()
         .border_color(rule)
         .child(when(
-            move || !narrow.get() && band() > px(0.),
-            move || view().h(band()).flex_shrink_0().window_drag(true),
-        ))
-        .child(when(
             move || !narrow.get(),
             move || {
-                wordmark()
-                    .px_5()
-                    .pt(move || if band() > px(0.) { px(2.) } else { px(26.) })
-                    .pb_4()
+                // The wordmark sits at the foot of the title bar's band,
+                // past the window controls.
+                row()
+                    .flex_shrink_0()
+                    .items_end()
+                    .window_drag(true)
+                    .h(move || {
+                        if band() > px(0.) {
+                            band() + px(12.)
+                        } else {
+                            px(56.)
+                        }
+                    })
+                    .pl(move || {
+                        if band() > px(0.) {
+                            controls() - px(4.)
+                        } else {
+                            px(20.)
+                        }
+                    })
+                    .pb(px(10.))
+                    .child(wordmark())
             },
         ))
         .child(
             scroll().flex_1().min_h_0().child(
                 view()
                     .px_3()
-                    .pt(move || px(if narrow.get() { 12. } else { 4. }))
+                    .pt(move || px(if narrow.get() { 12. } else { 8. }))
                     .pb_4()
-                    .gap_5()
+                    .gap_6()
                     .child(library)
-                    .child(organize),
+                    .child(manage)
+                    .child(view().h(px(1.)).mx(px(10.)).bg(rule))
+                    .child(advanced),
             ),
         )
         .child(footer)
@@ -629,14 +636,14 @@ fn nav_button(
         .selected(selected)
         .on_press(action)
         .rounded(px(RADIUS))
-        .px_2()
-        .min_h(px(30.))
+        .px(px(10.))
+        .min_h(px(32.))
         .min_w_0()
         .justify_center()
-        .bg(move || if selected() { wash() } else { clear() })
+        .bg(move || if selected() { tint() } else { clear() })
         .transition_colors()
         .duration(tween(INSTANT))
-        .hover(|s| s.bg(wash))
+        .hover(move |s| if selected() { s } else { s.bg(wash) })
         .active(|s| s.bg(rule))
         .focus(|s| s.outline(px(2.)).outline_color(accent))
         .child(
@@ -650,11 +657,11 @@ fn nav_button(
                     },
                 ))
                 .child(label(name).number_of_lines(1).style_with(move |s| {
-                    s.font_weight(if selected() {
-                        FontWeight::SEMIBOLD
+                    if selected() {
+                        s.font_weight(FontWeight::MEDIUM).text_color(accent)
                     } else {
-                        FontWeight::NORMAL
-                    })
+                        s.font_weight(FontWeight::NORMAL)
+                    }
                 })),
         )
 }

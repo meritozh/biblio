@@ -4,6 +4,7 @@ mod catalog;
 mod detail;
 mod filters;
 mod imports;
+mod paged;
 mod search;
 mod selection;
 mod settings;

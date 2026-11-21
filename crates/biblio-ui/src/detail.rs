@@ -27,7 +27,7 @@ fn extension_of(path: &str) -> String {
 /// A catalogue slip in a 3:4 frame: the real cover when there is one,
 /// otherwise the title typeset on a plain ruled slip. `with_title` adds
 /// the title under a real cover (the shelf; the file page has its own).
-fn slip_face(
+pub(crate) fn slip_face(
     app: App,
     id: i64,
     title: String,
@@ -64,10 +64,13 @@ fn slip_face(
             .bg(sheet)
             .border_1()
             .border_color(keyline)
+            // The leading corners stay clear for the shelf's favourite and
+            // storage marks.
             .child(
                 caption(extension.clone())
                     .letter_spacing(px(0.8))
-                    .number_of_lines(1),
+                    .number_of_lines(1)
+                    .self_end(),
             )
             .child(
                 subheading(&title)
@@ -77,6 +80,7 @@ fn slip_face(
             )
             .child(
                 row()
+                    .justify_end()
                     .pt_2()
                     .min_h(px(25.))
                     .border_t_1()
@@ -110,7 +114,7 @@ pub fn card_face(app: App, file: &api::FileListItem) -> AnyElement {
             file.display_name.clone(),
             extension_of(&file.path),
             file.progress.clone().unwrap_or_default(),
-            true,
+            false,
         ))
         .into_element()
 }
@@ -119,7 +123,7 @@ pub fn screen(app: App, id: i64) -> AnyElement {
     dynamic(move || {
         app.revision.get();
         app.load(file::create_replace::file_get(app.db(), id), move |f| {
-            page(app, f)
+            file_page(app, f)
         })
     })
     .into_element()
@@ -247,19 +251,22 @@ fn actions(app: App, file: &api::FileWithDetails) -> impl IntoElement {
         }))
 }
 
-fn page(app: App, file: &api::FileWithDetails) -> AnyElement {
+fn file_page(app: App, file: &api::FileWithDetails) -> AnyElement {
     let id = file.id;
     let favorite = file.is_favorite;
-    let top = row()
-        .justify_between()
-        .child(control(
-            "Back to library",
-            Variant::Ghost,
-            ButtonSize::Sm,
-            Some(Icon::Back),
-            move || app.page.set(Page::Library),
-        ))
-        .child(actions(app, file));
+    let header = header_bar(
+        icon_button("Back to library", Icon::Back, Some("⌘["), move || {
+            app.page.set(Page::Library)
+        })
+        .into_element(),
+        file.display_name.clone(),
+        Some(
+            caption(extension_of(&file.path))
+                .letter_spacing(px(0.6))
+                .into_element(),
+        ),
+        Some(actions(app, file).into_element()),
+    );
     let aside = view()
         .gap_2()
         .w(move || if compact() { px(160.) } else { px(200.) })
@@ -299,20 +306,19 @@ fn page(app: App, file: &api::FileWithDetails) -> AnyElement {
             .w_full(),
         );
     let body = form(app, file);
-    scroll()
-        .flex_1()
-        .min_h_0()
-        .child(
-            view().gap_5().pb_8().child(top).child(
-                wrap()
-                    .items_start()
-                    .gap_x(px(40.))
-                    .gap_y(px(24.))
-                    .child(aside)
-                    .child(body),
-            ),
-        )
-        .into_element()
+    page(
+        header,
+        page_scroll(
+            960.,
+            wrap()
+                .items_start()
+                .gap_x(px(40.))
+                .gap_y(px(24.))
+                .child(aside)
+                .child(body),
+        ),
+    )
+    .into_element()
 }
 
 fn form(app: App, file: &api::FileWithDetails) -> View {
@@ -326,12 +332,8 @@ fn form(app: App, file: &api::FileWithDetails) -> View {
         .flex_1()
         .min_w(px(280.))
         .max_w(px(640.))
-        .child(
-            view()
-                .gap_1()
-                .child(title(&file.display_name).number_of_lines(3))
-                .child(caption(&file.path).selectable(true).number_of_lines(2)),
-        )
+        // The header names the file; the form starts with where it lives.
+        .child(caption(&file.path).selectable(true).number_of_lines(2))
         .child(
             section("Details")
                 .child(field("Title", name))

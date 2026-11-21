@@ -41,8 +41,9 @@ impl Selection {
         )
         .into_element()
     }
-    /// The bulk commands, shown while selecting.
-    pub fn bar(self, app: App, page: Signal<Vec<i64>>) -> AnyElement {
+    /// The bulk commands, shown while selecting. `shown` gives the files
+    /// loaded on the shelf.
+    pub fn bar(self, app: App, shown: impl Fn() -> Vec<i64> + Copy + 'static) -> AnyElement {
         when(
             move || self.active.get(),
             move || {
@@ -96,8 +97,8 @@ impl Selection {
                             .text_color(ink)
                             .min_w(px(88.)),
                     )
-                    .child(ghost("Select this page", move || {
-                        let shown = page.get_untracked();
+                    .child(ghost("Select all shown", move || {
+                        let shown = untracked(shown);
                         self.ids.update(|s| s.extend(shown));
                     }))
                     .child(ghost("Clear selection", move || self.clear()))

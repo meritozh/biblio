@@ -1,20 +1,44 @@
-//! The library: a collection's header, its toolbar (search, filters, sort,
-//! layout, selection, arrangement) and the shelf of results.
+//! The library: a collection's header (search, a random pick, Add), its
+//! toolbar (grouping, sort, favourites, filters, layout, selection) and the
+//! shelf of results. The shelf is virtualized: only the slips or rows in
+//! view exist, and the next files load as it nears the last.
 use crate::{
     app::{App, Page},
-    detail, filters, imports, search,
+    detail, filters, imports,
+    paged::{self, Paged},
+    search,
     selection::Selection,
-    ui::*,
+    ui::{self, *},
 };
 use biblio_core::commands::{
     Category, FileListItem, category,
-    file::{self, FilterCondition},
+    file::{self, FilterCondition, collections::Collection},
 };
 use nsh_core::prelude::*;
 use serde_json::Value;
-use std::{collections::HashMap, rc::Rc};
+use shelf::{file_grid, file_table, group_shelf, lucky_picks};
+use std::rc::Rc;
+mod shelf;
 
-const PAGE_SIZE: i32 = 30;
+/// Files loaded at a time.
+const CHUNK: i64 = 60;
+/// The narrowest a slip gets before the grid drops a column.
+const SLIP_MIN: f32 = 156.;
+const GRID_GAP_X: f32 = 28.;
+const GRID_GAP_Y: f32 = 28.;
+
+/// A file on the shelf with the schema fields its card shows.
+pub struct Shelved {
+    pub file: FileListItem,
+    pub fields: Vec<(String, String)>,
+}
+
+/// A group the grouped view opened: its title and its files.
+#[derive(Clone, PartialEq)]
+pub struct Opened {
+    title: String,
+    ids: Rc<Vec<i64>>,
+}
 
 #[derive(Clone, Copy)]
 pub struct BrowseState {
@@ -24,12 +48,12 @@ pub struct BrowseState {
     sort: Signal<String>,
     desc: Signal<bool>,
     mode: Signal<String>,
+    /// The group open in a grouped view.
+    opened: Signal<Option<Opened>>,
     selection: Selection,
-    offset: Signal<i32>,
     grid: Signal<bool>,
-    lucky: Signal<bool>,
-    /// The size of the result set shown, for the header's count.
-    total: Signal<Option<i64>>,
+    /// The first file in view, so the shelf comes back to it from a file.
+    anchor: Stored<usize>,
 }
 impl BrowseState {
     pub fn new() -> Self {
@@ -40,11 +64,10 @@ impl BrowseState {
             sort: signal("name".into()),
             desc: signal(false),
             mode: signal("flat".into()),
+            opened: signal(None),
             selection: Selection::new(),
-            offset: signal(0),
             grid: signal(true),
-            lucky: signal(false),
-            total: signal(None),
+            anchor: stored(0),
         }
     }
 }
@@ -60,6 +83,17 @@ pub fn screen(app: App) -> AnyElement {
         }
     })
     .into_element()
+}
+
+/// What the shelf shows.
+#[derive(Clone, PartialEq)]
+enum Shelf {
+    /// Files answering the search, filters and sort.
+    Files,
+    /// The groups of a grouped view.
+    Groups(String),
+    /// The files of one group.
+    Group(Opened),
 }
 
 fn browse(app: App, category: Option<&Category>) -> AnyElement {
@@ -79,13 +113,11 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
         sort,
         desc,
         mode,
+        opened,
         selection,
-        offset,
         grid,
-        lucky,
-        total,
+        anchor,
     } = app.browse;
-    let page_ids = signal(Vec::new());
     if seen.with(|p| *p) != Some(cat_id) {
         seen.with(|p| *p = Some(cat_id));
         query.set(String::new());
@@ -95,10 +127,9 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
         sort.set(config["sort"]["by"].as_str().unwrap_or("name").to_owned());
         desc.set(config["sort"]["desc"].as_bool().unwrap_or(false));
         mode.set(config["view_mode"].as_str().unwrap_or("flat").to_owned());
-        offset.set(0);
+        opened.set(None);
         selection.clear();
-        lucky.set(false);
-        total.set(None);
+        anchor.with(|a| *a = 0);
     }
     let previous = stored((
         query.get_untracked(),
@@ -106,225 +137,402 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
         sort.get_untracked(),
         desc.get_untracked(),
         mode.get_untracked(),
+        opened.get_untracked(),
     ));
     effect(move || {
-        let next = (query.get(), chips.get(), sort.get(), desc.get(), mode.get());
+        let next = (
+            query.get(),
+            chips.get(),
+            sort.get(),
+            desc.get(),
+            mode.get(),
+            opened.get(),
+        );
         previous.with(|last| {
             if *last != next {
+                if last.4 != next.4 {
+                    opened.set(None);
+                }
                 *last = next;
-                offset.set(0);
+                anchor.with(|a| *a = 0);
                 selection.clear();
             }
         });
     });
-    let schema_filter = category.map(|c| c.schema_slug.clone());
-    let count = text(move || match total.get() {
-        Some(1) => "1 file".to_owned(),
-        Some(n) if n > 1 => format!("{n} files"),
+    let shelf = computed(move || {
+        let searching = !query.with(|q| q.trim().is_empty()) || !chips.with(Vec::is_empty);
+        let group = mode.get();
+        match opened.get() {
+            _ if group == "flat" || searching => Shelf::Files,
+            Some(open) => Shelf::Group(open),
+            None => Shelf::Groups(group),
+        }
+    });
+    let files = Paged::<Shelved>::new(app, CHUNK, anchor.with(|a| *a) as i64, move || {
+        app.revision.get();
+        let db = app.db();
+        match shelf.get() {
+            Shelf::Group(open) => {
+                let key = (
+                    open.title.clone(),
+                    String::new(),
+                    vec![],
+                    String::new(),
+                    false,
+                );
+                let ids = open.ids.clone();
+                let fetch = paged::fetcher(move |offset, limit| {
+                    let db = db.clone();
+                    let start = (offset as usize).min(ids.len());
+                    let end = (start + limit as usize).min(ids.len());
+                    let page = ids[start..end].to_vec();
+                    let total = ids.len() as i64;
+                    async move {
+                        let found = file::listing::file_list_by_ids(db.clone(), page).await?;
+                        Ok((with_fields(db, found).await?, total))
+                    }
+                });
+                (key, fetch)
+            }
+            // The groups load on their own; this list stays empty.
+            Shelf::Groups(group) => {
+                let key = (
+                    group,
+                    String::from("\0groups"),
+                    vec![],
+                    String::new(),
+                    false,
+                );
+                (key, paged::fetcher(|_, _| async { Ok((Vec::new(), 0)) }))
+            }
+            Shelf::Files => {
+                let q = query.get();
+                let filters = chips.get().into_iter().map(|c| c.1).collect::<Vec<_>>();
+                let key = (
+                    q.clone(),
+                    sort.get(),
+                    filters.clone(),
+                    String::new(),
+                    desc.get(),
+                );
+                let (by, reverse) = (key.1.clone(), key.4);
+                let fetch = paged::fetcher(move |offset, limit| {
+                    let (db, q, filters, by) = (db.clone(), q.clone(), filters.clone(), by.clone());
+                    async move {
+                        let page = file::listing::file_list(
+                            db.clone(),
+                            cat_id,
+                            None,
+                            None,
+                            Some(by),
+                            Some(reverse),
+                            Some(filters),
+                            Some(q),
+                            Some(limit as i32),
+                            Some(offset as i32),
+                        )
+                        .await?;
+                        Ok((with_fields(db, page.files).await?, page.total))
+                    }
+                });
+                (key, fetch)
+            }
+        }
+    });
+    let groups = app.resource(move || {
+        app.revision.get();
+        let wanted = match shelf.get() {
+            Shelf::Groups(group) => Some(group),
+            _ => None,
+        };
+        let (db, schema) = (app.db(), schema.clone());
+        async move {
+            match wanted {
+                Some(group) => file::collections::collection_list(db, group, schema, cat_id).await,
+                None => Ok(Vec::new()),
+            }
+        }
+    });
+    let lucky = signal(false);
+    let count = count_caption(move || match shelf.get() {
+        Shelf::Groups(_) => match groups.get().as_deref() {
+            Some(Ok(list)) if !list.is_empty() => {
+                let n: usize = list.iter().map(|g| g.file_ids.len()).sum();
+                format!(
+                    "{} in {}",
+                    counted(n as i64, "file", "files"),
+                    counted(list.len() as i64, "group", "groups")
+                )
+            }
+            _ => String::new(),
+        },
         // The empty state says it; a "0 files" caption would repeat it.
-        _ => String::new(),
-    })
-    .text_size(px(13.))
-    .text_color(secondary);
+        _ => match files.total.get() {
+            Some(n) if n > 0 => counted(n, "file", "files"),
+            _ => String::new(),
+        },
+    });
     let header = page_header(
+        Icon::Library,
         title_text,
         Some(count.into_element()),
         Some(
-            icon_label("Import files", Icon::Plus, move || {
-                app.page.set(Page::Import)
-            })
-            .into_element(),
+            row()
+                .gap_2()
+                .child(
+                    view()
+                        .w(move || px(if compact() { 200. } else { 300. }))
+                        .child(search::bar(app, query, chips)),
+                )
+                .child(control(
+                    "Lucky",
+                    Variant::Ghost,
+                    ButtonSize::Md,
+                    Some(Icon::Shuffle),
+                    move || lucky.set(true),
+                ))
+                .child(
+                    control(
+                        "Add",
+                        Variant::Primary,
+                        ButtonSize::Md,
+                        Some(Icon::Plus),
+                        move || app.page.set(Page::Import),
+                    )
+                    .accessibility_label("Add files"),
+                )
+                .into_element(),
         ),
     );
-    let tools = wrap()
-        .gap_2()
-        .min_w_0()
-        .flex_shrink(1.)
-        .child(filters::editor(app, chips))
-        .child(sort_menu(app, sort, desc, schema_filter))
-        .child(segmented(
-            "Layout",
-            vec![
-                Segment::icon("grid", "Grid", Icon::Grid),
-                Segment::icon("list", "List", Icon::List),
-            ],
-            move || if grid.get() { "grid" } else { "list" },
-            move |v| grid.set(v == "grid"),
-        ))
-        .child(toggle_button(
-            "Select files",
-            Icon::Select,
-            move || selection.active.get(),
+    let schema_filter = category.map(|c| c.schema_slug.clone());
+    let mut tools = wrap().gap(px(6.)).min_w_0().flex_1();
+    if cat_id.is_some() {
+        tools = tools.child(view_menu(mode));
+    }
+    tools = tools
+        .child(sort_menu(app, sort, schema_filter))
+        .child(icon_toggle(
             move || {
-                selection.active.update(|v| *v = !*v);
-                selection.clear();
+                if desc.get() {
+                    "Descending order"
+                } else {
+                    "Ascending order"
+                }
             },
+            move || {
+                if desc.get() {
+                    Icon::ArrowDown
+                } else {
+                    Icon::ArrowUp
+                }
+            },
+            move || false,
+            move || desc.update(|v| *v = !*v),
         ))
-        .child(arrange_menu(app, mode, lucky, cat_id.is_some()));
-    let toolbar = wrap()
+        .child(icon_toggle(
+            move || "Favorites only",
+            move || Icon::Star,
+            move || chips.with(|c| c.iter().any(is_favorite_filter)),
+            move || toggle_favorites(chips),
+        ))
+        .child(filters::editor(app, chips));
+    let toolbar = row()
         .items_start()
-        .gap_2()
-        .pt_4()
-        .z_index(2)
-        .child(
-            view()
-                .flex_1()
-                .min_w(px(240.))
-                .child(search::bar(app, query, chips)),
-        )
-        .child(tools);
-    let results = dynamic(move || {
-        app.revision.get();
-        let q = query.get();
-        let filters = chips.get().into_iter().map(|c| c.1).collect::<Vec<_>>();
-        let db = app.db();
-        let group = mode.get();
-        let random = lucky.get();
-        let is_grid = grid.get();
-        // Nothing is on screen until this load finishes, so "Select this
-        // page" must not reach the view just left.
-        page_ids.set(vec![]);
-        if group != "flat" && q.is_empty() && filters.is_empty() && !random {
-            return app.load(
-                file::collections::collection_list(db, group, schema.clone(), cat_id),
-                move |groups| {
-                    total.set(Some(groups.iter().map(|g| g.file_ids.len() as i64).sum()));
-                    if groups.is_empty() {
-                        return shelf_empty(false, cat_id.is_some());
-                    }
-                    let mut body = view().gap(px(2.)).pb_6();
-                    let mut shown = Vec::with_capacity(groups.len());
-                    for group in groups {
-                        let ids = group.file_ids.clone();
-                        let count = format!("{}", ids.len());
-                        let expanded = signal(false);
-                        let loaded = signal(Vec::new());
-                        shown.push((expanded, loaded));
-                        body = body.child(reveal(
-                            group.title.clone(),
-                            Some(count),
-                            expanded,
-                            move || {
-                                view()
-                                    .pt_2()
-                                    .pb_4()
-                                    .child(group_page(app, ids.clone(), is_grid, selection, loaded))
-                                    .into_element()
-                            },
-                        ));
-                    }
-                    // The files on screen are the shown page of every open
-                    // group.
-                    effect(move || {
-                        page_ids.set(
-                            shown
-                                .iter()
-                                .filter(|(open, _)| open.get())
-                                .flat_map(|(_, loaded)| loaded.get())
-                                .collect(),
-                        );
-                    });
-                    body.into_element()
-                },
-            );
-        }
-        let pos = if random { 0 } else { offset.get() };
-        let key = sort.get();
-        let reverse = desc.get();
-        let filtered = !q.trim().is_empty() || !filters.is_empty();
-        app.load(
-            async move {
-                if random {
-                    let files = file::search_lucky_status::file_lucky(
-                        db,
-                        cat_id,
-                        Some(q),
-                        Some(filters),
-                        Some(3),
-                    )
-                    .await?;
-                    return Ok(file::listing::FileListResponse {
-                        total: files.len() as i64,
-                        files,
-                    });
-                }
-                file::listing::file_list(
-                    db,
-                    cat_id,
-                    None,
-                    None,
-                    Some(key),
-                    Some(reverse),
-                    Some(filters),
-                    Some(q),
-                    Some(PAGE_SIZE),
-                    Some(pos),
-                )
-                .await
-            },
-            move |page| {
-                if pos > 0 && i64::from(pos) >= page.total {
-                    // The last row was removed. Move the pager itself so a
-                    // later refresh starts on the same page the user sees.
-                    let size = i64::from(PAGE_SIZE);
-                    let last = (page.total - 1).max(0) / size * size;
-                    offset.set(last as i32); // last <= pos
-                    return label("Loading…").into_element();
-                }
-                total.set(Some(page.total));
-                page_ids.set(page.files.iter().map(|f| f.id).collect());
-                if page.total == 0 {
-                    return shelf_empty(filtered, cat_id.is_some());
-                }
-                let shown = page.files.len() as i64;
-                let mut body =
-                    view()
-                        .gap_4()
-                        .pb_6()
-                        .child(file_rows(app, &page.files, is_grid, selection));
-                if page.total > i64::from(PAGE_SIZE) {
-                    body = body.child(pager(
-                        format!(
-                            "{}–{} of {}",
-                            i64::from(pos) + 1,
-                            i64::from(pos) + shown,
-                            page.total
-                        ),
-                        (pos > 0).then_some(move || offset.set((pos - PAGE_SIZE).max(0))),
-                        pos.checked_add(PAGE_SIZE)
-                            .filter(|&next| i64::from(next) < page.total)
-                            .map(|next| move || offset.set(next)),
-                        ("Previous", "Next"),
-                    ));
-                }
-                body.into_element()
-            },
-        )
-    });
-    stack()
-        .flex_1()
-        .min_h_0()
         .gap_3()
-        .on_file_drop(move |e: &FileDropEvent| imports::drop_urls(app, &e.uris))
-        .child(header)
-        .child(toolbar)
-        .child(search::chips(chips))
-        .child(selection.bar(app, page_ids))
+        .px(inset)
+        .pt_4()
+        .pb_3()
+        .z_index(3)
+        .child(tools)
         .child(
-            scroll()
-                .flex_1()
-                .min_h_0()
-                .child(view().pt_2().child(results)),
-        )
-        .into_element()
+            row()
+                .gap_2()
+                .flex_shrink_0()
+                .child(segmented(
+                    "Layout",
+                    vec![
+                        Segment::icon("grid", "Grid", Icon::Grid),
+                        Segment::icon("list", "List", Icon::List),
+                    ],
+                    move || if grid.get() { "grid" } else { "list" },
+                    move |v| grid.set(v == "grid"),
+                ))
+                .child(
+                    control("Select", Variant::Ghost, ButtonSize::Md, None, move || {
+                        selection.active.update(|v| *v = !*v);
+                        selection.clear();
+                    })
+                    .accessibility_label("Select files")
+                    .selected(move || selection.active.get())
+                    .bg(move || {
+                        if selection.active.get() {
+                            tint()
+                        } else {
+                            clear()
+                        }
+                    }),
+                ),
+        );
+    let breadcrumb = dynamic(move || match shelf.get() {
+        Shelf::Group(open) => row()
+            .gap_2()
+            .px(inset)
+            .pb_3()
+            .child(control(
+                "All groups",
+                Variant::Ghost,
+                ButtonSize::Sm,
+                Some(Icon::Back),
+                move || opened.set(None),
+            ))
+            .child(caption("/"))
+            .child(
+                label(open.title)
+                    .font_weight(FontWeight::MEDIUM)
+                    .number_of_lines(1),
+            )
+            .into_element(),
+        _ => view().hidden().into_element(),
+    });
+    let filtered = move || !query.with(|q| q.trim().is_empty()) || !chips.with(Vec::is_empty);
+    // Rebuilt only when the kind of content changes; the list or table
+    // inside follows the rows as they load.
+    let state = computed(move || {
+        let kind = match shelf.get() {
+            Shelf::Groups(_) => match groups.get().as_deref() {
+                None => 0,
+                Some(Ok(list)) if list.is_empty() => 1,
+                Some(Err(_)) => 3,
+                Some(Ok(_)) => 4,
+            },
+            _ => match files.total.get() {
+                None => 0,
+                Some(0) => 1,
+                Some(_) => 2,
+            },
+        };
+        (kind, grid.get(), matches!(shelf.get(), Shelf::Groups(_)))
+    });
+    let results = dynamic(move || {
+        let (kind, is_grid, _) = state.get();
+        untracked(|| match kind {
+            0 => view().px(inset).child(caption("Loading…")).into_element(),
+            1 => shelf_empty(filtered(), cat_id.is_some()),
+            3 => match groups.get().as_deref() {
+                Some(Err(e)) => view().px(inset).child(label(e.clone())).into_element(),
+                _ => view().into_element(),
+            },
+            4 => group_shelf(app, groups, opened, is_grid),
+            _ if is_grid => file_grid(app, files, selection, anchor),
+            _ => file_table(app, files, selection),
+        })
+    });
+    let shown = move || {
+        files
+            .rows
+            .with(|r| r.iter().map(|s| s.file.id).collect::<Vec<_>>())
+    };
+    let picks = modal(
+        lucky,
+        || "Lucky picks".to_owned(),
+        720.,
+        move || lucky_picks(app, cat_id, query, chips, lucky),
+    );
+    ui::page(
+        header,
+        view()
+            .flex_1()
+            .min_h_0()
+            .child(toolbar)
+            .child(view().px(inset).child(search::chips(chips)))
+            .child(view().px(inset).child(selection.bar(app, shown)))
+            .child(breadcrumb)
+            .child(view().flex_1().min_h_0().child(results))
+            .child(picks),
+    )
+    .on_file_drop(move |e: &FileDropEvent| imports::drop_urls(app, &e.uris))
+    .into_element()
 }
 
-fn sort_menu(
-    app: App,
-    sort: Signal<String>,
-    desc: Signal<bool>,
-    schema_filter: Option<String>,
-) -> impl IntoElement {
+/// The cards' schema fields of `files`, with them.
+async fn with_fields(
+    db: biblio_core::Library,
+    files: Vec<FileListItem>,
+) -> Result<Vec<Shelved>, String> {
+    let mut values = file::listing::card_metadata(db, files.iter().map(|f| f.id).collect()).await?;
+    Ok(files
+        .into_iter()
+        .map(|file| Shelved {
+            fields: values.remove(&file.id).unwrap_or_default(),
+            file,
+        })
+        .collect())
+}
+
+fn is_favorite_filter(c: &search::Chip) -> bool {
+    c.1.field == "favorite" && c.1.op == "is" && c.1.value.as_ref() == Some(&Value::Bool(true))
+}
+
+/// Shows only favourites, or every file again.
+fn toggle_favorites(chips: Signal<Vec<search::Chip>>) {
+    chips.update(|list| {
+        if list.iter().any(is_favorite_filter) {
+            list.retain(|c| !is_favorite_filter(c));
+        } else {
+            list.push(search::Chip(
+                "Favorited".into(),
+                FilterCondition {
+                    field: "favorite".into(),
+                    op: "is".into(),
+                    value: Some(Value::Bool(true)),
+                    ..Default::default()
+                },
+            ));
+        }
+    });
+}
+
+/// A square toolbar button that stays pressed while `on`; its name and
+/// icon follow its state.
+fn icon_toggle(
+    name: impl Fn() -> &'static str + 'static,
+    glyph: impl Fn() -> Icon + 'static,
+    on: impl Fn() -> bool + Copy + 'static,
+    action: impl Fn() + 'static,
+) -> AnyElement {
+    let action = Rc::new(action);
+    dynamic(move || {
+        let action = action.clone();
+        icon_button(name(), glyph(), None, move || action())
+            .selected(on)
+            .bg(move || if on() { tint() } else { clear() })
+            .into_element()
+    })
+    .into_element()
+}
+
+fn view_menu(mode: Signal<String>) -> impl IntoElement {
+    let arrange = move |name: &'static str, key: &'static str| {
+        menu_radio(
+            name,
+            move || mode.with(|m| m == key),
+            move || mode.set(key.into()),
+        )
+    };
+    menu(tool_trigger("View", Some(Icon::Layers), move || {
+        match mode.get().as_str() {
+            "author" => "By author",
+            "name_prefix" => "By title",
+            _ => "All",
+        }
+        .to_owned()
+    }))
+    .child(arrange("All", "flat"))
+    .child(arrange("By author", "author"))
+    .child(arrange("By title", "name_prefix"))
+}
+
+fn sort_menu(app: App, sort: Signal<String>, schema_filter: Option<String>) -> impl IntoElement {
     let by = move |name: &'static str, key: &'static str| {
         menu_radio(
             name,
@@ -333,109 +541,53 @@ fn sort_menu(
         )
     };
     let schema_filter = stored(schema_filter);
-    menu(trigger("Sort", Some(Icon::Sort), true, true))
-        .child(menu_heading("Sort by"))
-        .child(by("Name", "name"))
-        .child(by("Date added", "created"))
-        .child(by("Date modified", "updated"))
-        .child(app.load(
-            biblio_core::commands::schemas::schema_list(app.db()),
-            move |schemas| {
-                let mut extra = view().gap(px(1.));
-                let mut seen = std::collections::HashSet::new();
-                for s in schemas {
-                    if schema_filter.with(|f| f.as_ref().is_some_and(|slug| slug != &s.schema.id)) {
-                        continue;
-                    }
-                    for f in &s.fields {
-                        if f.sortable && f.semantic.is_none() && seen.insert(f.field_key.clone()) {
-                            let key = stored(format!("field:{}", f.field_key));
-                            extra = extra.child(menu_radio(
-                                f.label.clone(),
-                                move || key.with(|k| sort.with(|s| s == k)),
-                                move || sort.set(key.with(|k| k.clone())),
-                            ));
-                        }
+    // Names of the schema fields one can sort by, for the trigger.
+    let labels = signal(Vec::<(String, String)>::new());
+    let fields = app.load(
+        biblio_core::commands::schemas::schema_list(app.db()),
+        move |schemas| {
+            let mut extra = view().gap(px(1.));
+            let mut seen = std::collections::HashSet::new();
+            let mut names = Vec::new();
+            for s in schemas {
+                if schema_filter.with(|f| f.as_ref().is_some_and(|slug| slug != &s.schema.id)) {
+                    continue;
+                }
+                for f in &s.fields {
+                    if f.sortable && f.semantic.is_none() && seen.insert(f.field_key.clone()) {
+                        let key = stored(format!("field:{}", f.field_key));
+                        names.push((key.with(|k| k.clone()), f.label.clone()));
+                        extra = extra.child(menu_radio(
+                            f.label.clone(),
+                            move || key.with(|k| sort.with(|s| s == k)),
+                            move || sort.set(key.with(|k| k.clone())),
+                        ));
                     }
                 }
-                extra.into_element()
-            },
-        ))
-        .child(menu_separator())
-        .child(menu_check(
-            "Reverse order",
-            move || desc.get(),
-            move || desc.update(|v| *v = !*v),
-        ))
-}
-
-fn arrange_menu(
-    app: App,
-    mode: Signal<String>,
-    lucky: Signal<bool>,
-    in_category: bool,
-) -> impl IntoElement {
-    let arrange = move |name: &'static str, key: &'static str| {
-        menu_radio(
-            name,
-            move || !lucky.get() && mode.with(|m| m == key),
-            move || {
-                lucky.set(false);
-                mode.set(key.into());
-            },
-        )
-    };
-    let mut m = menu(trigger("View options", Some(Icon::More), false, false))
-        .child(menu_heading("Show"))
-        .child(arrange("All files", "flat"));
-    if in_category {
-        m = m
-            .child(arrange("Group by author", "author"))
-            .child(arrange("Group by title", "name_prefix"));
-    }
-    m.child(menu_separator()).child(menu_item(
-        "Pick at random",
-        Some(Icon::Shuffle),
-        move || {
-            lucky.set(true);
-            app.refresh();
+            }
+            labels.set(names);
+            extra.into_element()
         },
-    ))
-}
-
-/// "31–60 of 74" with Previous and Next at the foot of a result list.
-fn pager(
-    range: String,
-    previous: Option<impl Fn() + 'static>,
-    next: Option<impl Fn() + 'static>,
-    names: (&str, &str),
-) -> View {
-    let mut buttons = row().gap_1();
-    let has_previous = previous.is_some();
-    let has_next = next.is_some();
-    buttons = buttons.child(
-        icon_button(names.0, Icon::Back, None, move || {
-            if let Some(f) = &previous {
-                f()
-            }
-        })
-        .disabled(!has_previous),
     );
-    buttons = buttons.child(
-        icon_button(names.1, Icon::Forward, None, move || {
-            if let Some(f) = &next {
-                f()
-            }
-        })
-        .disabled(!has_next),
-    );
-    row()
-        .justify_between()
-        .pt_3()
-        .border_t_1()
-        .border_color(rule)
-        .child(caption(range))
-        .child(buttons)
+    menu(tool_trigger("Sort", None, move || {
+        let key = sort.get();
+        match key.as_str() {
+            "name" => "Name".to_owned(),
+            "created" => "Date added".to_owned(),
+            "updated" => "Date modified".to_owned(),
+            other => labels.with(|l| {
+                l.iter()
+                    .find(|(k, _)| k == other)
+                    .map(|(_, name)| name.clone())
+                    .unwrap_or_else(|| other.trim_start_matches("field:").to_owned())
+            }),
+        }
+    }))
+    .child(menu_heading("Sort by"))
+    .child(by("Name", "name"))
+    .child(by("Date added", "created"))
+    .child(by("Date modified", "updated"))
+    .child(fields)
 }
 
 fn shelf_empty(filtered: bool, category: bool) -> AnyElement {
@@ -452,258 +604,8 @@ fn shelf_empty(filtered: bool, category: bool) -> AnyElement {
     } else {
         (
             "Your library is empty",
-            "Drop files here or choose Import files to start your collection.",
+            "Drop files here or choose Add to start your collection.",
         )
     };
     empty(heading, help).into_element()
-}
-
-/// Publishes the IDs once this group's current page has loaded.
-fn group_page(
-    app: App,
-    ids: Vec<i64>,
-    grid: bool,
-    selection: Selection,
-    loaded: Signal<Vec<i64>>,
-) -> AnyElement {
-    let offset = signal(0usize);
-    dynamic(move || {
-        let start = offset.get();
-        let end = (start + PAGE_SIZE as usize).min(ids.len());
-        loaded.set(Vec::new());
-        let mut body = view().gap_4().child(app.load(
-            file::listing::file_list_by_ids(app.db(), ids[start..end].to_vec()),
-            move |files| {
-                loaded.set(files.iter().map(|file| file.id).collect());
-                file_rows(app, files, grid, selection)
-            },
-        ));
-        if ids.len() > PAGE_SIZE as usize {
-            body = body.child(pager(
-                format!("{}–{} of {}", start + 1, end, ids.len()),
-                (start > 0).then_some(move || offset.set(start.saturating_sub(PAGE_SIZE as usize))),
-                (end < ids.len()).then_some(move || offset.set(end)),
-                ("Previous in group", "Next in group"),
-            ));
-        }
-        body
-    })
-    .into_element()
-}
-
-type CardFields = Rc<HashMap<i64, Vec<(String, String)>>>;
-
-fn file_rows(app: App, files: &[FileListItem], grid: bool, selection: Selection) -> AnyElement {
-    if files.is_empty() {
-        return empty(
-            "No matching files",
-            "Try another search or remove a filter.",
-        )
-        .into_element();
-    }
-    let extra = signal(CardFields::default());
-    let metadata = app.load(
-        file::listing::card_metadata(app.db(), files.iter().map(|f| f.id).collect()),
-        move |values| {
-            extra.set(Rc::new(values.clone()));
-            view().hidden().into_element()
-        },
-    );
-    let list = if grid {
-        let mut shelf = view()
-            .grid()
-            .grid_template_columns("repeat(auto-fill, minmax(156px, 1fr))")
-            .gap_x(px(20.))
-            .gap_y(px(28.));
-        for file in files {
-            shelf = shelf.child(slip(app, file, selection, extra));
-        }
-        shelf
-    } else {
-        let mut rows = view().border_t_1().border_color(rule);
-        for file in files {
-            rows = rows.child(list_row(app, file, selection, extra));
-        }
-        rows
-    };
-    view().child(metadata).child(list).into_element()
-}
-
-fn authors_of(file: &FileListItem) -> String {
-    file.authors
-        .iter()
-        .map(|a| a.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-fn status_of(file: &FileListItem) -> String {
-    format!(
-        "{} · {}",
-        file.storage_kind.as_deref().unwrap_or("local"),
-        file.file_status
-    )
-}
-fn format_of(file: &FileListItem) -> String {
-    std::path::Path::new(&file.path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("")
-        .to_uppercase()
-}
-
-fn favorite(app: App, id: i64, on: bool) -> impl IntoElement {
-    let name = if on { "Unfavorite" } else { "Favorite" };
-    nsh_base::button()
-        .accessibility_label(name)
-        .selected(on)
-        .w(px(28.))
-        .h(px(28.))
-        .flex_shrink_0()
-        .items_center()
-        .justify_center()
-        .rounded(px(RADIUS))
-        .transition()
-        .duration(tween(INSTANT))
-        .hover(|s| s.bg(wash))
-        .active(|s| s.bg(rule).scale(press_scale(0.95)))
-        .focus(|s| s.outline(px(2.)).outline_color(accent))
-        .on_press(move || app.save(file::update_favorite::file_set_favorite(app.db(), id, !on)))
-        .child(
-            view()
-                .w(px(28.))
-                .h(px(28.))
-                .items_center()
-                .justify_center()
-                .tooltip(hint(name))
-                .child(favorite_mark(on)),
-        )
-}
-
-fn fields(id: i64, extra: Signal<CardFields>) -> AnyElement {
-    dynamic(move || {
-        let values = extra.get();
-        let mut lines = view().gap(px(2.));
-        if let Some(items) = values.get(&id).filter(|v| !v.is_empty()) {
-            for (name, value) in items {
-                lines = lines.child(caption(format!("{name} · {value}")).number_of_lines(1));
-            }
-            lines
-        } else {
-            view().hidden()
-        }
-    })
-    .into_element()
-}
-
-/// The commands about one file, for its context menu.
-fn file_menu(app: App, file: &FileListItem, selection: Selection, about: View) -> impl IntoElement {
-    let id = file.id;
-    let on = file.is_favorite;
-    let path = file.path.clone();
-    context_menu(about)
-        .child(menu_item("Open", Some(Icon::Open), move || {
-            app.page.set(Page::File(id))
-        }))
-        .child(menu_item(
-            if on { "Unfavorite" } else { "Favorite" },
-            Some(Icon::Star),
-            move || app.save(file::update_favorite::file_set_favorite(app.db(), id, !on)),
-        ))
-        .child(menu_item("Copy path", Some(Icon::Copy), move || {
-            set_clipboard(path.clone());
-            app.message.set("Path copied".into());
-        }))
-        .child(menu_separator())
-        .child(menu_item(
-            if selection.ids.with_untracked(|s| s.contains(&id)) {
-                "Deselect"
-            } else {
-                "Select"
-            },
-            Some(Icon::Select),
-            move || {
-                selection.active.set(true);
-                selection.toggle(id);
-            },
-        ))
-}
-
-fn slip(
-    app: App,
-    file: &FileListItem,
-    selection: Selection,
-    extra: Signal<CardFields>,
-) -> impl IntoElement {
-    let id = file.id;
-    let authors = authors_of(file);
-    let mut body = view()
-        .w_full()
-        .min_w_0()
-        .gap(px(6.))
-        .child(detail::card_face(app, file))
-        .child(selection.control(id, &file.display_name));
-    if !authors.is_empty() {
-        body = body.child(note(authors).text_size(px(13.)).number_of_lines(2));
-    }
-    body = body.child(fields(id, extra)).child(
-        row()
-            .justify_between()
-            .gap_1()
-            .child(caption(status_of(file)).number_of_lines(1).flex_1())
-            .child(favorite(app, id, file.is_favorite)),
-    );
-    file_menu(app, file, selection, body)
-}
-
-fn list_row(
-    app: App,
-    file: &FileListItem,
-    selection: Selection,
-    extra: Signal<CardFields>,
-) -> impl IntoElement {
-    let id = file.id;
-    let authors = authors_of(file);
-    let mut who = view().gap(px(2.)).flex_1().min_w_0().child(
-        nsh_base::button()
-            .accessibility_label(file.display_name.clone())
-            .on_press(move || app.page.set(Page::File(id)))
-            .self_start()
-            .rounded(px(RADIUS_SM))
-            .hover(|s| s.opacity(0.72))
-            .focus(|s| s.outline(px(2.)).outline_color(accent))
-            .child(
-                label(file.display_name.clone())
-                    .font_weight(FontWeight::MEDIUM)
-                    .number_of_lines(1),
-            ),
-    );
-    if !authors.is_empty() {
-        who = who.child(caption(authors).number_of_lines(1));
-    }
-    who = who.child(fields(id, extra));
-    let line = row()
-        .gap_3()
-        .min_h(px(48.))
-        .py_2()
-        .px_1()
-        .border_b_1()
-        .border_color(rule)
-        .child(selection.control(id, &file.display_name))
-        .child(
-            caption(format_of(file))
-                .letter_spacing(px(0.6))
-                .w(px(44.))
-                .flex_shrink_0()
-                .number_of_lines(1),
-        )
-        .child(who)
-        .child(
-            caption(status_of(file))
-                .w(px(128.))
-                .flex_shrink_0()
-                .number_of_lines(1)
-                .style_with(|s| if compact() { s.hidden() } else { s }),
-        )
-        .child(favorite(app, id, file.is_favorite));
-    file_menu(app, file, selection, line)
 }

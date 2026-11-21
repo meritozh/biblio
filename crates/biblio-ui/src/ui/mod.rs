@@ -7,6 +7,7 @@ mod field;
 mod icon;
 mod layout;
 mod overlay;
+mod table;
 mod theme;
 
 pub use button::*;
@@ -15,6 +16,7 @@ pub use field::*;
 pub use icon::*;
 pub use layout::*;
 pub use overlay::*;
+pub use table::*;
 pub use theme::*;
 
 use nsh_core::prelude::*;

@@ -6,7 +6,6 @@ use nsh_core::prelude::*;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Icon {
     Library,
-    Category,
     Import,
     Categories,
     Tags,
@@ -19,10 +18,8 @@ pub enum Icon {
     Plus,
     Menu,
     Back,
-    Forward,
     Disclosure,
     More,
-    Sort,
     Grid,
     List,
     Filter,
@@ -38,13 +35,20 @@ pub enum Icon {
     Download,
     Upload,
     Star,
+    Book,
+    Edit,
+    ArrowUp,
+    ArrowDown,
+    Layers,
+    Drive,
+    Cloud,
+    Info,
 }
 
 impl Icon {
     fn path(self) -> &'static str {
         match self {
             Self::Library => "M4 4h4v16H4z M10.5 4h3.5v16h-3.5z M16 5.2l3.2-.9 3 14.6-3.2.9z",
-            Self::Category => "M3 6.5h6l2 2.5h10v10.5H3z",
             Self::Import => "M12 3v12 M7.5 10.5 12 15l4.5-4.5 M4 15v5h16v-5",
             Self::Categories => "M3 8h6l2 2.5h10V20H3z M5 4.5h5l1.5 2",
             Self::Tags => "M3 3h8.5l9.5 9.5-8.5 8.5L3 11.5z M7.5 7.5h.5",
@@ -61,12 +65,10 @@ impl Icon {
             Self::Plus => "M12 4.5v15 M4.5 12h15",
             Self::Menu => "M3.5 6.5h17 M3.5 12h17 M3.5 17.5h17",
             Self::Back => "M14.5 5.5 8 12l6.5 6.5",
-            Self::Forward => "M9.5 5.5 16 12l-6.5 6.5",
             Self::Disclosure => "M9.5 5.5 16 12l-6.5 6.5",
             Self::More => {
                 "M6.5 12a1.2 1.2 0 1 1-2.4 0 1.2 1.2 0 1 1 2.4 0 M13.2 12a1.2 1.2 0 1 1-2.4 0 1.2 1.2 0 1 1 2.4 0 M19.9 12a1.2 1.2 0 1 1-2.4 0 1.2 1.2 0 1 1 2.4 0"
             }
-            Self::Sort => "M7.5 4v16 M4 16.5 7.5 20l3.5-3.5 M16.5 20V4 M13 7.5 16.5 4 20 7.5",
             Self::Grid => {
                 "M4 4h6.5v6.5H4z M13.5 4H20v6.5h-6.5z M4 13.5h6.5V20H4z M13.5 13.5H20V20h-6.5z"
             }
@@ -88,6 +90,18 @@ impl Icon {
             Self::Star => {
                 "M12 3.2l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.2l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9Z"
             }
+            Self::Book => {
+                "M3.5 5.5c3.2-1.2 6-.9 8.5 1 2.5-1.9 5.3-2.2 8.5-1v13c-3.2-1.2-6-.9-8.5 1-2.5-1.9-5.3-2.2-8.5-1z M12 6.5v13"
+            }
+            Self::Edit => "M15.5 4.5l4 4L8.5 19.5h-4v-4z M13 7l4 4",
+            Self::ArrowUp => "M12 19.5v-15 M6.5 10 12 4.5l5.5 5.5",
+            Self::ArrowDown => "M12 4.5v15 M6.5 14 12 19.5l5.5-5.5",
+            Self::Layers => {
+                "M12 3.5l8.5 4.5-8.5 4.5L3.5 8z M3.5 12.5l8.5 4.5 8.5-4.5 M3.5 16.5l8.5 4.5 8.5-4.5"
+            }
+            Self::Drive => "M3.5 13.5 6 5.5h12l2.5 8v5h-17z M3.5 13.5h17 M16.5 16.25h.5",
+            Self::Cloud => "M7 18.5a4.5 4.5 0 0 1-.7-8.9 6 6 0 0 1 11.6 1.6 3.7 3.7 0 0 1-.4 7.3z",
+            Self::Info => "M20.5 12a8.5 8.5 0 1 1-17 0 8.5 8.5 0 1 1 17 0 M12 11v5.5 M12 7.5v.5",
         }
     }
 }

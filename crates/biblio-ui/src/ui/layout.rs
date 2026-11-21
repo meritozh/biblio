@@ -1,38 +1,165 @@
 //! Page structure: headers, sections, rows, empty states and disclosure.
 use super::*;
+use nsh_core::{element::desktop::title_bar, platform::Os};
 
-/// A page header: the title (and an optional caption beside it) on the
-/// leading edge, `trailing` actions on the other, a hairline below.
+/// The height of the band the hidden title bar leaves at the top of the
+/// window: what the host reports, else the height asked for on macOS.
+pub fn band() -> Points {
+    let reported = title_bar().top;
+    if reported > px(0.) {
+        reported
+    } else if os() == Os::MacOs {
+        px(52.)
+    } else {
+        px(0.)
+    }
+}
+/// The width the window controls take at the band's leading end.
+pub fn controls() -> Points {
+    let reported = title_bar().left;
+    if reported > px(0.) {
+        reported
+    } else if os() == Os::MacOs {
+        px(78.)
+    } else {
+        px(0.)
+    }
+}
+
+/// The horizontal inset of page headers and bodies.
+pub fn inset() -> Points {
+    px(if compact() { 16. } else { 24. })
+}
+
+/// A page: its header across the workspace, then `body`, which fills the
+/// rest and scrolls on its own.
+pub fn page(header: View, body: impl IntoElement) -> View {
+    view()
+        .flex_1()
+        .min_w_0()
+        .min_h_0()
+        .child(header)
+        .child(body)
+}
+
+/// The body of a page whose content manages its own scrolling (tables,
+/// shelves): inset, filling the height under the header.
+pub fn page_body() -> View {
+    view()
+        .flex_1()
+        .min_w_0()
+        .min_h_0()
+        .px(inset)
+        .pt_5()
+        .pb_5()
+        .gap_4()
+}
+
+/// The body of a form page: it scrolls, and its content keeps `measure`.
+pub fn page_scroll(measure: f32, content: impl IntoElement) -> Scroll {
+    scroll().flex_1().min_h_0().child(
+        view()
+            .px(inset)
+            .pt_5()
+            .pb_8()
+            .child(view().w_full().max_w(px(measure)).child(content)),
+    )
+}
+
+/// A page header: the page's icon, its title and a caption beside them on
+/// the leading edge, `trailing` commands on the other, a hairline across
+/// the workspace below. On macOS it is also the window's drag band.
 pub fn page_header(
+    glyph: Icon,
+    title_text: impl Into<String>,
+    aside: Option<AnyElement>,
+    trailing: Option<AnyElement>,
+) -> View {
+    header_bar(
+        icon(glyph, secondary).into_element(),
+        title_text,
+        aside,
+        trailing,
+    )
+}
+/// [`page_header`] with `lead` (an icon, a Back button) before the title.
+pub fn header_bar(
+    lead: AnyElement,
     title_text: impl Into<String>,
     aside: Option<AnyElement>,
     trailing: Option<AnyElement>,
 ) -> View {
     let mut lead = row()
-        .gap_3()
+        .gap(px(10.))
         .flex_1()
-        .min_w_0()
-        .items_end()
-        .child(title(title_text));
+        .min_w(px(160.))
+        .child(lead)
+        .child(title(title_text).number_of_lines(1).flex_shrink(1.));
     if let Some(aside) = aside {
-        lead = lead.child(view().pb(px(5.)).child(aside));
+        lead = lead.child(view().flex_shrink_0().pt(px(4.)).child(aside));
     }
     let mut bar = wrap()
         .justify_between()
-        .items_end()
-        .gap_3()
-        .pb_3()
+        .items_center()
+        .gap_x(px(16.))
+        .gap_y(px(10.))
+        .px(inset)
+        .pt(move || {
+            if !compact() && band() > px(0.) {
+                band() - px(20.)
+            } else {
+                px(16.)
+            }
+        })
+        .pb(px(14.))
         .border_b_1()
         .border_color(rule)
-        .child(lead);
+        .z_index(5)
+        .window_drag(true)
+        .child(lead.min_h(px(36.)));
     if let Some(trailing) = trailing {
-        bar = bar.child(row().gap_2().child(trailing));
+        bar = bar.child(row().gap_2().flex_shrink_0().child(trailing));
     }
     bar
 }
-/// The plain header of a page whose title says it all.
-pub fn heading(s: impl Into<String>) -> View {
-    page_header(s, None, None)
+/// The header of a page whose title says it all.
+pub fn heading(glyph: Icon, s: impl Into<String>) -> View {
+    page_header(glyph, s, None, None)
+}
+/// The muted count beside a page title ("3 categories").
+pub fn count_caption(s: impl Fn() -> String + 'static) -> Text {
+    text(s)
+        .text_size(px(13.))
+        .text_color(secondary)
+        .number_of_lines(1)
+}
+/// A count with its noun, singular or plural.
+pub fn counted(n: i64, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+/// A short paragraph explaining a page, above its content.
+pub fn about(s: impl Into<String>) -> Text {
+    note(s).max_w(px(760.)).line_height(px(20.))
+}
+
+/// A note in a quiet keyline box with an info mark: how a page's records
+/// work, when the consequence is not obvious.
+pub fn notice(s: impl Into<String>) -> View {
+    row()
+        .items_start()
+        .gap_3()
+        .px_4()
+        .py_3()
+        .rounded(px(RADIUS))
+        .border_1()
+        .border_color(rule)
+        .child(view().pt(px(2.)).child(icon(Icon::Info, secondary)))
+        .child(note(s).line_height(px(20.)).flex_1())
 }
 
 /// A form group: a hairline above, a serif heading, its rows under it.
@@ -61,16 +188,6 @@ pub fn section_with(s: impl Into<String>, about: impl Into<String>) -> View {
                 .child(subheading(s))
                 .child(note(about.into())),
         )
-}
-/// The first group of a page: a heading and one line of explanation, with
-/// no rule above (the page header already draws one).
-pub fn group(s: impl Into<String>, about: impl Into<String>) -> View {
-    view().gap_3().min_w_0().child(
-        view()
-            .gap_1()
-            .child(subheading(s))
-            .child(note(about.into())),
-    )
 }
 /// A settings row: label (and help) on the leading side, control on the
 /// trailing side; it stacks when the window is narrow.

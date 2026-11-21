@@ -1,287 +1,230 @@
 use crate::{
     app::{App, Page},
-    ui::*,
+    paged::{self, Paged},
+    ui::{self, *},
 };
 use biblio_core::commands::{self as api, author, category, file, prompts, tag};
 use nsh_core::prelude::*;
+mod names;
+mod prompt_page;
 mod schemas;
+use names::names;
+use prompt_page::prompt_list;
 
 pub fn screen(app: App, page: Page) -> AnyElement {
-    let (name, body) = match page {
-        Page::Categories => ("Categories", categories(app)),
-        Page::Tags => ("Tags", names(app, true)),
-        Page::Authors => ("Authors", names(app, false)),
-        Page::Prompts => ("Prompts", prompt_list(app)),
-        Page::Schemas => ("Schemas", schemas::screen(app)),
-        Page::Cleanup => ("Cleanup", cleanup_tools(app)),
-        _ => unreachable!(),
-    };
-    let measure = if page == Page::Schemas { 960. } else { MEASURE };
-    view()
-        .flex_1()
-        .min_h_0()
-        .gap_4()
-        .child(heading(name))
-        .child(
-            scroll()
-                .flex_1()
-                .min_h_0()
-                .child(view().max_w(px(measure)).pb_8().child(body)),
+    match page {
+        Page::Categories => categories(app),
+        Page::Tags => names(app, true),
+        Page::Authors => names(app, false),
+        Page::Prompts => prompt_list(app),
+        Page::Schemas => schemas::screen(app),
+        Page::Cleanup => ui::page(
+            heading(Icon::Cleanup, "Cleanup"),
+            page_scroll(MEASURE, cleanup_tools(app)),
         )
-        .into_element()
+        .into_element(),
+        _ => unreachable!(),
+    }
 }
 
-fn names(app: App, tags: bool) -> AnyElement {
-    const NAME_PAGE: i64 = 30;
-    let q = signal(String::new());
-    let new = signal(String::new());
-    let pos = signal(0i64);
-    effect(move || {
-        q.get();
-        pos.set(0);
-    });
-    let kind = if tags { "tag" } else { "author" };
-    view()
-        .gap_4()
-        .child(
-            wrap()
-                .gap_2()
-                .child(input("Search names", q).flex_1().min_w(px(200.)))
-                .child(view().w(px(1.)).h(px(24.)).bg(rule))
-                .child(input("New name", new).w(px(200.)))
-                .child(control("Create", Variant::Primary, ButtonSize::Md, Some(Icon::Plus), move || {
-                    let name = new.get_untracked();
-                    let db = app.db();
-                    app.local_job(
-                        async move {
-                            if tags {
-                                tag::tag_create(db, name, None).await?;
-                            } else {
-                                author::author_create(db, name).await?;
-                            }
-                            Ok(())
-                        },
-                        move |_| {
-                            new.set(String::new());
-                            app.refresh();
-                        },
-                    );
-                })),
-        )
-        .child(dynamic(move || {
-            let q = q.get();
-            let p = pos.get();
-            app.revision.get();
-            let db = app.db();
-            app.load(
-                async move {
-                    if tags {
-                        let rows = tag::tag_list(
-                            db.clone(),
-                            Some(true),
-                            Some(NAME_PAGE),
-                            Some(p),
-                            Some(q.clone()),
-                        )
-                        .await?
-                        .tags;
-                        Ok((
-                            tag::tag_count(db, Some(q)).await?,
-                            rows.into_iter()
-                                .map(|t| (t.id, t.name, t.usage_count, t.color))
-                                .collect::<Vec<_>>(),
-                        ))
-                    } else {
-                        let rows = author::author_list(
-                            db.clone(),
-                            Some(true),
-                            Some(NAME_PAGE),
-                            Some(p),
-                            Some(q.clone()),
-                        )
-                        .await?
-                        .authors;
-                        Ok((
-                            author::author_count(db, Some(q)).await?,
-                            rows.into_iter()
-                                .map(|a| (a.id, a.name, a.usage_count, None))
-                                .collect(),
-                        ))
-                    }
-                },
-                move |(total, rows)| {
-                    if p > 0 && p >= *total {
-                        let last = (total - 1).max(0) / NAME_PAGE * NAME_PAGE;
-                        pos.set(last);
-                        return label("Loading…").into_element();
-                    }
-                    if *total == 0 {
-                        return empty(
-                            if tags { "No tags" } else { "No authors" },
-                            "Create one above, or let analysis add them while importing.",
-                        )
-                        .into_element();
-                    }
-                    let mut body = view().child(
-                        row()
-                            .gap_3()
-                            .pb_2()
-                            .border_b_1()
-                            .border_color(rule)
-                            .child(caption("ID").w(px(44.)))
-                            .child(caption("Name").flex_1())
-                            .child(caption("Files").w(px(56.)))
-                            .child(view().w(px(if tags { 252. } else { 124. }))),
-                    );
-                    for (id, name, count, color) in rows {
-                        let id = *id;
-                        let value = signal(name.clone());
-                        let color = signal(color.clone().unwrap_or_default());
-                        let shown = name.clone();
-                        let count = *count;
-                        let mut line = row()
-                            .gap_3()
-                            .py(px(6.))
-                            .border_b_1()
-                            .border_color(rule)
-                            .child(caption(format!("#{id}")).w(px(44.)))
-                            .child(input("Name", value).flex_1());
-                        line = line.child(caption(count.to_string()).w(px(56.)));
-                        if tags {
-                            line = line.child(input("Color", color).w(px(120.)));
-                        }
-                        body = body.child(
-                            line.child(small("Save", move || {
-                                if tags {
-                                    app.save(tag::tag_update(
-                                        app.db(),
-                                        id,
-                                        Some(value.get_untracked()),
-                                        Some(color.get_untracked()).filter(|s| !s.is_empty()),
-                                    ));
-                                } else {
-                                    app.save(author::author_update(
-                                        app.db(),
-                                        id,
-                                        value.get_untracked(),
-                                    ));
-                                }
-                            }))
-                            .child(icon_button(
-                                format!("Delete {shown}"),
-                                Icon::Trash,
-                                None,
-                                move || {
-                                    let shown = shown.clone();
-                                    ask(
-                                        format!("Delete the {kind} “{shown}”?"),
-                                        format!("It is removed from {count} files. This cannot be undone."),
-                                        "Delete",
-                                        true,
-                                        move || {
-                                            if tags {
-                                                app.save(tag::tag_delete(app.db(), id));
-                                            } else {
-                                                app.save(author::author_delete(app.db(), id));
-                                            }
-                                        },
-                                    )
-                                },
-                            )),
-                        );
-                    }
-                    let mut pager = row().justify_between().pt_3().child(caption(format!(
-                        "{total} {}",
-                        if tags { "tags" } else { "authors" }
-                    )));
-                    let mut buttons = row().gap_1();
-                    if p > 0 {
-                        buttons = buttons.child(icon_button("Previous", Icon::Back, None, move || pos.set(p - NAME_PAGE)));
-                    }
-                    if p + NAME_PAGE < *total {
-                        buttons = buttons.child(icon_button("Next", Icon::Forward, None, move || pos.set(p + NAME_PAGE)));
-                    }
-                    pager = pager.child(buttons);
-                    body.child(pager).into_element()
-                },
-            )
-        }))
-        .into_element()
-}
-fn categories(app: App) -> AnyElement {
-    dynamic(move || {
-        app.revision.get();
-        let db = app.db();
-        app.load(
-            async move {
-                Ok((
-                    category::category_list(db.clone()).await?,
-                    api::schemas::schema_list(db).await?,
-                ))
-            },
-            move |(cats, schemas)| {
-                let schemas = std::rc::Rc::new(
-                    schemas
-                        .iter()
-                        .map(|s| api::schemas::SchemaDefinition {
-                            schema: s.schema.clone(),
-                            fields: s.fields.clone(),
-                            pipeline_steps: s.pipeline_steps.clone(),
-                        })
-                        .collect::<Vec<_>>(),
-                );
-                let mut list = view().gap(px(2.));
-                for cat in cats {
-                    let open = signal(false);
-                    let cat = std::rc::Rc::new(copy_category(cat));
-                    let defs = schemas.clone();
-                    let schema_name = schemas
-                        .iter()
-                        .find(|s| s.schema.id == cat.schema_slug)
-                        .map(|s| s.schema.name.clone())
-                        .unwrap_or_else(|| cat.schema_slug.clone());
-                    list = list.child(reveal(
-                        cat.name.clone(),
-                        Some(schema_name),
-                        open,
-                        move || {
-                            view()
-                                .pl(px(28.))
-                                .pb_4()
-                                .child(category_form(app, Some(&cat), &defs))
-                                .into_element()
-                        },
-                    ));
-                }
-                view()
-                    .gap_4()
-                    .child(
-                        group(
-                            "New category",
-                            "A category is a shelf with its own schema and storage folder.",
-                        )
-                        .child(category_form(
-                            app,
-                            None,
-                            schemas.as_slice(),
-                        )),
-                    )
-                    .child(section("Categories"))
-                    .child(if cats.is_empty() {
-                        caption("No categories yet.").into_element()
-                    } else {
-                        list.into_element()
-                    })
-                    .into_element()
-            },
-        )
-    })
+/// The primary command of a page header: plus icon, caption.
+fn create(caption_text: &str, action: impl Fn() + 'static) -> AnyElement {
+    control(
+        caption_text,
+        Variant::Primary,
+        ButtonSize::Md,
+        Some(Icon::Plus),
+        action,
+    )
     .into_element()
 }
+
+/// A dialog's commands at its foot: Cancel, then the default submit.
+fn dialog_actions(open: Signal<bool>, submit: impl IntoElement) -> View {
+    row()
+        .justify_end()
+        .gap_2()
+        .pt_2()
+        .child(button("Cancel", move || open.set(false)))
+        .child(submit)
+}
+
+fn categories(app: App) -> AnyElement {
+    let data = app.resource(move || {
+        app.revision.get();
+        let db = app.db();
+        async move {
+            Ok((
+                category::category_list(db.clone()).await?,
+                api::schemas::schema_list(db).await?,
+            ))
+        }
+    });
+    let editing = signal(None::<i64>);
+    let open = signal(false);
+    let header = page_header(
+        Icon::Categories,
+        "Categories",
+        Some(
+            count_caption(move || match data.get().as_deref() {
+                Some(Ok((cats, _))) if !cats.is_empty() => {
+                    counted(cats.len() as i64, "category", "categories")
+                }
+                _ => String::new(),
+            })
+            .into_element(),
+        ),
+        Some(create("New category", move || {
+            editing.set(None);
+            open.set(true);
+        })),
+    );
+    let cols = vec![
+        Col::text("name", "Name", Some(180.)),
+        Col::muted("description", "Description", None),
+        Col::custom("schema", "Schema", Some(140.)),
+        Col::mono("folder", "Folder", Some(150.)),
+        Col::muted("defaults", "View defaults", Some(150.)),
+        Col::command("edit", Icon::Edit),
+    ];
+    let keys: Vec<&'static str> = cols.iter().map(|c| c.key).collect();
+    let shown = dynamic(move || {
+        match data.get().as_deref() {
+        None => caption("Loading…").into_element(),
+        Some(Err(e)) => label(e.clone()).into_element(),
+        Some(Ok((cats, _))) if cats.is_empty() => empty(
+            "No categories yet",
+            "A category is a shelf with its own schema and storage folder. Create one to start importing.",
+        )
+        .into_element(),
+        Some(Ok((cats, schemas))) => {
+            let schema_name = |slug: &str| {
+                schemas
+                    .iter()
+                    .find(|s| s.schema.id == slug)
+                    .map(|s| s.schema.name.clone())
+                    .unwrap_or_else(|| slug.to_owned())
+            };
+            let n = cats.len();
+            let data_rows = nsh_base::DataTableRows::new(n)
+                .texts("name", cats.iter().map(|c| c.name.as_str()))
+                .texts(
+                    "description",
+                    cats.iter().map(|c| c.description.clone().unwrap_or_default()),
+                )
+                .texts("schema", cats.iter().map(|c| schema_name(&c.schema_slug)))
+                .texts("folder", cats.iter().map(|c| c.folder_name.clone().unwrap_or_default()))
+                .texts("defaults", cats.iter().map(|c| view_defaults(c.view_config.as_deref())))
+                .texts("edit", cats.iter().map(|c| format!("Edit {}", c.name)));
+            let ids: Vec<i64> = cats.iter().map(|c| c.id).collect();
+            let keys = std::rc::Rc::new(keys.clone());
+            let open_row = std::rc::Rc::new(move |row: u32| {
+                if let Some(&id) = ids.get(row as usize) {
+                    editing.set(Some(id));
+                    open.set(true);
+                }
+            });
+            let double = open_row.clone();
+            table(
+                "Categories",
+                cols.clone(),
+                move || n,
+                move || data_rows.clone(),
+                |c: &nsh_base::DataTableCell| row().child(badge(c.text.to_string())).into_element(),
+                move |t| {
+                    t.on_row_press(move |p: &nsh_base::DataTablePress| {
+                        if pressed_key(&keys, p) == Some("edit") {
+                            open_row(p.row);
+                        }
+                    })
+                    .on_double_press(move |t: &nsh_base::DataTableTarget| {
+                        if let Some(row) = t.row {
+                            double(row);
+                        }
+                    })
+                },
+            )
+            .into_element()
+        }
+    }
+    });
+    let dialog = modal(
+        open,
+        move || {
+            if editing.get_untracked().is_some() {
+                "Edit category"
+            } else {
+                "New category"
+            }
+            .to_owned()
+        },
+        560.,
+        move || {
+            // Made once the records are here; a later refresh leaves what
+            // the user is typing alone.
+            let ready = computed(move || data.with(Option::is_some));
+            dynamic(move || {
+                if !ready.get() {
+                    return caption("Loading…").into_element();
+                }
+                untracked(|| match data.get().as_deref() {
+                    Some(Ok((cats, schemas))) => {
+                        let cat = editing
+                            .get()
+                            .and_then(|id| cats.iter().find(|c| c.id == id));
+                        category_form(app, cat, schemas_of(schemas).as_slice(), open)
+                    }
+                    Some(Err(e)) => label(e.clone()).into_element(),
+                    None => view().into_element(),
+                })
+            })
+            .into_element()
+        },
+    );
+    ui::page(
+        header,
+        page_body()
+            .child(about(
+                "A category is a shelf of files with its own schema and storage folder. Files inherit the schema of their category.",
+            ))
+            .child(shown)
+            .child(dialog),
+    )
+    .into_element()
+}
+
+/// The schema definitions of a schema list.
+fn schemas_of(list: &[api::schemas::SchemaDefinition]) -> Vec<api::schemas::SchemaDefinition> {
+    list.iter()
+        .map(|s| api::schemas::SchemaDefinition {
+            schema: s.schema.clone(),
+            fields: s.fields.clone(),
+            pipeline_steps: s.pipeline_steps.clone(),
+        })
+        .collect()
+}
+
+/// A category's default sort, as its table shows it ("Date added ↓").
+fn view_defaults(config: Option<&str>) -> String {
+    let value = config
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .unwrap_or_default();
+    let by = value["sort"]["by"].as_str().unwrap_or("name");
+    let desc = value["sort"]["desc"].as_bool().unwrap_or(false);
+    let name = match by {
+        "name" => "Name".to_owned(),
+        "created" => "Date added".to_owned(),
+        "updated" => "Date modified".to_owned(),
+        other => other.strip_prefix("field:").unwrap_or(other).to_owned(),
+    };
+    format!("{name} {}", if desc { "↓" } else { "↑" })
+}
+
 fn category_form(
     app: App,
     cat: Option<&api::Category>,
     schemas: &[api::schemas::SchemaDefinition],
+    open: Signal<bool>,
 ) -> AnyElement {
     let id = cat.map(|c| c.id);
     let name = signal(cat.map(|c| c.name.clone()).unwrap_or_default());
@@ -302,8 +245,43 @@ fn category_form(
         ));
     }
     let advanced = signal(false);
+    let submit = primary(
+        if id.is_some() {
+            "Update category"
+        } else {
+            "Create category"
+        },
+        move || {
+            let name = name.get_untracked();
+            let desc = Some(desc.get_untracked());
+            let slug = slug.get_untracked();
+            let cfg = Some(config.get_untracked()).filter(|s| !s.trim().is_empty());
+            let clear = cfg.is_none();
+            let close = move || open.set(false);
+            if let Some(id) = id {
+                app.save_then(
+                    category::category_update(
+                        app.db(),
+                        id,
+                        Some(name),
+                        None,
+                        desc,
+                        Some(slug),
+                        cfg,
+                        Some(clear),
+                    ),
+                    close,
+                );
+            } else {
+                app.save_then(
+                    category::category_create(app.db(), name, desc, slug, cfg),
+                    close,
+                );
+            }
+        },
+    );
     view()
-        .gap_3()
+        .gap_4()
         .child(field("Category name", name))
         .child(field("Description", desc))
         .child(view().gap_1().child(field_label("Schema")).child(options))
@@ -317,143 +295,10 @@ fn category_form(
                 ))
                 .into_element()
         }))
-        .child(primary(
-            if id.is_some() {
-                "Update category"
-            } else {
-                "Create category"
-            },
-            move || {
-                let name = name.get_untracked();
-                let desc = Some(desc.get_untracked());
-                let slug = slug.get_untracked();
-                let cfg = Some(config.get_untracked()).filter(|s| !s.trim().is_empty());
-                let clear = cfg.is_none();
-                if let Some(id) = id {
-                    app.save(category::category_update(
-                        app.db(),
-                        id,
-                        Some(name),
-                        None,
-                        desc,
-                        Some(slug),
-                        cfg,
-                        Some(clear),
-                    ));
-                } else {
-                    app.save(category::category_create(app.db(), name, desc, slug, cfg));
-                }
-            },
-        ))
+        .child(dialog_actions(open, submit))
         .into_element()
 }
-fn prompt_list(app: App) -> AnyElement {
-    dynamic(move || {
-        app.revision.get();
-        app.load(prompts::prompt_list(app.db(), None, None), move |list| {
-            let mut s = view()
-                .gap_4()
-                .child(
-                    group("New prompt", "Prompts steer the language model during analysis, per schema and pipeline step.")
-                        .child(prompt_form(app, None)),
-                )
-                .child(section("Prompts"));
-            let mut rows = view().gap(px(2.));
-            for p in list {
-                let opened = signal(false);
-                let p = stored((
-                    p.id,
-                    p.name.clone(),
-                    p.content.clone(),
-                    p.schema_slug
-                        .clone()
-                        .unwrap_or_else(|| p.mime_group.clone()),
-                    p.step.clone(),
-                ));
-                let (name, scope) = p.with(|p| (p.1.clone(), format!("{} · {}", p.3, p.4)));
-                rows = rows.child(reveal(name, Some(scope), opened, move || {
-                    view()
-                        .pl(px(28.))
-                        .pb_4()
-                        .child(prompt_form(app, Some(p.with(|p| p.clone()))))
-                        .into_element()
-                }));
-            }
-            s = s.child(if list.is_empty() {
-                caption("No prompts yet.").into_element()
-            } else {
-                rows.into_element()
-            });
-            s.into_element()
-        })
-    })
-    .into_element()
-}
-type PromptDraft = (i64, String, String, String, String);
-fn prompt_form(app: App, p: Option<PromptDraft>) -> AnyElement {
-    let (id, n, c, s, k) = p.unwrap_or((
-        0,
-        String::new(),
-        String::new(),
-        "novel".into(),
-        "filename".into(),
-    ));
-    let name = signal(n);
-    let content = signal(c);
-    let slug = signal(s);
-    let step = signal(k);
-    let mut actions = wrap().gap_2().child(primary(
-        if id == 0 {
-            "Create prompt"
-        } else {
-            "Save prompt"
-        },
-        move || {
-            let payload = prompts::PromptCreate {
-                name: name.get_untracked(),
-                content: content.get_untracked(),
-                schema_slug: slug.get_untracked(),
-                step: step.get_untracked(),
-            };
-            if id == 0 {
-                app.save(prompts::prompt_create(app.db(), payload));
-            } else {
-                app.save(prompts::prompt_update(app.db(), id, payload));
-            }
-        },
-    ));
-    if id != 0 {
-        actions = actions
-            .child(button("Set as default", move || {
-                app.save(prompts::prompt_set_default(app.db(), id))
-            }))
-            .child(confirm(
-                "Delete prompt",
-                "Delete this prompt?",
-                "Analysis falls back to the default prompt for its step.",
-                true,
-                move || app.save(prompts::prompt_delete(app.db(), id)),
-            ));
-    }
-    view()
-        .gap_3()
-        .child(field("Prompt name", name))
-        .child(
-            wrap()
-                .gap_3()
-                .child(field("Schema ID", slug).flex_1().min_w(px(160.)))
-                .child(field("Pipeline step", step).flex_1().min_w(px(160.))),
-        )
-        .child(
-            view().gap_1().child(field_label("Prompt text")).child(
-                input("Prompt text", content)
-                    .multiline(true)
-                    .min_h(px(120.)),
-            ),
-        )
-        .child(actions)
-        .into_element()
-}
+
 fn cleanup_tools(app: App) -> AnyElement {
     let from = signal(String::new());
     let to = signal(String::new());
@@ -648,18 +493,4 @@ fn duplicate_groups(app: App) -> AnyElement {
             },
         ))
         .into_element()
-}
-
-fn copy_category(c: &api::Category) -> api::Category {
-    api::Category {
-        id: c.id,
-        name: c.name.clone(),
-        description: c.description.clone(),
-        icon: c.icon.clone(),
-        is_default: c.is_default,
-        folder_name: c.folder_name.clone(),
-        schema_slug: c.schema_slug.clone(),
-        view_config: c.view_config.clone(),
-        created_at: c.created_at.clone(),
-    }
 }
