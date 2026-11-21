@@ -16,7 +16,8 @@ pub fn screen(app: App, page: Page) -> AnyElement {
         Page::Cleanup => ("Cleanup", cleanup_tools(app)),
         _ => unreachable!(),
     };
-    stack()
+    let measure = if page == Page::Schemas { 960. } else { MEASURE };
+    view()
         .flex_1()
         .min_h_0()
         .gap_4()
@@ -25,7 +26,7 @@ pub fn screen(app: App, page: Page) -> AnyElement {
             scroll()
                 .flex_1()
                 .min_h_0()
-                .child(stack().max_w(px(MEASURE)).pb_6().child(body)),
+                .child(view().max_w(px(measure)).pb_8().child(body)),
         )
         .into_element()
 }
@@ -38,12 +39,16 @@ fn names(app: App, tags: bool) -> AnyElement {
         q.get();
         pos.set(0);
     });
-    stack()
-        .child(input("Search names", q))
+    let kind = if tags { "tag" } else { "author" };
+    view()
+        .gap_4()
         .child(
-            row()
-                .child(input("New name", new))
-                .child(primary("Create", move || {
+            wrap()
+                .gap_2()
+                .child(input("Search names", q).flex_1().min_w(px(200.)))
+                .child(view().w(px(1.)).h(px(24.)).bg(rule))
+                .child(input("New name", new).w(px(200.)))
+                .child(control("Create", Variant::Primary, ButtonSize::Md, Some(Icon::Plus), move || {
                     let name = new.get_untracked();
                     let db = app.db();
                     app.local_job(
@@ -104,19 +109,43 @@ fn names(app: App, tags: bool) -> AnyElement {
                     }
                 },
                 move |(total, rows)| {
-                    let mut body = stack().child(label(format!("{total} names")));
+                    if rows.is_empty() {
+                        return empty(
+                            if tags { "No tags" } else { "No authors" },
+                            "Create one above, or let analysis add them while importing.",
+                        )
+                        .into_element();
+                    }
+                    let mut body = view().child(
+                        row()
+                            .gap_3()
+                            .pb_2()
+                            .border_b_1()
+                            .border_color(rule)
+                            .child(caption("ID").w(px(44.)))
+                            .child(caption("Name").flex_1())
+                            .child(caption("Files").w(px(56.)))
+                            .child(view().w(px(if tags { 252. } else { 124. }))),
+                    );
                     for (id, name, count, color) in rows {
                         let id = *id;
                         let value = signal(name.clone());
                         let color = signal(color.clone().unwrap_or_default());
+                        let shown = name.clone();
+                        let count = *count;
                         let mut line = row()
-                            .child(label(format!("#{id} · {count} files")))
-                            .child(input("Name", value));
+                            .gap_3()
+                            .py(px(6.))
+                            .border_b_1()
+                            .border_color(rule)
+                            .child(caption(format!("#{id}")).w(px(44.)))
+                            .child(input("Name", value).flex_1());
+                        line = line.child(caption(count.to_string()).w(px(56.)));
                         if tags {
-                            line = line.child(input("Color", color));
+                            line = line.child(input("Color", color).w(px(120.)));
                         }
                         body = body.child(
-                            line.child(button("Save", move || {
+                            line.child(small("Save", move || {
                                 if tags {
                                     app.save(tag::tag_update(
                                         app.db(),
@@ -132,22 +161,41 @@ fn names(app: App, tags: bool) -> AnyElement {
                                     ));
                                 }
                             }))
-                            .child(confirm("Delete", move || {
-                                if tags {
-                                    app.save(tag::tag_delete(app.db(), id));
-                                } else {
-                                    app.save(author::author_delete(app.db(), id));
-                                }
-                            })),
+                            .child(icon_button(
+                                format!("Delete {shown}"),
+                                Icon::Trash,
+                                None,
+                                move || {
+                                    let shown = shown.clone();
+                                    ask(
+                                        format!("Delete the {kind} “{shown}”?"),
+                                        format!("It is removed from {count} files. This cannot be undone."),
+                                        "Delete",
+                                        true,
+                                        move || {
+                                            if tags {
+                                                app.save(tag::tag_delete(app.db(), id));
+                                            } else {
+                                                app.save(author::author_delete(app.db(), id));
+                                            }
+                                        },
+                                    )
+                                },
+                            )),
                         );
                     }
-                    let mut pager = row();
+                    let mut pager = row().justify_between().pt_3().child(caption(format!(
+                        "{total} {}",
+                        if tags { "tags" } else { "authors" }
+                    )));
+                    let mut buttons = row().gap_1();
                     if p > 0 {
-                        pager = pager.child(button("Previous", move || pos.set(p - 30)));
+                        buttons = buttons.child(icon_button("Previous", Icon::Back, None, move || pos.set(p - 30)));
                     }
                     if p + 30 < *total {
-                        pager = pager.child(button("Next", move || pos.set(p + 30)));
+                        buttons = buttons.child(icon_button("Next", Icon::Forward, None, move || pos.set(p + 30)));
                     }
+                    pager = pager.child(buttons);
                     body.child(pager).into_element()
                 },
             )
@@ -166,11 +214,59 @@ fn categories(app: App) -> AnyElement {
                 ))
             },
             move |(cats, schemas)| {
-                let mut s = stack().child(category_form(app, None, schemas));
+                let schemas = std::rc::Rc::new(
+                    schemas
+                        .iter()
+                        .map(|s| api::schemas::SchemaDefinition {
+                            schema: s.schema.clone(),
+                            fields: s.fields.clone(),
+                            pipeline_steps: s.pipeline_steps.clone(),
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                let mut list = view().gap(px(2.));
                 for cat in cats {
-                    s = s.child(category_form(app, Some(cat), schemas));
+                    let open = signal(false);
+                    let cat = std::rc::Rc::new(copy_category(cat));
+                    let defs = schemas.clone();
+                    let schema_name = schemas
+                        .iter()
+                        .find(|s| s.schema.id == cat.schema_slug)
+                        .map(|s| s.schema.name.clone())
+                        .unwrap_or_else(|| cat.schema_slug.clone());
+                    list = list.child(reveal(
+                        cat.name.clone(),
+                        Some(schema_name),
+                        open,
+                        move || {
+                            view()
+                                .pl(px(28.))
+                                .pb_4()
+                                .child(category_form(app, Some(&cat), &defs))
+                                .into_element()
+                        },
+                    ));
                 }
-                s.into_element()
+                view()
+                    .gap_4()
+                    .child(
+                        group(
+                            "New category",
+                            "A category is a shelf with its own schema and storage folder.",
+                        )
+                        .child(category_form(
+                            app,
+                            None,
+                            schemas.as_slice(),
+                        )),
+                    )
+                    .child(section("Categories"))
+                    .child(if cats.is_empty() {
+                        caption("No categories yet.").into_element()
+                    } else {
+                        list.into_element()
+                    })
+                    .into_element()
             },
         )
     })
@@ -189,7 +285,7 @@ fn category_form(
             .unwrap_or_else(|| "novel".into()),
     );
     let config = signal(cat.and_then(|c| c.view_config.clone()).unwrap_or_default());
-    let mut options = wrap();
+    let mut options = wrap().gap(px(6.));
     for s in schemas {
         let id = s.schema.id.clone();
         let key = stored(id.clone());
@@ -199,17 +295,22 @@ fn category_form(
             move || slug.set(id.clone()),
         ));
     }
-    stack()
-        .child(section(if id.is_some() {
-            "Edit category"
-        } else {
-            "New category"
-        }))
+    let advanced = signal(false);
+    view()
+        .gap_3()
         .child(field("Category name", name))
         .child(field("Description", desc))
-        .child(field_label("Schema"))
-        .child(options)
-        .child(field("View defaults (JSON)", config))
+        .child(view().gap_1().child(field_label("Schema")).child(options))
+        .child(reveal("Advanced", None, advanced, move || {
+            view()
+                .pl(px(28.))
+                .child(field_help(
+                    "View defaults (JSON)",
+                    "Default sort, filters and grouping for this category.",
+                    config,
+                ))
+                .into_element()
+        }))
         .child(primary(
             if id.is_some() {
                 "Update category"
@@ -244,7 +345,14 @@ fn prompt_list(app: App) -> AnyElement {
     dynamic(move || {
         app.revision.get();
         app.load(prompts::prompt_list(app.db(), None, None), move |list| {
-            let mut s = stack().child(prompt_form(app, None));
+            let mut s = view()
+                .gap_4()
+                .child(
+                    group("New prompt", "Prompts steer the language model during analysis, per schema and pipeline step.")
+                        .child(prompt_form(app, None)),
+                )
+                .child(section("Prompts"));
+            let mut rows = view().gap(px(2.));
             for p in list {
                 let opened = signal(false);
                 let p = stored((
@@ -256,16 +364,20 @@ fn prompt_list(app: App) -> AnyElement {
                         .unwrap_or_else(|| p.mime_group.clone()),
                     p.step.clone(),
                 ));
-                s = s
-                    .child(button(
-                        p.with(|p| format!("{} · {} / {}", p.1, p.3, p.4)),
-                        move || opened.update(|b| *b = !*b),
-                    ))
-                    .child(when(
-                        move || opened.get(),
-                        move || prompt_form(app, Some(p.with(|p| p.clone()))),
-                    ));
+                let (name, scope) = p.with(|p| (p.1.clone(), format!("{} · {}", p.3, p.4)));
+                rows = rows.child(reveal(name, Some(scope), opened, move || {
+                    view()
+                        .pl(px(28.))
+                        .pb_4()
+                        .child(prompt_form(app, Some(p.with(|p| p.clone()))))
+                        .into_element()
+                }));
             }
+            s = s.child(if list.is_empty() {
+                caption("No prompts yet.").into_element()
+            } else {
+                rows.into_element()
+            });
             s.into_element()
         })
     })
@@ -284,7 +396,7 @@ fn prompt_form(app: App, p: Option<PromptDraft>) -> AnyElement {
     let content = signal(c);
     let slug = signal(s);
     let step = signal(k);
-    let mut actions = wrap().child(primary(
+    let mut actions = wrap().gap_2().child(primary(
         if id == 0 {
             "Create prompt"
         } else {
@@ -309,21 +421,29 @@ fn prompt_form(app: App, p: Option<PromptDraft>) -> AnyElement {
             .child(button("Set as default", move || {
                 app.save(prompts::prompt_set_default(app.db(), id))
             }))
-            .child(confirm("Delete prompt", move || {
-                app.save(prompts::prompt_delete(app.db(), id))
-            }));
+            .child(confirm(
+                "Delete prompt",
+                "Delete this prompt?",
+                "Analysis falls back to the default prompt for its step.",
+                true,
+                move || app.save(prompts::prompt_delete(app.db(), id)),
+            ));
     }
-    stack()
+    view()
+        .gap_3()
         .child(field("Prompt name", name))
         .child(
-            row()
-                .child(input("Schema ID", slug))
-                .child(input("Pipeline step", step)),
+            wrap()
+                .gap_3()
+                .child(field("Schema ID", slug).flex_1().min_w(px(160.)))
+                .child(field("Pipeline step", step).flex_1().min_w(px(160.))),
         )
         .child(
-            input("Prompt text", content)
-                .multiline(true)
-                .min_h(px(110.)),
+            view().gap_1().child(field_label("Prompt text")).child(
+                input("Prompt text", content)
+                    .multiline(true)
+                    .min_h(px(120.)),
+            ),
         )
         .child(actions)
         .into_element()
@@ -334,7 +454,9 @@ fn cleanup_tools(app: App) -> AnyElement {
     let cat = signal(None);
     let assign = signal(String::new());
     let db = app.db();
-    stack()
+    view()
+        .gap_2()
+        .child(subheading("Analysis"))
         .child(app.load(
             async move {
                 Ok((
@@ -343,10 +465,11 @@ fn cleanup_tools(app: App) -> AnyElement {
                 ))
             },
             move |(n, c)| {
-                wrap()
-                    .child(button(
-                        format!("Analyze {n} novels missing tags"),
-                        move || {
+                view()
+                    .child(setting(
+                        "Missing tags",
+                        Some("Run analysis again on novels that have no tags."),
+                        button(format!("Analyze {n} novels missing tags"), move || {
                             app.local_job(
                                 file::reanalyze::file_reanalyze_missing_tags(app.db()),
                                 move |r| {
@@ -356,11 +479,12 @@ fn cleanup_tools(app: App) -> AnyElement {
                                     ))
                                 },
                             )
-                        },
+                        }),
                     ))
-                    .child(button(
-                        format!("Regenerate {c} missing covers"),
-                        move || {
+                    .child(setting(
+                        "Missing covers",
+                        Some("Extract covers again for comics without one."),
+                        button(format!("Regenerate {c} missing covers"), move || {
                             app.local_job(
                                 file::reanalyze::file_regenerate_missing_covers(app.db()),
                                 move |r| {
@@ -370,62 +494,115 @@ fn cleanup_tools(app: App) -> AnyElement {
                                     ))
                                 },
                             )
-                        },
+                        }),
+                    ))
+                    .child(setting(
+                        "File locations",
+                        Some("Mark files that were moved or deleted outside Biblio."),
+                        button("Check file locations", move || {
+                            app.save(file::search_lucky_status::file_check_status(app.db(), None))
+                        }),
                     ))
                     .into_element()
             },
         ))
-        .child(
+        .child(section("Names"))
+        .child(setting(
+            "Unused names",
+            Some("Tags and authors that no file uses."),
             wrap()
-                .child(confirm("Delete unused tags", move || {
-                    app.local_job(tag::tag_delete_unused(app.db()), move |r| {
-                        app.message.set(format!("{} tags deleted", r.deleted))
-                    })
-                }))
-                .child(confirm("Delete unused authors", move || {
-                    app.local_job(author::author_delete_unused(app.db()), move |r| {
-                        app.message.set(format!("{} authors deleted", r.deleted))
-                    })
-                })),
-        )
-        .child(
-            row()
-                .child(input("Source author ID", from))
-                .child(input("Destination author ID", to))
-                .child(confirm("Merge authors", move || {
-                    if let (Ok(a), Ok(b)) =
-                        (from.get_untracked().parse(), to.get_untracked().parse())
-                    {
-                        app.save(author::author_merge(app.db(), a, b));
-                    } else {
-                        app.message.set("Enter both author IDs".into());
-                    }
-                })),
-        )
-        .child(crate::detail::category_picker(app, cat))
-        .child(row().child(input("Author ID", assign)).child(confirm(
-            "Assign to authorless files",
-            move || {
-                if let (Some(cat), Ok(id)) = (cat.get_untracked(), assign.get_untracked().parse()) {
-                    app.local_job(
-                        file::reanalyze::file_assign_author_to_authorless(app.db(), Some(cat), id),
-                        move |r| app.message.set(format!("{} files updated", r.assigned)),
-                    );
-                } else {
-                    app.message
-                        .set("Choose a category and enter an author ID".into());
-                }
-            },
-        )))
-        .child(button("Check file locations", move || {
-            app.save(file::search_lucky_status::file_check_status(app.db(), None))
-        }))
+                .gap_2()
+                .child(confirm(
+                    "Delete unused tags",
+                    "Delete every unused tag?",
+                    "Tags that no file uses are deleted. This cannot be undone.",
+                    true,
+                    move || {
+                        app.local_job(tag::tag_delete_unused(app.db()), move |r| {
+                            app.message.set(format!("{} tags deleted", r.deleted))
+                        })
+                    },
+                ))
+                .child(confirm(
+                    "Delete unused authors",
+                    "Delete every unused author?",
+                    "Authors that no file uses are deleted. This cannot be undone.",
+                    true,
+                    move || {
+                        app.local_job(author::author_delete_unused(app.db()), move |r| {
+                            app.message.set(format!("{} authors deleted", r.deleted))
+                        })
+                    },
+                )),
+        ))
+        .child(setting(
+            "Merge authors",
+            Some(
+                "Move every file of the source author to the destination, then delete the source.",
+            ),
+            view()
+                .gap_2()
+                .child(
+                    row()
+                        .gap_2()
+                        .child(input("Source author ID", from).flex_1())
+                        .child(input("Destination author ID", to).flex_1()),
+                )
+                .child(confirm(
+                    "Merge authors",
+                    "Merge these authors?",
+                    "The source author's files move to the destination and the source is deleted.",
+                    true,
+                    move || {
+                        if let (Ok(a), Ok(b)) =
+                            (from.get_untracked().parse(), to.get_untracked().parse())
+                        {
+                            app.save(author::author_merge(app.db(), a, b));
+                        } else {
+                            app.message.set("Enter both author IDs".into());
+                        }
+                    },
+                )),
+        ))
+        .child(setting(
+            "Authorless files",
+            Some("Give every file without an author in a category the same author."),
+            view()
+                .gap_2()
+                .child(crate::detail::category_picker(app, cat))
+                .child(input("Author ID", assign))
+                .child(confirm(
+                    "Assign to authorless files",
+                    "Assign this author to every authorless file?",
+                    "Only files in the chosen category without any author change.",
+                    false,
+                    move || {
+                        if let (Some(cat), Ok(id)) =
+                            (cat.get_untracked(), assign.get_untracked().parse())
+                        {
+                            app.local_job(
+                                file::reanalyze::file_assign_author_to_authorless(
+                                    app.db(),
+                                    Some(cat),
+                                    id,
+                                ),
+                                move |r| app.message.set(format!("{} files updated", r.assigned)),
+                            );
+                        } else {
+                            app.message
+                                .set("Choose a category and enter an author ID".into());
+                        }
+                    },
+                )),
+        ))
+        .child(section("Duplicates"))
         .child(duplicate_groups(app))
         .into_element()
 }
 fn duplicate_groups(app: App) -> AnyElement {
     let show = signal(false);
-    stack()
+    view()
+        .gap_3()
         .child(button("Find possible duplicates", move || show.set(true)))
         .child(when(
             move || show.get(),
@@ -433,16 +610,31 @@ fn duplicate_groups(app: App) -> AnyElement {
                 app.load(
                     file::duplicates::file_duplicate_groups(app.db(), None, None, None),
                     move |groups| {
-                        let mut r = stack()
-                            .child(label(format!("{} possible duplicate groups", groups.len())));
+                        let mut r = view().gap_3().child(caption(format!(
+                            "{} possible duplicate groups",
+                            groups.len()
+                        )));
                         for g in groups {
-                            r = r.child(label(&g.prefix));
+                            let mut group = view()
+                                .gap(px(2.))
+                                .pt_2()
+                                .border_t_1()
+                                .border_color(rule)
+                                .child(field_label(g.prefix.clone()));
                             for f in &g.files {
                                 let id = f.id;
-                                r = r.child(button(&f.display_name, move || {
-                                    app.page.set(Page::File(id))
-                                }));
+                                group = group.child(
+                                    control(
+                                        &f.display_name,
+                                        Variant::Ghost,
+                                        ButtonSize::Sm,
+                                        Some(Icon::Open),
+                                        move || app.page.set(Page::File(id)),
+                                    )
+                                    .justify_start(),
+                                );
                             }
+                            r = r.child(group);
                         }
                         r.into_element()
                     },
@@ -450,4 +642,18 @@ fn duplicate_groups(app: App) -> AnyElement {
             },
         ))
         .into_element()
+}
+
+fn copy_category(c: &api::Category) -> api::Category {
+    api::Category {
+        id: c.id,
+        name: c.name.clone(),
+        description: c.description.clone(),
+        icon: c.icon.clone(),
+        is_default: c.is_default,
+        folder_name: c.folder_name.clone(),
+        schema_slug: c.schema_slug.clone(),
+        view_config: c.view_config.clone(),
+        created_at: c.created_at.clone(),
+    }
 }

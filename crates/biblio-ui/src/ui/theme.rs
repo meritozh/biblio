@@ -1,4 +1,5 @@
-//! Semantic colours. See the colour table in the root `DESIGN.md`.
+//! Tokens: semantic colours, radii and motion. See the tables in the root
+//! `DESIGN.md`; colour literals live only here.
 use nsh_core::prelude::*;
 
 #[derive(Clone, Copy)]
@@ -120,4 +121,27 @@ pub fn danger() -> Rgba {
 /// Fully transparent; lets quiet controls show the surface beneath them.
 pub fn clear() -> Rgba {
     rgba(0x00000000)
+}
+
+/// Corner of controls, rows and popups.
+pub const RADIUS: f32 = 6.;
+/// Corner of slips, chips and small marks.
+pub const RADIUS_SM: f32 = 4.;
+
+/// Hover and colour changes.
+pub const INSTANT: f32 = 120.;
+/// Presses and control states.
+pub const FAST: f32 = 180.;
+/// Moving selection, disclosure.
+pub const BASE: f32 = 240.;
+/// Popup entrance.
+pub const SLOW: f32 = 320.;
+
+/// A motion token, or no time at all under reduced motion.
+pub fn tween(ms: f32) -> f32 {
+    if reduce_motion() { 0. } else { ms }
+}
+/// The press scale, or none under reduced motion.
+pub fn press_scale(scale: f32) -> f32 {
+    if reduce_motion() { 1. } else { scale }
 }

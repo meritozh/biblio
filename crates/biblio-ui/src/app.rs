@@ -1,10 +1,14 @@
-use crate::artwork::{Icon, icon, index_mark};
 use crate::{admin, catalog, detail, imports, settings, ui::*};
 use biblio_core::{
     Library,
     commands::{category::category_list, processing::FilePreparedImport},
 };
-use nsh_core::prelude::*;
+use nsh_core::{
+    desktop::{MenuRole, TitleBarStyle},
+    element::desktop::{MenuItem, set_application_menu, set_title_bar, title_bar},
+    platform::Os,
+    prelude::*,
+};
 use std::{future::Future, path::PathBuf, rc::Rc};
 use tokio::sync::mpsc;
 
@@ -52,6 +56,11 @@ pub struct App {
     pub sources: Signal<Vec<String>>,
     pub roots: Stored<std::collections::HashMap<String, String>>,
     pub browse: catalog::BrowseState,
+    /// Bumped to ask the library's search field for the keyboard focus.
+    pub find: Signal<u64>,
+    /// The last request a search field took, so one made before the field
+    /// existed (from another page) is taken when it appears.
+    pub found: Stored<u64>,
     owner: Owner,
 }
 impl App {
@@ -208,6 +217,8 @@ pub fn start(dir: PathBuf) -> AnyElement {
                 workspace(App {
                     service: stored(db),
                     browse: catalog::BrowseState::new(),
+                    find: signal(0),
+                    found: stored(0),
                     page: signal(Page::Library),
                     category: signal(None),
                     revision,
@@ -223,27 +234,192 @@ pub fn start(dir: PathBuf) -> AnyElement {
         }))
         .into_element()
 }
-const COMPACT: f32 = 760.;
+/// The window chrome (macOS): the system title bar folds into the app so
+/// the rail runs to the top edge under the window controls, and the menu
+/// bar carries the app's commands with their shortcuts.
+fn chrome(app: App, menu: Signal<bool>) {
+    if os() != Os::MacOs {
+        return;
+    }
+    set_title_bar(TitleBarStyle::Hidden, Some(px(52.)));
+    let go = move |page: Page| {
+        menu.set(false);
+        app.page.set(page);
+    };
+    set_application_menu(vec![
+        MenuItem::submenu(
+            "Biblio",
+            [
+                MenuItem::role(MenuRole::About),
+                MenuItem::separator(),
+                MenuItem::new("Settings…")
+                    .shortcut("mod+,")
+                    .on_select(move || go(Page::Settings)),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::Hide),
+                MenuItem::role(MenuRole::HideOthers),
+                MenuItem::role(MenuRole::ShowAll),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::Quit),
+            ],
+        ),
+        MenuItem::submenu(
+            "File",
+            [
+                MenuItem::new("Import Files…")
+                    .shortcut("mod+i")
+                    .on_select(move || go(Page::Import)),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::Close),
+            ],
+        ),
+        MenuItem::submenu(
+            "Edit",
+            [
+                MenuItem::role(MenuRole::Undo),
+                MenuItem::role(MenuRole::Redo),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::Cut),
+                MenuItem::role(MenuRole::Copy),
+                MenuItem::role(MenuRole::Paste),
+                MenuItem::role(MenuRole::SelectAll),
+                MenuItem::separator(),
+                MenuItem::new("Find in Library")
+                    .shortcut("mod+f")
+                    .on_select(move || find(app, menu)),
+            ],
+        ),
+        MenuItem::submenu(
+            "Go",
+            [
+                MenuItem::new("All Files")
+                    .shortcut("mod+1")
+                    .on_select(move || {
+                        app.category.set(None);
+                        go(Page::Library);
+                    }),
+                MenuItem::new("Back to Library")
+                    .shortcut("mod+[")
+                    .on_select(move || {
+                        if matches!(app.page.get_untracked(), Page::File(_)) {
+                            go(Page::Library);
+                        }
+                    }),
+                MenuItem::separator(),
+                MenuItem::new("Categories").on_select(move || go(Page::Categories)),
+                MenuItem::new("Tags").on_select(move || go(Page::Tags)),
+                MenuItem::new("Authors").on_select(move || go(Page::Authors)),
+                MenuItem::new("Cleanup").on_select(move || go(Page::Cleanup)),
+            ],
+        ),
+        MenuItem::submenu(
+            "Window",
+            [
+                MenuItem::role(MenuRole::Minimize),
+                MenuItem::role(MenuRole::Zoom),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::ToggleFullScreen),
+            ],
+        ),
+    ]);
+}
+
+/// The height of the band the hidden title bar leaves at the top of the
+/// window: what the host reports, else the height asked for on macOS.
+fn band() -> Points {
+    let reported = title_bar().top;
+    if reported > px(0.) {
+        reported
+    } else if os() == Os::MacOs {
+        px(52.)
+    } else {
+        px(0.)
+    }
+}
+/// The width the window controls take at the band's leading end.
+fn controls() -> Points {
+    let reported = title_bar().left;
+    if reported > px(0.) {
+        reported
+    } else if os() == Os::MacOs {
+        px(78.)
+    } else {
+        px(0.)
+    }
+}
+
+/// Opens the library (if elsewhere) and focuses its search field.
+fn find(app: App, menu: Signal<bool>) {
+    menu.set(false);
+    if !matches!(app.page.get_untracked(), Page::Library) {
+        app.page.set(Page::Library);
+    }
+    app.find.update(|n| *n += 1);
+}
+
+fn shortcuts(app: App, menu: Signal<bool>) {
+    let go = move |page: Page| {
+        menu.set(false);
+        app.page.set(page);
+    };
+    on_key("mod+k", move |_| find(app, menu));
+    on_key("mod+f", move |_| find(app, menu));
+    on_key("mod+i", move |_| go(Page::Import));
+    on_key("mod+,", move |_| go(Page::Settings));
+    on_key("mod+1", move |_| {
+        app.category.set(None);
+        go(Page::Library);
+    });
+    on_key("mod+[", move |_| {
+        if matches!(app.page.get_untracked(), Page::File(_)) {
+            go(Page::Library);
+        }
+    });
+}
+
+/// The foot of the workspace: what is running, then the latest result.
+fn status_bar(app: App) -> View {
+    row()
+        .min_h(px(28.))
+        .px(move || px(if compact() { 16. } else { 40. }))
+        .border_t_1()
+        .border_color(rule)
+        .bg(paper)
+        .child(
+            text(move || {
+                if app.busy.get() {
+                    "Working…".to_owned()
+                } else {
+                    app.message.get()
+                }
+            })
+            .text_size(px(12.))
+            .text_color(secondary)
+            .number_of_lines(1)
+            .flex_1(),
+        )
+}
 
 fn workspace(app: App) -> AnyElement {
     let menu = signal(false);
-    let compact = computed(|| window().width < px(COMPACT));
-    let sidebar = move || navigation(app, menu);
-    let main = stack()
-        .style_with(move |s| {
-            if compact.get() && menu.get() {
-                s.hidden()
-            } else {
-                s
-            }
-        })
+    shortcuts(app, menu);
+    chrome(app, menu);
+    let narrow = computed(compact);
+    let page = stack()
         .flex_1()
         .min_w_0()
         .min_h_0()
-        .gap_4()
-        .px(move || px(if compact.get() { 16. } else { 40. }))
-        .pt(move || px(if compact.get() { 16. } else { 32. }))
-        .pb(move || px(if compact.get() { 12. } else { 20. }))
+        .gap_0()
+        .px(move || px(if narrow.get() { 16. } else { 40. }))
+        .pt(move || {
+            px(if narrow.get() {
+                16.
+            } else if band() > px(0.) {
+                4.
+            } else {
+                28.
+            })
+        })
         .child(dynamic(move || {
             let page = app.page.get();
             untracked(|| match page {
@@ -253,16 +429,26 @@ fn workspace(app: App) -> AnyElement {
                 Page::Settings => settings::screen(app),
                 page => admin::screen(app, page),
             })
-        }))
+        }));
+    let main = view()
+        .style_with(move |s| {
+            if narrow.get() && menu.get() {
+                s.hidden()
+            } else {
+                s
+            }
+        })
+        .flex_1()
+        .min_w_0()
+        .min_h_0()
         .child(when(
-            move || !app.message.with(String::is_empty),
-            move || {
-                row().pt_2().border_t_1().border_color(rule).child(
-                    text(move || app.message.get())
-                        .text_sm()
-                        .text_color(secondary),
-                )
-            },
+            move || !narrow.get() && band() > px(0.),
+            move || view().h(band()).flex_shrink_0().window_drag(true),
+        ))
+        .child(page)
+        .child(when(
+            move || app.busy.get() || !app.message.with(String::is_empty),
+            move || status_bar(app),
         ));
     stack()
         .w_full()
@@ -270,14 +456,17 @@ fn workspace(app: App) -> AnyElement {
         .gap_0()
         .bg(paper)
         .child(when(
-            move || compact.get(),
+            move || narrow.get(),
             move || {
                 row()
                     .justify_between()
                     .bg(rail)
                     .border_b_1()
                     .border_color(rule)
-                    .px_4()
+                    .window_drag(true)
+                    .min_h(move || band().max(px(44.)))
+                    .pl(move || controls() + px(4.))
+                    .pr(move || title_bar().right + px(12.))
                     .py_2()
                     .child(wordmark())
                     .child(nav_button(
@@ -296,23 +485,8 @@ fn workspace(app: App) -> AnyElement {
                 .items_stretch()
                 .gap_0()
                 .child(when(
-                    move || !compact.get() || menu.get(),
-                    move || {
-                        scroll()
-                            .w(move || {
-                                if compact.get() {
-                                    window().width
-                                } else {
-                                    px(220.)
-                                }
-                            })
-                            .flex_shrink_0()
-                            .h_full()
-                            .bg(rail)
-                            .border_r_1()
-                            .border_color(rule)
-                            .child(sidebar())
-                    },
+                    move || !narrow.get() || menu.get(),
+                    move || navigation(app, menu, narrow),
                 ))
                 .child(main),
         )
@@ -324,7 +498,7 @@ fn wordmark() -> View {
         .gap_2()
         .px_2()
         .child(index_mark(true))
-        .child(title("Biblio").text_size(px(20.)))
+        .child(subheading("Biblio").text_size(px(19.)))
 }
 
 fn nav_group(name: &str) -> Text {
@@ -334,9 +508,9 @@ fn nav_group(name: &str) -> Text {
         .pb_1()
 }
 
-fn navigation(app: App, menu: Signal<bool>) -> View {
-    let mut library = stack()
-        .gap_0()
+fn navigation(app: App, menu: Signal<bool>, narrow: Memo<bool>) -> View {
+    let mut library = view()
+        .gap(px(1.))
         .child(nav_group("Library"))
         .child(nav_item(
             app,
@@ -349,7 +523,7 @@ fn navigation(app: App, menu: Signal<bool>) -> View {
         .child(dynamic(move || {
             app.revision.get();
             app.load(category_list(app.db()), move |categories| {
-                let mut list = stack().gap_0();
+                let mut list = view().gap(px(1.));
                 for cat in categories {
                     list = list.child(nav_item(
                         app,
@@ -371,7 +545,7 @@ fn navigation(app: App, menu: Signal<bool>) -> View {
         Page::Import,
         None,
     ));
-    let mut organize = stack().gap_0().child(nav_group("Organize"));
+    let mut organize = view().gap(px(1.)).child(nav_group("Organize"));
     for (target, name, glyph) in [
         (Page::Categories, "Categories", Icon::Categories),
         (Page::Tags, "Tags", Icon::Tags),
@@ -381,41 +555,67 @@ fn navigation(app: App, menu: Signal<bool>) -> View {
     ] {
         organize = organize.child(nav_item(app, menu, name, glyph, target, None));
     }
-    stack()
+    let footer = view()
+        .gap(px(1.))
         .px_3()
-        .pt(move || {
-            px(if window().width < px(COMPACT) {
-                16.
+        .py_3()
+        .border_t_1()
+        .border_color(rule)
+        .child(nav_item(
+            app,
+            menu,
+            "Cleanup",
+            Icon::Cleanup,
+            Page::Cleanup,
+            None,
+        ))
+        .child(nav_item(
+            app,
+            menu,
+            "Settings",
+            Icon::Settings,
+            Page::Settings,
+            None,
+        ));
+    view()
+        .test_id("navigation")
+        .w(move || {
+            if narrow.get() {
+                window().width
             } else {
-                28.
-            })
+                px(232.)
+            }
         })
-        .pb_6()
-        .gap_6()
-        .child(when(|| window().width >= px(COMPACT), || wordmark().pb_2()))
-        .child(library)
-        .child(organize)
+        .flex_shrink_0()
+        .h_full()
+        .bg(rail)
+        .border_r_1()
+        .border_color(rule)
+        .child(when(
+            move || !narrow.get() && band() > px(0.),
+            move || view().h(band()).flex_shrink_0().window_drag(true),
+        ))
+        .child(when(
+            move || !narrow.get(),
+            move || {
+                wordmark()
+                    .px_5()
+                    .pt(move || if band() > px(0.) { px(2.) } else { px(26.) })
+                    .pb_4()
+            },
+        ))
         .child(
-            stack()
-                .gap_0()
-                .child(nav_group("Workspace"))
-                .child(nav_item(
-                    app,
-                    menu,
-                    "Cleanup",
-                    Icon::Cleanup,
-                    Page::Cleanup,
-                    None,
-                ))
-                .child(nav_item(
-                    app,
-                    menu,
-                    "Settings",
-                    Icon::Settings,
-                    Page::Settings,
-                    None,
-                )),
+            scroll().flex_1().min_h_0().child(
+                view()
+                    .px_3()
+                    .pt(move || px(if narrow.get() { 12. } else { 4. }))
+                    .pb_4()
+                    .gap_5()
+                    .child(library)
+                    .child(organize),
+            ),
         )
+        .child(footer)
 }
 
 fn nav_button(
@@ -428,12 +628,14 @@ fn nav_button(
         .accessibility_label(name.to_owned())
         .selected(selected)
         .on_press(action)
-        .rounded_md()
+        .rounded(px(RADIUS))
         .px_2()
-        .min_h(px(32.))
+        .min_h(px(30.))
         .min_w_0()
         .justify_center()
         .bg(move || if selected() { wash() } else { clear() })
+        .transition_colors()
+        .duration(tween(INSTANT))
         .hover(|s| s.bg(wash))
         .active(|s| s.bg(rule))
         .focus(|s| s.outline(px(2.)).outline_color(accent))
@@ -456,6 +658,7 @@ fn nav_button(
                 })),
         )
 }
+
 fn nav_item(
     app: App,
     menu: Signal<bool>,

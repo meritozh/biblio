@@ -1,4 +1,3 @@
-use crate::artwork::{Icon, icon};
 use crate::{app::App, ui::*};
 use biblio_core::{
     Library,
@@ -19,6 +18,14 @@ impl Candidate {
         match self {
             Self::Field(f) => format!("{f}…"),
             Self::Value(c) => c.0.clone(),
+        }
+    }
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Field(_) => "Filter by",
+            Self::Value(c) if c.0.starts_with("Tag · ") => "Tag",
+            Self::Value(c) if c.0.starts_with("Author · ") => "Author",
+            Self::Value(_) => "Filter",
         }
     }
 }
@@ -188,8 +195,11 @@ pub fn bar(app: App, committed: Signal<String>, chips: Signal<Vec<Chip>>) -> Any
                 chips.update(|v| v.push(c));
                 field.set(None);
                 prefix.set(None);
-                committed.set(buffer.get_untracked());
+                // The typed text only found the suggestion: it is not a
+                // search of its own once the condition stands in for it.
                 open.set(false);
+                buffer.set(String::new());
+                committed.set(String::new());
             }
         }
         choices.set(vec![]);
@@ -246,6 +256,18 @@ pub fn bar(app: App, committed: Signal<String>, chips: Signal<Vec<Chip>>) -> Any
             active.set(None);
         });
     });
+    // Focus the field when the app asks (mod+K), also when the request
+    // came before this field existed (from another page): once mounted.
+    effect(move || {
+        let asked = app.find.get();
+        if app.found.with(|f| *f != asked) {
+            app.found.with(|f| *f = asked);
+            spawn(async move {
+                timer(std::time::Duration::from_millis(16)).await;
+                input_ref.focus();
+            });
+        }
+    });
     let entry = input_face()
         .label("Search library")
         .submit_behavior(SubmitBehavior::Submit)
@@ -285,65 +307,111 @@ pub fn bar(app: App, committed: Signal<String>, chips: Signal<Vec<Chip>>) -> Any
                 accept()
             }
         })
-        .pl(px(38.))
-        .min_h(px(42.))
+        .pl(px(34.))
+        .pr(px(36.))
         .flex_1();
-    stack()
-        .gap_1()
+    // Clears the typed search; conditions have their own chips.
+    let reset = move || {
+        field.set(None);
+        prefix.set(None);
+        active.set(None);
+        buffer.set(String::new());
+        committed.set(String::new());
+        open.set(false);
+    };
+    let suggestions = dynamic(move || {
+        let list = choices.get();
+        if !open.get() || list.is_empty() {
+            return view().hidden().into_element();
+        }
+        let mut rows = view()
+            .absolute()
+            .top(px(36.))
+            .left(px(0.))
+            .right(px(0.))
+            .z_index(10)
+            .p(px(4.))
+            .gap(px(1.))
+            .rounded(px(RADIUS))
+            .border_1()
+            .border_color(keyline)
+            .bg(sheet)
+            .shadow_md();
+        for (i, c) in list.into_iter().enumerate() {
+            let on = move || active.get() == Some(i);
+            let kind = c.kind();
+            let name = c.label();
+            rows = rows.child(
+                nsh_base::button()
+                    .accessibility_label(name.clone())
+                    .selected(on)
+                    .on_press(move || select(c.clone()))
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .min_h(px(30.))
+                    .px(px(10.))
+                    .rounded(px(RADIUS_SM))
+                    .bg(move || if on() { wash() } else { clear() })
+                    .hover(|s| s.bg(wash))
+                    .focus(|s| s.bg(wash).outline(px(2.)).outline_color(accent))
+                    .child(label(name).number_of_lines(1).flex_1())
+                    .child(caption(kind)),
+            );
+        }
+        rows.into_element()
+    });
+    view()
+        .w_full()
+        .min_w_0()
         .child(
-            row()
+            view()
+                .w_full()
+                .justify_center()
+                .child(entry)
                 .child(
                     view()
-                        .flex_1()
-                        .min_w_0()
-                        .justify_center()
-                        .child(entry)
-                        .child(
-                            view()
-                                .absolute()
-                                .left(px(12.))
-                                .pointer_events(PointerEvents::None)
-                                .child(icon(Icon::Search, secondary)),
-                        ),
+                        .absolute()
+                        .left(px(11.))
+                        .pointer_events(PointerEvents::None)
+                        .child(icon(Icon::Search, secondary)),
                 )
                 .child(when(
-                    move || !buffer.with(String::is_empty) || !chips.with(Vec::is_empty),
+                    move || !buffer.with(String::is_empty),
                     move || {
-                        button("Clear", move || {
-                            field.set(None);
-                            prefix.set(None);
-                            active.set(None);
-                            buffer.set(String::new());
-                            committed.set(String::new());
-                            chips.set(vec![]);
-                            open.set(false);
-                        })
+                        view().absolute().right(px(2.)).child(icon_button(
+                            "Clear",
+                            Icon::Close,
+                            None,
+                            reset,
+                        ))
                     },
                 )),
         )
-        .child(dynamic(move || {
-            let mut r = wrap();
-            if open.get() {
-                for (i, c) in choices.get().into_iter().enumerate() {
-                    let selected = active.get() == Some(i);
-                    r = r.child(button(
-                        format!("{}{}", if selected { "› " } else { "" }, c.label()),
-                        move || select(c.clone()),
-                    ));
-                }
-            }
-            r
-        }))
-        .child(dynamic(move || {
-            let mut r = wrap();
-            for (i, c) in chips.get().iter().enumerate() {
-                r = r.child(button(format!("{} ×", c.0), move || {
-                    chips.update(|cs| {
-                        cs.remove(i);
-                    })
-                }));
-            }
-            r
-        }))
+        .child(suggestions)
         .into_element()
+}
+
+/// The active conditions, each a chip that removes it.
+pub fn chips(chips: Signal<Vec<Chip>>) -> AnyElement {
+    dynamic(move || {
+        let list = chips.get();
+        if list.is_empty() {
+            return view().hidden().into_element();
+        }
+        let mut r = wrap().gap(px(6.));
+        for (i, c) in list.iter().enumerate() {
+            r = r.child(chip(c.0.clone(), move || {
+                chips.update(|cs| {
+                    cs.remove(i);
+                })
+            }));
+        }
+        if list.len() > 1 {
+            r = r.child(ghost("Clear filters", move || chips.set(vec![])));
+        }
+        r.into_element()
+    })
+    .into_element()
 }

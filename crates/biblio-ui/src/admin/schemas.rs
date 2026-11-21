@@ -11,13 +11,21 @@ pub fn screen(app: App) -> AnyElement {
     let selection = signal(None::<String>);
     let imported = signal_with(None::<Rc<SchemaDefinition>>, SignalEquals::Never);
     let id = selection;
-    stack()
+    view()
+        .gap_4()
         .child(
             wrap()
-                .child(button("New schema", move || {
-                    imported.set(None);
-                    id.set(None);
-                }))
+                .gap_2()
+                .child(control(
+                    "New schema",
+                    Variant::Default,
+                    ButtonSize::Md,
+                    Some(Icon::Plus),
+                    move || {
+                        imported.set(None);
+                        id.set(None);
+                    },
+                ))
                 .child(button("Import schema", move || {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("Schema", &["json"])
@@ -36,13 +44,45 @@ pub fn screen(app: App) -> AnyElement {
         .child(dynamic(move || {
             app.revision.get();
             app.load(schemas::schema_list(app.db()), move |schemas| {
-                let mut nav = wrap();
+                let mut nav = view().gap(px(1.)).w(px(200.)).flex_shrink_0().child(
+                    caption("Schemas")
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .px(px(8.))
+                        .pb_1(),
+                );
                 for s in schemas {
                     let key = s.schema.id.clone();
-                    nav = nav.child(button(&s.schema.name, move || {
-                        imported.set(None);
-                        selection.set(Some(key.clone()));
-                    }));
+                    let mine = stored(key.clone());
+                    let on = move || mine.with(|k| selection.with(|v| v.as_ref() == Some(k)));
+                    nav = nav.child(
+                        nsh_base::button()
+                            .accessibility_label(s.schema.name.clone())
+                            .selected(on)
+                            .on_press(move || {
+                                imported.set(None);
+                                selection.set(Some(key.clone()));
+                            })
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .min_h(px(30.))
+                            .px(px(8.))
+                            .rounded(px(RADIUS))
+                            .bg(move || if on() { wash() } else { clear() })
+                            .hover(|s| s.bg(wash))
+                            .focus(|s| s.outline(px(2.)).outline_color(accent))
+                            .child(label(s.schema.name.clone()).number_of_lines(1).style_with(
+                                move |st| {
+                                    if on() {
+                                        st.font_weight(FontWeight::SEMIBOLD)
+                                    } else {
+                                        st
+                                    }
+                                },
+                            ))
+                            .child(caption(if s.schema.is_builtin { "Built-in" } else { "" })),
+                    );
                 }
                 let schemas = stored(
                     schemas
@@ -54,9 +94,12 @@ pub fn screen(app: App) -> AnyElement {
                         })
                         .collect::<Vec<_>>(),
                 );
-                stack()
+                wrap()
+                    .items_start()
+                    .gap_x(px(32.))
+                    .gap_y(px(16.))
                     .child(nav)
-                    .child(dynamic(move || {
+                    .child(view().flex_1().min_w(px(320.)).child(dynamic(move || {
                         let key = selection.get();
                         let import = imported.get();
                         untracked(|| {
@@ -67,7 +110,7 @@ pub fn screen(app: App) -> AnyElement {
                                 editor(app, def, key.is_some(), selection, imported)
                             })
                         })
-                    }))
+                    })))
                     .into_element()
             })
         }))
@@ -133,22 +176,40 @@ fn editor(
     );
     let changed = signal(0u64);
     let keep_steps = def.is_some();
-    let mut body = stack()
+    let mut body = view()
+        .gap_3()
         .child(if existing {
-            label(format!("Schema · {}", slug.get_untracked())).into_element()
+            view()
+                .gap_1()
+                .child(subheading(name.get_untracked()))
+                .child(caption(format!("Schema · {}", slug.get_untracked())))
+                .into_element()
         } else {
-            field("Schema ID", slug).into_element()
+            view()
+                .gap_3()
+                .child(subheading("New schema"))
+                .child(field("Schema ID", slug))
+                .into_element()
         })
         .child(field("Schema name", name))
         .child(field("Description", description))
         .child(field("Icon", icon))
-        .child(field("Pipeline template (novel, comic, galgame)", template))
-        .child(field("Extensions", extensions));
+        .child(field_help(
+            "Pipeline template",
+            "novel, comic or galgame",
+            template,
+        ))
+        .child(field_help(
+            "Extensions",
+            "Comma-separated, such as epub, pdf, txt",
+            extensions,
+        ))
+        .child(section("Fields"));
     body = body
         .child(dynamic(move || {
             changed.get();
             let data = fields.with(|v| v.clone());
-            let mut list = stack();
+            let mut list = view().gap_2();
             for (i, f) in data.into_iter().enumerate() {
                 let key = f.field_key.clone();
                 let semantic = f.semantic.is_some();
@@ -174,12 +235,13 @@ fn editor(
                         .on_change(move |s: &str| update(k, s))
                 };
                 let mut line = wrap()
+                    .gap_2()
                     .child(if semantic {
-                        label(&key).into_element()
+                        label(&key).font_weight(FontWeight::MEDIUM).into_element()
                     } else {
-                        editor("Field key", key, "key").into_element()
+                        editor("Field key", key, "key").w(px(140.)).into_element()
                     })
-                    .child(editor("Field label", f.label, "label"));
+                    .child(editor("Field label", f.label, "label").flex_1().min_w(px(140.)));
                 if !semantic {
                     line = line
                         .child(editor("Field type", f.field_type, "type"))
@@ -189,6 +251,7 @@ fn editor(
                             "options",
                         ));
                 }
+                let mut flags = wrap().gap_x(px(16.)).gap_y(px(4.));
                 for (kind, initial) in [
                     ("Form", f.form_visible),
                     ("Card", f.card_visible),
@@ -211,28 +274,50 @@ fn editor(
                             }
                         });
                     });
-                    line = line.child(box_view);
+                    flags = flags.child(box_view);
                 }
-                if !semantic {
-                    line = line.child(confirm(
-                        "Remove field and stored values on save",
-                        move || {
-                            fields.with(|v| v.remove(i));
-                            changed.update(|v| *v += 1);
-                        },
-                    ));
-                }
+                let mut tools = row().gap_1();
                 if i > 0 {
-                    line = line.child(button("Move up", move || {
+                    tools = tools.child(icon_button("Move up", Icon::Upload, None, move || {
                         fields.with(|v| v.swap(i, i - 1));
                         changed.update(|v| *v += 1);
                     }));
                 }
-                list = list.child(line);
+                if !semantic {
+                    tools = tools.child(icon_button(
+                        "Remove field and stored values on save",
+                        Icon::Trash,
+                        None,
+                        move || {
+                            ask(
+                                "Remove this field?",
+                                "When you save the schema, the field and every value stored in it are deleted.",
+                                "Remove field",
+                                true,
+                                move || {
+                                    fields.with(|v| {
+                                        v.remove(i);
+                                    });
+                                    changed.update(|v| *v += 1);
+                                },
+                            )
+                        },
+                    ));
+                }
+                list = list.child(
+                    view()
+                        .gap_2()
+                        .p_3()
+                        .rounded(px(RADIUS))
+                        .border_1()
+                        .border_color(rule)
+                        .child(row().gap_2().child(line.flex_1()).child(tools))
+                        .child(flags),
+                );
             }
             list
         }))
-        .child(button("Add field", move || {
+        .child(control("Add field", Variant::Default, ButtonSize::Md, Some(Icon::Plus), move || {
             fields.with(|v| {
                 v.push(SchemaFieldInput {
                     field_key: String::new(),
@@ -250,26 +335,28 @@ fn editor(
             });
             changed.update(|v| *v += 1);
         }));
-    body = body.child(dynamic(move || {
-        changed.get();
-        let mut list = stack();
-        for (i, step) in steps.with(|v| v.clone()).iter().enumerate() {
-            let (v, check) = check(&step.label, step.enabled);
-            effect(move || {
-                let enabled = v.get();
-                steps.with(|steps| steps[i].enabled = enabled);
-            });
-            let mut line = row().child(check);
-            if i > 0 {
-                line = line.child(button("Move step up", move || {
-                    steps.with(|v| v.swap(i, i - 1));
-                    changed.update(|v| *v += 1);
-                }));
+    body = body
+        .child(section("Pipeline steps"))
+        .child(dynamic(move || {
+            changed.get();
+            let mut list = view().gap(px(2.));
+            for (i, step) in steps.with(|v| v.clone()).iter().enumerate() {
+                let (v, check) = check(&step.label, step.enabled);
+                effect(move || {
+                    let enabled = v.get();
+                    steps.with(|steps| steps[i].enabled = enabled);
+                });
+                let mut line = row().gap_2().child(view().flex_1().child(check));
+                if i > 0 {
+                    line = line.child(icon_button("Move step up", Icon::Upload, None, move || {
+                        steps.with(|v| v.swap(i, i - 1));
+                        changed.update(|v| *v += 1);
+                    }));
+                }
+                list = list.child(line);
             }
-            list = list.child(line);
-        }
-        list
-    }));
+            list
+        }));
     let save = move || {
         let id = slug.get_untracked();
         let db = app.db();
@@ -306,9 +393,9 @@ fn editor(
             },
         );
     };
-    body = body.child(primary("Save schema", save));
+    let mut actions = wrap().gap_2().pt_4().child(primary("Save schema", save));
     if existing {
-        body = body.child(button("Export schema", move || {
+        actions = actions.child(button("Export schema", move || {
             if let Some(path) = rfd::FileDialog::new()
                 .set_file_name(format!("{}.json", slug.get_untracked()))
                 .save_file()
@@ -321,16 +408,22 @@ fn editor(
             }
         }));
         if def.is_some_and(|s| !s.schema.is_builtin) {
-            body = body.child(confirm("Delete schema", move || {
-                app.local_job(
-                    admin::schema_delete(app.db(), slug.get_untracked()),
-                    move |_| {
-                        selection.set(None);
-                        app.refresh();
-                    },
-                )
-            }));
+            actions = actions.child(confirm(
+                "Delete schema",
+                "Delete this schema?",
+                "Categories that use it must be moved to another schema first. This cannot be undone.",
+                true,
+                move || {
+                    app.local_job(
+                        admin::schema_delete(app.db(), slug.get_untracked()),
+                        move |_| {
+                            selection.set(None);
+                            app.refresh();
+                        },
+                    )
+                },
+            ));
         }
     }
-    body.into_element()
+    body.child(actions).into_element()
 }
