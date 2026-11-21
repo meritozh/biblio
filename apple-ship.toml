@@ -3,7 +3,7 @@ kind = "gpui"
 team_id = "N59353RP3W"
 bundle_id = "io.augite.biblio"
 product_name = "Biblio"
-version = "0.10.1"
+version = "1.0.0"
 build = 0
 channels = ["developer-id"]
 
