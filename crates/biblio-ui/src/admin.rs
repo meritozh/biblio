@@ -19,12 +19,13 @@ pub fn screen(app: App, page: Page) -> AnyElement {
     stack()
         .flex_1()
         .min_h_0()
+        .gap_4()
         .child(heading(name))
         .child(
             scroll()
                 .flex_1()
                 .min_h_0()
-                .child(stack().max_w(px(840.)).child(body)),
+                .child(stack().max_w(px(MEASURE)).pb_6().child(body)),
         )
         .into_element()
 }
@@ -191,7 +192,12 @@ fn category_form(
     let mut options = wrap();
     for s in schemas {
         let id = s.schema.id.clone();
-        options = options.child(button(&s.schema.name, move || slug.set(id.clone())));
+        let key = stored(id.clone());
+        options = options.child(choice(
+            s.schema.name.clone(),
+            move || key.with(|k| slug.with(|v| v == k)),
+            move || slug.set(id.clone()),
+        ));
     }
     stack()
         .child(section(if id.is_some() {
@@ -201,7 +207,7 @@ fn category_form(
         }))
         .child(field("Category name", name))
         .child(field("Description", desc))
-        .child(text(move || format!("Schema · {}", slug.get())).text_color(ink))
+        .child(field_label("Schema"))
         .child(options)
         .child(field("View defaults (JSON)", config))
         .child(primary(

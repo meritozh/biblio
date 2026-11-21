@@ -31,9 +31,11 @@ fn import_search_favorite_edit_and_reopen() -> Result<(), String> {
     app.type_text("label:Storage folder", storage.to_str().unwrap())?;
     app.press("label:Save storage folder")?;
     app.wait_for("Saved")?;
-    app.wait_for("label:copy")?;
-    app.press("label:copy")?;
-    app.wait_for("Import mode · copy")?;
+    app.wait_for("label:Copy")?;
+    app.press("label:Copy")?;
+    app.wait_for(
+        "Copies imported files into the storage folder and leaves the originals in place.",
+    )?;
     app.press("label:Categories")?;
     app.wait_for("label:Category name")?;
     app.type_text("label:Category name", "Books")?;

@@ -182,10 +182,13 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
         tools
     };
     let tools_and_results = stack()
+        .gap_3()
+        .pb_6()
         .child(search::bar(app, query, chips))
         .child(
             wrap()
                 .items_start()
+                .gap_2()
                 .child(choice(
                     "View options",
                     move || options.get(),
@@ -265,11 +268,12 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
                 move |page| {
                     let ids = page.files.iter().map(|f| f.id).collect::<Vec<_>>();
                     let mut pager = wrap()
-                        .pt_3()
+                        .pt_2()
                         .pb_2()
+                        .min_h(px(44.))
                         .border_b_1()
                         .border_color(rule)
-                        .child(note(format!(
+                        .child(caption(format!(
                             "{} {}",
                             page.total,
                             if page.total == 1 { "file" } else { "files" }
@@ -296,13 +300,14 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
                     } else {
                         file_rows(app, &page.files, is_grid, selection)
                     };
-                    stack().child(pager).child(results).into_element()
+                    stack().gap_4().child(pager).child(results).into_element()
                 },
             )
         }));
     stack()
         .flex_1()
         .min_h_0()
+        .gap_4()
         .on_file_drop(move |e: &FileDropEvent| imports::drop_urls(app, &e.uris))
         .child(
             heading_bar()
@@ -335,22 +340,17 @@ fn empty_shelf(filtered: bool, category: bool) -> AnyElement {
         .items_center()
         .justify_center()
         .gap_2()
-        .py_6()
         .px_4()
         .min_h(move || {
             px(if window().width < px(760.) {
-                204.
+                220.
             } else {
-                284.
+                320.
             })
         })
-        .bg(sheet)
-        .border_1()
-        .border_color(rule)
-        .rounded_lg()
         .child(index_mark(false))
-        .child(subheading(heading).text_center())
-        .child(note(help).text_center())
+        .child(subheading(heading).text_center().pt_3())
+        .child(note(help).text_center().max_w(px(420.)))
         .into_element()
 }
 
@@ -385,8 +385,9 @@ fn file_rows(
     let mut list = if grid {
         view()
             .grid()
-            .grid_template_columns("repeat(auto-fill, minmax(200px, 1fr))")
-            .gap_3()
+            .grid_template_columns("repeat(auto-fill, minmax(156px, 1fr))")
+            .gap_x(px(20.))
+            .gap_y(px(28.))
     } else {
         stack().gap_0()
     };
@@ -416,15 +417,11 @@ fn file_rows(
         let mut card = if grid {
             stack()
                 .w_full()
-                .gap_2()
-                .p_3()
-                .bg(sheet)
-                .border_1()
-                .border_color(rule)
-                .rounded_lg()
+                .min_w_0()
+                .gap_1()
                 .child(detail::card_face(app, file))
         } else {
-            wrap().p_2().border_b_1().border_color(rule)
+            wrap().py_2().border_b_1().border_color(rule)
         };
         card = card.child(selection.control(id));
         if !grid {
@@ -433,30 +430,30 @@ fn file_rows(
             }));
         }
         if !authors.is_empty() {
-            card = card.child(note(authors));
+            card = card.child(note(authors).number_of_lines(2));
         }
         card = card.child(dynamic(move || {
             let values = extra.get();
             let mut fields = stack().gap_1();
             if let Some(items) = values.get(&id).filter(|v| !v.is_empty()) {
                 for (name, value) in items {
-                    fields = fields.child(note(format!("{name} · {value}")));
+                    fields = fields.child(caption(format!("{name} · {value}")));
                 }
                 fields
             } else {
                 view().hidden()
             }
         }));
-        let caption = if favorite { "Unfavorite" } else { "Favorite" };
+        let caption_text = if favorite { "Unfavorite" } else { "Favorite" };
         let toggle = nsh_base::button()
-            .accessibility_label(caption)
+            .accessibility_label(caption_text)
             .selected(favorite)
-            .w(px(36.))
-            .h(px(36.))
+            .w(px(32.))
+            .h(px(32.))
             .items_center()
             .justify_center()
             .rounded_md()
-            .hover(|s| s.bg(paper))
+            .hover(|s| s.bg(wash))
             .active(|s| s.opacity(0.7))
             .focus(|s| s.outline(px(2.)).outline_color(accent))
             .on_press(move || {
@@ -473,19 +470,23 @@ fn file_rows(
                             .px_2()
                             .py_1()
                             .rounded_md()
-                            .bg(cloth)
-                            .child(label(caption).text_color(rail_ink)),
+                            .bg(ink)
+                            .child(caption(caption_text).text_color(paper)),
                     )
                     .child(favorite_mark(favorite)),
             );
         card = card.child(
             row()
                 .justify_between()
-                .child(note(format!(
-                    "{} · {}",
-                    file.storage_kind.as_deref().unwrap_or("local"),
-                    file.file_status
-                )))
+                .gap_1()
+                .child(
+                    caption(format!(
+                        "{} · {}",
+                        file.storage_kind.as_deref().unwrap_or("local"),
+                        file.file_status
+                    ))
+                    .number_of_lines(1),
+                )
                 .child(toggle),
         );
         list = list.child(card);

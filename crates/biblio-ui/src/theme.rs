@@ -1,3 +1,4 @@
+//! Semantic colours. See the colour table in the root `DESIGN.md`.
 use nsh_core::prelude::*;
 
 #[derive(Clone, Copy)]
@@ -6,62 +7,72 @@ pub struct Palette(pub Signal<bool>);
 #[derive(Clone, Copy)]
 pub struct Colors {
     pub paper: u32,
+    pub rail: u32,
     pub sheet: u32,
     pub ink: u32,
     pub secondary: u32,
     pub rule: u32,
+    pub keyline: u32,
+    pub wash: u32,
     pub action: u32,
     pub on_action: u32,
-    pub cloth: u32,
-    pub current: u32,
+    pub tint: u32,
 }
 
 const PORCELAIN: [Colors; 2] = [
     Colors {
-        paper: 0xf7f6f1,
-        sheet: 0xfffefa,
-        ink: 0x222c40,
-        secondary: 0x586579,
-        rule: 0xd0d4d6,
-        action: 0x344fb2,
+        paper: 0xfafaf8,
+        rail: 0xf3f3f0,
+        sheet: 0xffffff,
+        ink: 0x1e2229,
+        secondary: 0x5e6470,
+        rule: 0xe4e4df,
+        keyline: 0xc9cac4,
+        wash: 0xeaeae6,
+        action: 0x2f4a9e,
         on_action: 0xffffff,
-        cloth: 0x23324f,
-        current: 0x3c5177,
+        tint: 0xe9edf7,
     },
     Colors {
-        paper: 0x181e2a,
-        sheet: 0x232c3b,
-        ink: 0xf2f2ec,
-        secondary: 0xb1bdcc,
-        rule: 0x414d60,
-        action: 0xacc1ff,
-        on_action: 0x152346,
-        cloth: 0x121a29,
-        current: 0x304361,
+        paper: 0x16181c,
+        rail: 0x1b1d22,
+        sheet: 0x1f2227,
+        ink: 0xecece8,
+        secondary: 0xa3a8b2,
+        rule: 0x2c3036,
+        keyline: 0x41464e,
+        wash: 0x262a30,
+        action: 0x9db2f0,
+        on_action: 0x11182e,
+        tint: 0x232b3d,
     },
 ];
 const GRAPHITE: [Colors; 2] = [
     Colors {
-        paper: 0xf2eee7,
-        sheet: 0xfffaf3,
-        ink: 0x302d2a,
-        secondary: 0x655f55,
-        rule: 0xd5cdbf,
-        action: 0x414e8e,
+        paper: 0xf6f4f0,
+        rail: 0xefece6,
+        sheet: 0xfffdf9,
+        ink: 0x2a2724,
+        secondary: 0x67615a,
+        rule: 0xe3ded5,
+        keyline: 0xccc5b9,
+        wash: 0xe8e4dc,
+        action: 0x2a2724,
         on_action: 0xffffff,
-        cloth: 0x35343b,
-        current: 0x54525c,
+        tint: 0xeae5dc,
     },
     Colors {
-        paper: 0x211f1d,
-        sheet: 0x2e2b28,
-        ink: 0xf4eee4,
-        secondary: 0xc5bbae,
-        rule: 0x504a43,
-        action: 0xbdc7fa,
-        on_action: 0x212748,
-        cloth: 0x19181c,
-        current: 0x423e47,
+        paper: 0x1c1b19,
+        rail: 0x21201d,
+        sheet: 0x272522,
+        ink: 0xeeeae3,
+        secondary: 0xb3aca2,
+        rule: 0x35322e,
+        keyline: 0x4a4640,
+        wash: 0x2d2a26,
+        action: 0xeeeae3,
+        on_action: 0x1c1b19,
+        tint: 0x322f2a,
     },
 ];
 
@@ -79,11 +90,20 @@ pub fn secondary() -> Rgba {
 pub fn paper() -> Rgba {
     rgb(colors().paper)
 }
+pub fn rail() -> Rgba {
+    rgb(colors().rail)
+}
 pub fn sheet() -> Rgba {
     rgb(colors().sheet)
 }
 pub fn rule() -> Rgba {
     rgb(colors().rule)
+}
+pub fn keyline() -> Rgba {
+    rgb(colors().keyline)
+}
+pub fn wash() -> Rgba {
+    rgb(colors().wash)
 }
 pub fn accent() -> Rgba {
     rgb(colors().action)
@@ -91,29 +111,13 @@ pub fn accent() -> Rgba {
 pub fn on_accent() -> Rgba {
     rgb(colors().on_action)
 }
-pub fn cloth() -> Rgba {
-    rgb(colors().cloth)
-}
-pub fn current() -> Rgba {
-    rgb(colors().current)
-}
-pub fn rail_ink() -> Rgba {
-    rgb(0xfaf8f0)
-}
-pub fn rail_muted() -> Rgba {
-    rgb(0xc1ccdd)
-}
-pub fn gold() -> Rgba {
-    rgb(0xf3b94f)
+pub fn tint() -> Rgba {
+    rgb(colors().tint)
 }
 pub fn danger() -> Rgba {
-    rgb(if dark() { 0xffbab0 } else { 0x993c32 })
+    rgb(if dark() { 0xffb4a8 } else { 0x9a3b2f })
 }
-pub fn stock(seed: usize) -> Rgba {
-    let tints = if dark() {
-        [0x2c3b52, 0x40363c, 0x32423f, 0x453f34]
-    } else {
-        [0xdce5f2, 0xf0dfdb, 0xdce8e0, 0xeee3cd]
-    };
-    rgb(tints[seed % tints.len()])
+/// Fully transparent; lets quiet controls show the surface beneath them.
+pub fn clear() -> Rgba {
+    rgba(0x00000000)
 }

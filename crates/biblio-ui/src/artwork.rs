@@ -1,4 +1,4 @@
-//! Small catalogue marks drawn by NSH at the host's backing scale.
+//! Small monochrome marks drawn by NSH at the host's backing scale.
 use crate::theme::*;
 use nsh_core::prelude::*;
 
@@ -17,6 +17,7 @@ pub enum Icon {
     Search,
     Plus,
     Menu,
+    Back,
 }
 
 impl Icon {
@@ -38,12 +39,13 @@ impl Icon {
             }
             Self::Search => "M16 10a6 6 0 1 1-12 0 6 6 0 1 1 12 0 M15 15l6 6",
             Self::Plus => "M12 4v16 M4 12h16",
-            Self::Menu => "M3 5h18 M3 12h18 M3 19h18",
+            Self::Menu => "M3 6h18 M3 12h18 M3 18h18",
+            Self::Back => "M15 5l-7 7 7 7",
         }
     }
 }
 
-pub fn icon(which: Icon, color: fn() -> Rgba) -> impl IntoElement {
+pub fn icon(which: Icon, color: impl Fn() -> Rgba + 'static) -> impl IntoElement {
     canvas(move || {
         Painter::new()
             .scale(0.75, 0.75)
@@ -57,42 +59,36 @@ pub fn icon(which: Icon, color: fn() -> Rgba) -> impl IntoElement {
     .accessible(false)
 }
 
-/// The gold tab and ruled face also appear on the application icon.
-fn index_cards() -> Painter {
-    Painter::new()
-        .fill_color(rgb(0x839ac8))
-        .fill_svg("M16 15 85 5 92 55 23 65Z")
-        .fill_color(rgb(0xaebfec))
-        .fill_svg("M26 9 95 15 91 66 22 60Z")
-        .fill_color(gold())
-        .fill_svg("M86 23h14q2 0 2 2v14H85Z")
-        .fill_color(rgb(0xfff8e7))
-        .fill_svg("M11 22h75q2 0 2 2v50H11q-2 0-2-2V24q0-2 2-2Z")
-        .fill_color(rgb(0x3c568c))
-        .fill_svg("M18 30h10v9H18Z M33 32h25v3H33Z")
-        .stroke_color(rgb(0x8594b0))
-        .line_width(1.3)
-        .stroke_svg("M18 47h60 M18 53h60 M18 59h39")
-}
-
+/// The app icon's ruled slip and index tab, reduced to a line drawing: an
+/// outlined slip in ink with a filled accent tab. `small` is the wordmark size.
 pub fn index_mark(small: bool) -> impl IntoElement {
-    // Keep the small mark legible by using the same silhouette at both sizes.
-    canvas(if small {
-        Painter::new()
-            .scale(0.33, 0.33)
-            .fill_color(rgb(0xb2c5ee))
-            .fill_svg("M22 5h70v53H22Z")
-            .fill_color(gold())
-            .fill_svg("M88 18h15v26H88Z")
-            .fill_color(rgb(0xfff8e7))
-            .fill_svg("M5 16h74v62H5Z")
-            .fill_color(rgb(0x364b75))
-            .fill_svg("M16 29h14v10H16Z M35 30h28v5H35Z M16 48h46v4H16Z M16 57h34v4H16Z")
+    let (w, h, scale) = if small {
+        (20., 16., 0.2)
     } else {
-        index_cards()
+        (64., 52., 0.64)
+    };
+    canvas(move || {
+        let back = if small { ink() } else { keyline() };
+        Painter::new()
+            .scale(scale, scale)
+            .stroke_color(back)
+            .line_width(if small { 7. } else { 2.6 })
+            .stroke_svg("M18 8h70v54")
+            .fill_color(accent())
+            .fill_svg("M84 22h14v20H84Z")
+            .stroke_color(ink())
+            .line_width(if small { 8. } else { 3. })
+            .stroke_svg("M6 18h76v58H6Z")
+            .stroke_color(secondary())
+            .line_width(if small { 7. } else { 2.4 })
+            .stroke_svg(if small {
+                "M18 36h46 M18 54h30"
+            } else {
+                "M18 34h52 M18 46h52 M18 58h32"
+            })
     })
-    .w(px(if small { 36. } else { 112. }))
-    .h(px(if small { 28. } else { 82. }))
+    .w(px(w))
+    .h(px(h))
     .flex_shrink_0()
     .accessible(false)
 }
@@ -105,11 +101,38 @@ pub fn favorite_mark(selected: bool) -> impl IntoElement {
         } else {
             Painter::new()
                 .stroke_color(secondary())
-                .line_width(1.5)
+                .line_width(1.4)
                 .stroke_svg(STAR)
         }
     })
-    .w(px(20.))
-    .h(px(20.))
+    .w(px(18.))
+    .h(px(18.))
+    .accessible(false)
+}
+
+/// A drawn checkbox face; the surrounding control carries the semantics.
+pub fn tick_box(checked: impl Fn() -> bool + 'static) -> impl IntoElement {
+    canvas(move || {
+        if checked() {
+            Painter::new()
+                .fill_color(accent())
+                .fill_svg("M3 1h10q2 0 2 2v10q0 2-2 2H3q-2 0-2-2V3q0-2 2-2Z")
+                .stroke_color(on_accent())
+                .line_width(1.8)
+                .stroke_svg("M4.5 8.2l2.4 2.4 4.6-5")
+        } else {
+            Painter::new()
+                .fill_color(sheet())
+                .fill_svg("M3 1h10q2 0 2 2v10q0 2-2 2H3q-2 0-2-2V3q0-2 2-2Z")
+                .stroke_color(keyline())
+                .line_width(1.2)
+                .stroke_svg(
+                    "M3 1.5h10q1.5 0 1.5 1.5v10q0 1.5-1.5 1.5H3q-1.5 0-1.5-1.5V3q0-1.5 1.5-1.5Z",
+                )
+        }
+    })
+    .w(px(16.))
+    .h(px(16.))
+    .flex_shrink_0()
     .accessible(false)
 }

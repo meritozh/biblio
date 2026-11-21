@@ -223,9 +223,11 @@ pub fn start(dir: PathBuf) -> AnyElement {
         }))
         .into_element()
 }
+const COMPACT: f32 = 760.;
+
 fn workspace(app: App) -> AnyElement {
     let menu = signal(false);
-    let compact = computed(|| window().width < px(760.));
+    let compact = computed(|| window().width < px(COMPACT));
     let sidebar = move || navigation(app, menu);
     let main = stack()
         .style_with(move |s| {
@@ -236,9 +238,12 @@ fn workspace(app: App) -> AnyElement {
             }
         })
         .flex_1()
+        .min_w_0()
         .min_h_0()
-        .px(move || px(if compact.get() { 16. } else { 32. }))
-        .py(move || px(if compact.get() { 12. } else { 24. }))
+        .gap_4()
+        .px(move || px(if compact.get() { 16. } else { 40. }))
+        .pt(move || px(if compact.get() { 16. } else { 32. }))
+        .pb(move || px(if compact.get() { 12. } else { 20. }))
         .child(dynamic(move || {
             let page = app.page.get();
             untracked(|| match page {
@@ -252,11 +257,11 @@ fn workspace(app: App) -> AnyElement {
         .child(when(
             move || !app.message.with(String::is_empty),
             move || {
-                row()
-                    .pt_2()
-                    .border_t_1()
-                    .border_color(rule)
-                    .child(text(move || app.message.get()).text_sm().text_color(ink))
+                row().pt_2().border_t_1().border_color(rule).child(
+                    text(move || app.message.get())
+                        .text_sm()
+                        .text_color(secondary),
+                )
             },
         ));
     stack()
@@ -269,7 +274,9 @@ fn workspace(app: App) -> AnyElement {
             move || {
                 row()
                     .justify_between()
-                    .bg(cloth)
+                    .bg(rail)
+                    .border_b_1()
+                    .border_color(rule)
                     .px_4()
                     .py_2()
                     .child(wordmark())
@@ -296,12 +303,14 @@ fn workspace(app: App) -> AnyElement {
                                 if compact.get() {
                                     window().width
                                 } else {
-                                    px(224.)
+                                    px(220.)
                                 }
                             })
                             .flex_shrink_0()
                             .h_full()
-                            .bg(cloth)
+                            .bg(rail)
+                            .border_r_1()
+                            .border_color(rule)
                             .child(sidebar())
                     },
                 ))
@@ -313,22 +322,22 @@ fn workspace(app: App) -> AnyElement {
 fn wordmark() -> View {
     row()
         .gap_2()
+        .px_2()
         .child(index_mark(true))
-        .child(title("Biblio").text_size(px(29.)).text_color(rail_ink))
+        .child(title("Biblio").text_size(px(20.)))
 }
 
 fn nav_group(name: &str) -> Text {
-    text(name.to_owned())
-        .text_size(px(12.))
-        .letter_spacing(px(1.2))
+    caption(name.to_owned())
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rail_muted)
+        .px_2()
+        .pb_1()
 }
 
 fn navigation(app: App, menu: Signal<bool>) -> View {
     let mut library = stack()
-        .gap_1()
-        .child(nav_group("LIBRARY"))
+        .gap_0()
+        .child(nav_group("Library"))
         .child(nav_item(
             app,
             menu,
@@ -340,7 +349,7 @@ fn navigation(app: App, menu: Signal<bool>) -> View {
         .child(dynamic(move || {
             app.revision.get();
             app.load(category_list(app.db()), move |categories| {
-                let mut list = stack().gap_1();
+                let mut list = stack().gap_0();
                 for cat in categories {
                     list = list.child(nav_item(
                         app,
@@ -362,7 +371,7 @@ fn navigation(app: App, menu: Signal<bool>) -> View {
         Page::Import,
         None,
     ));
-    let mut organize = stack().gap_1().child(nav_group("ORGANIZE"));
+    let mut organize = stack().gap_0().child(nav_group("Organize"));
     for (target, name, glyph) in [
         (Page::Categories, "Categories", Icon::Categories),
         (Page::Tags, "Tags", Icon::Tags),
@@ -373,25 +382,23 @@ fn navigation(app: App, menu: Signal<bool>) -> View {
         organize = organize.child(nav_item(app, menu, name, glyph, target, None));
     }
     stack()
-        .px_4()
-        .py_6()
+        .px_3()
+        .pt(move || {
+            px(if window().width < px(COMPACT) {
+                16.
+            } else {
+                28.
+            })
+        })
+        .pb_6()
         .gap_6()
-        .child(when(
-            || window().width >= px(760.),
-            || {
-                row()
-                    .pb_4()
-                    .border_b_1()
-                    .border_color(current)
-                    .child(wordmark())
-            },
-        ))
+        .child(when(|| window().width >= px(COMPACT), || wordmark().pb_2()))
         .child(library)
         .child(organize)
         .child(
             stack()
-                .gap_1()
-                .child(nav_group("WORKSPACE"))
+                .gap_0()
+                .child(nav_group("Workspace"))
                 .child(nav_item(
                     app,
                     menu,
@@ -422,25 +429,33 @@ fn nav_button(
         .selected(selected)
         .on_press(action)
         .rounded_md()
-        .px_3()
-        .py_2()
-        .min_h(px(36.))
+        .px_2()
+        .min_h(px(32.))
+        .min_w_0()
         .justify_center()
-        .bg(move || if selected() { current() } else { cloth() })
-        .hover(|s| s.bg(current))
-        .active(|s| s.opacity(0.78))
-        .focus(|s| s.outline(px(2.)).outline_color(rail_muted))
-        .child(row().gap_3().child(icon(glyph, rail_muted)).child(
-            label(name).text_color(rail_ink).style_with(move |s| {
-                s.font_weight(if selected() {
-                    FontWeight::SEMIBOLD
-                } else {
-                    FontWeight::NORMAL
-                })
-            }),
-        ))
+        .bg(move || if selected() { wash() } else { clear() })
+        .hover(|s| s.bg(wash))
+        .active(|s| s.bg(rule))
+        .focus(|s| s.outline(px(2.)).outline_color(accent))
+        .child(
+            row()
+                .gap_3()
+                .min_w_0()
+                .child(icon(
+                    glyph,
+                    move || {
+                        if selected() { accent() } else { secondary() }
+                    },
+                ))
+                .child(label(name).number_of_lines(1).style_with(move |s| {
+                    s.font_weight(if selected() {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
+                })),
+        )
 }
-
 fn nav_item(
     app: App,
     menu: Signal<bool>,

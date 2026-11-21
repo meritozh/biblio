@@ -38,21 +38,27 @@ pub fn screen(app: App) -> AnyElement {
                 },
                 move |(path, mode, scheme, config, remote, stats)| {
                     let root = signal(path.clone());
-                    let mut modes = wrap().child(label(format!("Import mode · {mode}")));
-                    for mode in ["copy", "move"] {
-                        modes = modes.child(button(mode, move || {
-                            app.save(prefs::settings_set(
-                                app.db(),
-                                "import_mode".into(),
-                                mode.into(),
-                            ))
-                        }));
+                    let current = mode.clone();
+                    let mut modes = wrap().child(lead("Import mode"));
+                    for (key, name) in [("copy", "Copy"), ("move", "Move")] {
+                        let on = mode == key;
+                        modes = modes.child(choice(
+                            name,
+                            move || on,
+                            move || {
+                                app.save(prefs::settings_set(
+                                    app.db(),
+                                    "import_mode".into(),
+                                    key.into(),
+                                ))
+                            },
+                        ));
                     }
                     let scheme = signal(scheme.clone());
-                    let mut themes = wrap().child(label("Mode"));
-                    for mode in ["system", "light", "dark"] {
+                    let mut themes = wrap().child(lead("Mode"));
+                    for (mode, name) in [("system", "System"), ("light", "Light"), ("dark", "Dark")] {
                         themes = themes.child(choice(
-                            mode,
+                            name,
                             move || scheme.with(|s| s == mode),
                             move || {
                                 app.local_job(
@@ -65,7 +71,7 @@ pub fn screen(app: App) -> AnyElement {
                             },
                         ));
                     }
-                    let mut palettes = wrap().child(label("Palette"));
+                    let mut palettes = wrap().child(lead("Palette"));
                     let palette = use_context::<Palette>().expect("workspace palette");
                     for (key, name) in [("porcelain", "Porcelain"), ("graphite", "Graphite")] {
                         palettes = palettes.child(choice(
@@ -89,7 +95,8 @@ pub fn screen(app: App) -> AnyElement {
                     let model = signal(config.model.clone());
                     let secret = signal(config.api_key.clone());
                     stack()
-                        .max_w(px(760.))
+                        .max_w(px(MEASURE))
+                        .pb_6()
                         .child(section("Storage"))
                         .child(field("Storage folder", root))
                         .child(
@@ -108,6 +115,11 @@ pub fn screen(app: App) -> AnyElement {
                                 })),
                         )
                         .child(modes)
+                        .child(caption(if current == "copy" {
+                            "Copies imported files into the storage folder and leaves the originals in place."
+                        } else {
+                            "Moves imported files into the storage folder."
+                        }))
                         .child(section("Appearance"))
                         .child(themes)
                         .child(palettes)
@@ -116,6 +128,7 @@ pub fn screen(app: App) -> AnyElement {
                         .child(content)
                         .child(field("Base URL", url))
                         .child(field("Model", model))
+                        .child(field_label("API key"))
                         .child(input("API key", secret).masked(true))
                         .child(
                             wrap()
@@ -140,7 +153,7 @@ pub fn screen(app: App) -> AnyElement {
                         )
                         .child(remote_form(app, remote))
                         .child(section("Database"))
-                        .child(label(format!(
+                        .child(note(format!(
                             "{} files · {} tags · {} categories · {} bytes",
                             stats.file_count,
                             stats.tag_count,
@@ -177,7 +190,7 @@ fn remote_form(app: App, config: &remote::RemoteConfig) -> AnyElement {
     if config.enabled {
         let key = signal(None::<String>);
         s = s
-            .child(label(format!("Connected · {}", config.app_root)))
+            .child(note(format!("Connected · {}", config.app_root)))
             .child(confirm("Disconnect", move || {
                 app.save(remote::remote_logout(app.db()))
             }))
@@ -225,6 +238,7 @@ fn remote_form(app: App, config: &remote::RemoteConfig) -> AnyElement {
                     },
                 )
             }))
+            .child(field_label("Access token or redirect URL"))
             .child(input("Access token or redirect URL", token).masked(true))
             .child(field("Remote folder", root))
             .child(button("Connect", move || {

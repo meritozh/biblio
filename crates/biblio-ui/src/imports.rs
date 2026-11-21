@@ -66,17 +66,23 @@ pub fn screen(app: App) -> AnyElement {
     let drop_area = stack()
         .items_center()
         .justify_center()
-        .py_6()
+        .gap_3()
+        .py_8()
         .px_4()
-        .min_h(px(176.))
+        .min_h(px(200.))
         .border_1()
-        .rounded_lg()
-        .border_color(move || if dragging.get() { accent() } else { rule() })
-        .bg(move || if dragging.get() { stock(0) } else { sheet() })
-        .child(crate::artwork::icon(crate::artwork::Icon::Import, accent))
+        .rounded_md()
+        .style_with(move |s| if dragging.get() { s } else { s.border_dashed() })
+        .border_color(move || if dragging.get() { accent() } else { keyline() })
+        .bg(move || if dragging.get() { tint() } else { clear() })
+        .child(crate::artwork::icon(
+            crate::artwork::Icon::Import,
+            secondary,
+        ))
         .child(subheading("Drop files or folders here").text_center())
         .child(pickers);
     let controls = wrap()
+        .gap_3()
         .child(primary("Analyze selected files", move || analyze(app)))
         .child(confirm("Discard import batch", move || {
             let db = app.db();
@@ -93,7 +99,19 @@ pub fn screen(app: App) -> AnyElement {
                     app.roots.with(|r| r.clear());
                 },
             );
-        }));
+        }))
+        .child(
+            text(move || {
+                format!(
+                    "{} selected · {} analyzing · {} ready for review",
+                    app.sources.with(Vec::len),
+                    app.analyzing.with(Vec::len),
+                    app.pending.with(Vec::len)
+                )
+            })
+            .text_size(px(13.))
+            .text_color(secondary),
+        );
     scroll()
         .flex_1()
         .min_h_0()
@@ -105,21 +123,17 @@ pub fn screen(app: App) -> AnyElement {
         })
         .child(
             stack()
+                .gap_4()
+                .pb_6()
                 .child(heading("Import"))
-                .child(detail::category_picker(app, app.category))
-                .child(drop_area)
                 .child(
-                    text(move || {
-                        format!(
-                            "{} selected · {} analyzing · {} ready for review",
-                            app.sources.with(Vec::len),
-                            app.analyzing.with(Vec::len),
-                            app.pending.with(Vec::len)
-                        )
-                    })
-                    .text_color(secondary),
+                    stack()
+                        .gap_4()
+                        .max_w(px(MEASURE))
+                        .child(detail::category_picker(app, app.category))
+                        .child(drop_area)
+                        .child(controls),
                 )
-                .child(controls)
                 .child(dynamic(move || {
                     if first.get().is_some() {
                         let item = app.pending.get_untracked().remove(0);
@@ -249,14 +263,15 @@ fn review(app: App, item: FilePreparedImport) -> AnyElement {
     let suggestions = signal(String::new());
     let path = item.path.clone();
     let mut body = stack()
+        .max_w(px(MEASURE))
         .child(section("Review import"))
-        .child(label(&path))
+        .child(note(&path).selectable(true))
         .child(field("Title", name))
         .child(detail::category_picker(app, category))
         .child(field("Progress", progress))
-        .child(label("Additional authors, one per line"))
+        .child(field_label("Additional authors, one per line"))
         .child(input("Additional authors", authors).multiline(true))
-        .child(label("Additional tags, one per line"))
+        .child(field_label("Additional tags, one per line"))
         .child(input("Additional tags", tags).multiline(true));
     for tag in &item.suggested_tags {
         let v = tag.clone();

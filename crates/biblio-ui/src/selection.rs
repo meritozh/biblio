@@ -33,15 +33,26 @@ impl Selection {
                     .checked(move || self.ids.with(|ids| ids.contains(&id)))
                     .accessibility_label(format!("Select file {id}"))
                     .on_change(move |_: &bool| self.toggle(id))
+                    .self_start()
+                    .rounded_md()
+                    .focus(|s| s.outline(px(2.)).outline_color(accent))
                     .child(
-                        text(move || {
-                            if self.ids.with(|s| s.contains(&id)) {
-                                "☑ Selected"
-                            } else {
-                                "☐ Select"
-                            }
-                        })
-                        .text_color(ink),
+                        row()
+                            .py_1()
+                            .child(crate::artwork::tick_box(move || {
+                                self.ids.with(|s| s.contains(&id))
+                            }))
+                            .child(
+                                text(move || {
+                                    if self.ids.with(|s| s.contains(&id)) {
+                                        "Selected"
+                                    } else {
+                                        "Select"
+                                    }
+                                })
+                                .text_size(px(14.))
+                                .text_color(secondary),
+                            ),
                     )
             },
         )
@@ -67,6 +78,8 @@ impl Selection {
                     wrap()
                         .child(
                             text(move || format!("{} selected", self.ids.with(BTreeSet::len)))
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::MEDIUM)
                                 .text_color(ink),
                         )
                         .child(button("Clear selection", move || self.clear()))

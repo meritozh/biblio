@@ -1,3 +1,4 @@
+use crate::artwork::Icon;
 use crate::{
     app::{App, Page},
     ui::*,
@@ -21,16 +22,12 @@ async fn cover_uri(db: biblio_core::Library, id: i64) -> Result<Option<String>, 
     }
 }
 
+/// A catalogue slip in a 3:4 frame: the real cover when there is one,
+/// otherwise the title typeset on a plain ruled slip.
 pub fn card_face(app: App, file: &api::FileListItem) -> AnyElement {
     let id = file.id;
     let title = file.display_name.clone();
     let progress = file.progress.clone().unwrap_or_default();
-    let mut tag_ids = file.tags.iter().map(|tag| tag.id).collect::<Vec<_>>();
-    tag_ids.sort_unstable();
-    let seed = tag_ids
-        .into_iter()
-        .reduce(|a, b| a.wrapping_mul(31).wrapping_add(b))
-        .unwrap_or(id) as usize;
     let extension = std::path::Path::new(&file.path)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -39,33 +36,50 @@ pub fn card_face(app: App, file: &api::FileListItem) -> AnyElement {
     let preview = app.load(cover_uri(app.db(), id), move |uri| {
         if let Some(uri) = uri {
             return stack()
-                .gap_1()
-                .child(image(uri.clone()).h(px(142.)).w_full())
-                .child(label(&title))
+                .gap_2()
+                .child(
+                    image(uri.clone())
+                        .w_full()
+                        .aspect_ratio(0.75)
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(rule),
+                )
+                .child(
+                    label(&title)
+                        .font_weight(FontWeight::MEDIUM)
+                        .number_of_lines(2),
+                )
                 .into_element();
         }
         stack()
-            .h(px(152.))
             .w_full()
+            .aspect_ratio(0.75)
             .justify_between()
-            .p_3()
-            .gap_1()
-            .rounded_md()
-            .bg(move || stock(seed))
+            .px_3()
+            .py_3()
+            .gap_2()
+            .rounded_sm()
+            .bg(sheet)
+            .border_1()
+            .border_color(keyline)
             .child(
-                row()
-                    .pb_1()
-                    .border_b_1()
-                    .border_color(secondary)
-                    .child(note(extension.clone()).text_xs().number_of_lines(1)),
+                caption(extension.clone())
+                    .letter_spacing(px(0.8))
+                    .number_of_lines(1),
             )
-            .child(subheading(&title).number_of_lines(3))
+            .child(
+                subheading(&title)
+                    .text_size(px(17.))
+                    .line_height(px(22.))
+                    .number_of_lines(5),
+            )
             .child(
                 row()
-                    .pt_1()
+                    .pt_2()
                     .border_t_1()
-                    .border_color(secondary)
-                    .child(note(progress.clone()).text_xs().number_of_lines(1)),
+                    .border_color(rule)
+                    .child(caption(progress.clone()).number_of_lines(1)),
             )
             .into_element()
     });
@@ -73,9 +87,9 @@ pub fn card_face(app: App, file: &api::FileListItem) -> AnyElement {
         .accessibility_label(file.display_name.clone())
         .on_press(move || app.page.set(Page::File(id)))
         .w_full()
-        .rounded_md()
-        .hover(|s| s.opacity(0.88))
-        .active(|s| s.opacity(0.78))
+        .rounded_sm()
+        .hover(|s| s.opacity(0.86))
+        .active(|s| s.opacity(0.74))
         .focus(|s| s.outline(px(2.)).outline_color(accent))
         .child(preview)
         .into_element()
@@ -84,7 +98,8 @@ pub fn screen(app: App, id: i64) -> AnyElement {
     stack()
         .flex_1()
         .min_h_0()
-        .child(button("Back to library", move || {
+        .gap_4()
+        .child(icon_button("Back to library", Icon::Back, move || {
             app.page.set(Page::Library)
         }))
         .child(dynamic(move || {
@@ -108,9 +123,10 @@ fn form(app: App, file: &api::FileWithDetails) -> AnyElement {
     let original = file.category_id;
     let favorite = file.is_favorite;
     let mut body = stack()
+        .pb_6()
         .child(heading(&file.display_name))
-        .child(note(&file.path))
-        .child(cover(app, id, 180.))
+        .child(note(&file.path).selectable(true))
+        .child(view().max_w(px(180.)).child(cover(app, id, 240.)))
         .child(
             wrap()
                 .child(button("Open file", move || {
@@ -127,6 +143,7 @@ fn form(app: App, file: &api::FileWithDetails) -> AnyElement {
                     },
                 )),
         )
+        .child(section("Details"))
         .child(field("Title", name))
         .child(field("Progress", progress))
         .child(category_picker(app, cat))
@@ -207,6 +224,7 @@ fn form(app: App, file: &api::FileWithDetails) -> AnyElement {
                 )
             }));
     }
+    body = body.child(section("Metadata"));
     let mut keys = std::collections::HashSet::new();
     for m in &file.metadata {
         keys.insert(m.key.clone());
@@ -244,7 +262,7 @@ fn form(app: App, file: &api::FileWithDetails) -> AnyElement {
     let value = signal(String::new());
     body = body
         .child(
-            row()
+            wrap()
                 .child(input("Metadata key", key))
                 .child(input("Value", value))
                 .child(button("Add metadata", move || {
@@ -257,6 +275,7 @@ fn form(app: App, file: &api::FileWithDetails) -> AnyElement {
                     ))
                 })),
         )
+        .child(section("Cover"))
         .child(
             wrap()
                 .child(button("Choose cover", move || {
@@ -297,7 +316,9 @@ fn form(app: App, file: &api::FileWithDetails) -> AnyElement {
         .flex_1()
         .min_h_0()
         .child(
-            body.child(actions)
+            body.max_w(px(MEASURE))
+                .child(section("Storage"))
+                .child(actions)
                 .child(confirm("Delete file and library record", move || {
                     app.job(file::delete_move::file_delete(app.db(), id), move |_| {
                         app.page.set(Page::Library);
@@ -357,22 +378,15 @@ pub fn category_picker(app: App, selected: Signal<Option<i64>>) -> AnyElement {
             .iter()
             .map(|c| (c.id, c.name.clone()))
             .collect::<Vec<_>>();
-        dynamic(move || {
-            let active = selected.get();
-            let mut r = wrap().child(label("Category"));
-            for (id, n) in &values {
-                let id = *id;
-                r = r.child(button(
-                    if active == Some(id) {
-                        format!("✓ {n}")
-                    } else {
-                        n.clone()
-                    },
-                    move || selected.set(Some(id)),
-                ));
-            }
-            r
-        })
-        .into_element()
+        let mut r = wrap().child(lead("Category"));
+        for (id, n) in &values {
+            let id = *id;
+            r = r.child(choice(
+                n.clone(),
+                move || selected.get() == Some(id),
+                move || selected.set(Some(id)),
+            ));
+        }
+        r.into_element()
     })
 }
