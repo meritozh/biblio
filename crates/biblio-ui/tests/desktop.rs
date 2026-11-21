@@ -1,4 +1,4 @@
-use biblio_desktop::root;
+use biblio_ui::root;
 use nsh_core::prelude::{px, size};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;

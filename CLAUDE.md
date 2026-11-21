@@ -6,7 +6,8 @@ A desktop library manager for local and remote files, built in Rust with NSH.
 
 ## Project structure and commands
 
-- The root package is the NSH desktop application. Its entry point is `src/main.rs`, and `src/lib.rs` builds the window used by both the application and `tests/desktop.rs`.
+- The root package is the desktop launcher. `src/main.rs` resolves the profile directory and runs the native platform host.
+- `crates/biblio-ui/src/` owns the NSH window, views and controls. The launcher and the headless interaction tests under `crates/biblio-ui/tests/` both use `biblio_ui::root`.
 - `crates/biblio-core/src/` owns catalog operations, SQLite migrations, import pipelines, remote providers and workers.
 - `assets/` contains source artwork. Platform packaging resources live under `packaging/`.
 

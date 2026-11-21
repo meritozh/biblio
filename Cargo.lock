@@ -405,15 +405,22 @@ dependencies = [
 name = "biblio-desktop"
 version = "0.10.1"
 dependencies = [
- "base64 0.23.1",
- "biblio-core",
+ "biblio-ui",
  "dirs",
- "nsh-base",
- "nsh-core",
- "nsh-engine",
  "nsh-platform-linux",
  "nsh-platform-macos",
  "nsh-platform-windows",
+]
+
+[[package]]
+name = "biblio-ui"
+version = "0.10.1"
+dependencies = [
+ "base64 0.23.1",
+ "biblio-core",
+ "nsh-base",
+ "nsh-core",
+ "nsh-engine",
  "nsh-testing",
  "open",
  "rfd",

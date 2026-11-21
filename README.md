@@ -38,15 +38,18 @@ The earlier React/Tauri interface is available in Git at `9171902`. The native d
 
 | Path | Purpose |
 | --- | --- |
-| `src/main.rs` | Native desktop executable |
-| `src/lib.rs` and `src/` | NSH window, views and interactions |
+| `src/main.rs` | Chooses the profile directory and starts the native platform runner |
+| `crates/biblio-ui/src/` | NSH window, navigation, screens and shared controls |
 | `crates/biblio-core/src/` | Catalog services, SQLite migrations, import pipelines and remote storage |
-| `tests/` | Desktop integration tests |
+| `crates/biblio-ui/tests/` | Headless interaction tests using the same window as the desktop app |
+| `tests/` | Workspace source checks |
 | `assets/` and `packaging/` | Source artwork and platform packaging resources |
 
 ```sh
 cargo test --locked --workspace
 cargo check --locked --workspace --all-targets
 ```
+
+Run the UI tests independently with `cargo test --locked -p biblio-ui`.
 
 Add numbered migrations in `crates/biblio-core/src/database/mod.rs`. Existing installations verify the checksum of each applied migration, including the baseline in `schema.sql`.

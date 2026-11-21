@@ -25,7 +25,13 @@ fn check_sources(dir: &Path, oversized: &mut Vec<String>) -> io::Result<()> {
 fn rust_source_files_stay_within_800_lines() -> io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut oversized = Vec::new();
-    for source in ["src", "crates/biblio-core/src", "tests"] {
+    for source in [
+        "src",
+        "crates/biblio-core/src",
+        "crates/biblio-ui/src",
+        "crates/biblio-ui/tests",
+        "tests",
+    ] {
         check_sources(&root.join(source), &mut oversized)?;
     }
     oversized.sort();

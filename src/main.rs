@@ -2,7 +2,7 @@
     all(target_os = "windows", not(debug_assertions)),
     windows_subsystem = "windows"
 )]
-use biblio_desktop::{APP_ID, root};
+use biblio_ui::{APP_ID, root};
 #[cfg(target_os = "linux")]
 use nsh_platform_linux as platform;
 #[cfg(target_os = "macos")]

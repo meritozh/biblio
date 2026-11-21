@@ -1,0 +1,22 @@
+[package]
+name = "biblio-ui"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Biblio native NSH views and controls"
+
+[dependencies]
+biblio-core = { path = "../biblio-core" }
+nsh-core = "=0.4.0"
+nsh-base = { version = "=0.4.0", default-features = false }
+rfd = "0.16"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+open = "5"
+url = "2"
+base64 = "0.23"
+
+[dev-dependencies]
+nsh-engine = { version = "=0.4.0", default-features = false }
+nsh-testing = { version = "=0.4.0", default-features = false }
+tempfile = "3"
