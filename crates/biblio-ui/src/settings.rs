@@ -94,19 +94,11 @@ pub fn screen(app: App) -> AnyElement {
             },
         )
     });
-    view()
-        .flex_1()
-        .min_h_0()
-        .gap_4()
-        .child(heading("Settings"))
-        .child(tab_strip(tab))
-        .child(
-            scroll()
-                .flex_1()
-                .min_h_0()
-                .child(view().max_w(px(MEASURE)).pb_8().child(body)),
-        )
-        .into_element()
+    page(
+        heading(Icon::Settings, "Settings"),
+        page_scroll(MEASURE, view().gap_5().child(tab_strip(tab)).child(body)),
+    )
+    .into_element()
 }
 
 fn general(app: App, path: &str, mode: &str, scheme: &str) -> AnyElement {

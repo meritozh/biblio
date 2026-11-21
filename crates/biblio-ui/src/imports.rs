@@ -151,38 +151,34 @@ pub fn screen(app: App) -> AnyElement {
     view()
         .flex_1()
         .min_h_0()
-        .gap_4()
         .on_file_drag_enter(move |_: &()| dragging.set(true))
         .on_file_drag_leave(move |_: &()| dragging.set(false))
         .on_file_drop(move |e: &FileDropEvent| {
             dragging.set(false);
             drop_urls(app, &e.uris);
         })
-        .child(heading("Import"))
-        .child(
-            scroll().flex_1().min_h_0().child(
-                view()
-                    .gap_4()
-                    .pb_8()
-                    .max_w(px(760.))
-                    .child(setting(
-                        "Category",
-                        Some("Files are analyzed with this category's schema."),
-                        detail::category_picker(app, app.category),
-                    ))
-                    .child(drop_area)
-                    .child(sources)
-                    .child(controls)
-                    .child(dynamic(move || {
-                        if first.get().is_some() {
-                            let item = app.pending.get_untracked().remove(0);
-                            untracked(|| review::screen(app, item))
-                        } else {
-                            view().into_element()
-                        }
-                    })),
-            ),
-        )
+        .child(heading(Icon::Import, "Add files"))
+        .child(page_scroll(
+            760.,
+            view()
+                .gap_4()
+                .child(setting(
+                    "Category",
+                    Some("Files are analyzed with this category's schema."),
+                    detail::category_picker(app, app.category),
+                ))
+                .child(drop_area)
+                .child(sources)
+                .child(controls)
+                .child(dynamic(move || {
+                    if first.get().is_some() {
+                        let item = app.pending.get_untracked().remove(0);
+                        untracked(|| review::screen(app, item))
+                    } else {
+                        view().into_element()
+                    }
+                })),
+        ))
         .into_element()
 }
 fn analyze(app: App) {

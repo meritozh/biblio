@@ -1,4 +1,7 @@
-use crate::{app::App, ui::*};
+use crate::{
+    app::App,
+    ui::{self, *},
+};
 use biblio_core::commands::{
     schema_admin::{self as admin, SchemaFieldInput, SchemaStepInput, SchemaUpsertPayload},
     schema_transfer,
@@ -8,120 +11,230 @@ use nsh_core::prelude::*;
 use std::rc::Rc;
 
 pub fn screen(app: App) -> AnyElement {
-    let selection = signal(None::<String>);
+    let data = app.resource(move || {
+        app.revision.get();
+        schemas::schema_list(app.db())
+    });
+    // What the dialog edits: an existing schema by slug, an imported file,
+    // or (both empty) a new schema.
+    let editing = signal(None::<String>);
     let imported = signal_with(None::<Rc<SchemaDefinition>>, SignalEquals::Never);
-    let id = selection;
-    view()
-        .gap_4()
-        .child(
-            wrap()
+    let open = signal(false);
+    let import = move || {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Schema", &["json"])
+            .pick_file()
+        {
+            app.local_job(
+                schema_transfer::schema_import_read(path.to_string_lossy().into()),
+                move |s| {
+                    editing.set(None);
+                    imported.set(Some(Rc::new(s)));
+                    open.set(true);
+                },
+            );
+        }
+    };
+    let export = move |slug: String| {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name(format!("{slug}.json"))
+            .save_file()
+        {
+            app.local_job(
+                schema_transfer::schema_export(app.db(), slug, path.to_string_lossy().into()),
+                move |_| app.message.set("Schema exported".into()),
+            );
+        }
+    };
+    let header = page_header(
+        Icon::Schemas,
+        "Schemas",
+        Some(
+            count_caption(move || match data.get().as_deref() {
+                Some(Ok(list)) if !list.is_empty() => {
+                    counted(list.len() as i64, "schema", "schemas")
+                }
+                _ => String::new(),
+            })
+            .into_element(),
+        ),
+        Some(
+            row()
                 .gap_2()
                 .child(control(
-                    "New schema",
+                    "Import",
                     Variant::Default,
+                    ButtonSize::Md,
+                    Some(Icon::Upload),
+                    import,
+                ))
+                .child(control(
+                    "New schema",
+                    Variant::Primary,
                     ButtonSize::Md,
                     Some(Icon::Plus),
                     move || {
                         imported.set(None);
-                        id.set(None);
+                        editing.set(None);
+                        open.set(true);
                     },
                 ))
-                .child(button("Import schema", move || {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Schema", &["json"])
-                        .pick_file()
-                    {
-                        app.local_job(
-                            schema_transfer::schema_import_read(path.to_string_lossy().into()),
-                            move |s| {
-                                selection.set(None);
-                                imported.set(Some(Rc::new(s)));
-                            },
-                        );
-                    }
-                })),
-        )
-        .child(dynamic(move || {
-            app.revision.get();
-            app.load(schemas::schema_list(app.db()), move |schemas| {
-                let mut nav = view().gap(px(1.)).w(px(200.)).flex_shrink_0().child(
-                    caption("Schemas")
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .px(px(8.))
-                        .pb_1(),
+                .into_element(),
+        ),
+    );
+    let cols = vec![
+        Col::custom("name", "Name", None),
+        Col::mono("slug", "Slug", Some(140.)),
+        Col::custom("pipeline", "Pipeline", Some(130.)),
+        Col::mono("extensions", "Extensions", Some(220.)),
+        Col::muted("fields", "Fields", Some(80.)).end(),
+        Col::command("export", Icon::Download),
+        Col::command("edit", Icon::Edit),
+    ];
+    let keys: Vec<&'static str> = cols.iter().map(|c| c.key).collect();
+    let shown = dynamic(move || match data.get().as_deref() {
+        None => caption("Loading…").into_element(),
+        Some(Err(e)) => label(e.clone()).into_element(),
+        Some(Ok(list)) => {
+            let n = list.len();
+            let slugs: Rc<Vec<String>> =
+                Rc::new(list.iter().map(|s| s.schema.id.clone()).collect());
+            let builtin: Rc<Vec<bool>> =
+                Rc::new(list.iter().map(|s| s.schema.is_builtin).collect());
+            let rows = nsh_base::DataTableRows::new(n)
+                .texts("name", list.iter().map(|s| s.schema.name.as_str()))
+                .texts("slug", list.iter().map(|s| s.schema.id.as_str()))
+                .texts(
+                    "pipeline",
+                    list.iter().map(|s| s.schema.pipeline_template.as_str()),
+                )
+                .texts(
+                    "extensions",
+                    list.iter().map(|s| {
+                        serde_json::from_str::<Vec<String>>(&s.schema.accepted_extensions)
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|e| format!(".{e}"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    }),
+                )
+                .texts("fields", list.iter().map(|s| s.fields.len().to_string()))
+                .texts(
+                    "export",
+                    list.iter().map(|s| format!("Export {}", s.schema.name)),
+                )
+                .texts(
+                    "edit",
+                    list.iter().map(|s| format!("Edit {}", s.schema.name)),
                 );
-                for s in schemas {
-                    let key = s.schema.id.clone();
-                    let mine = stored(key.clone());
-                    let on = move || mine.with(|k| selection.with(|v| v.as_ref() == Some(k)));
-                    nav = nav.child(
-                        nsh_base::button()
-                            .accessibility_label(s.schema.name.clone())
-                            .selected(on)
-                            .on_press(move || {
-                                imported.set(None);
-                                selection.set(Some(key.clone()));
-                            })
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
-                            .gap_2()
-                            .min_h(px(30.))
-                            .px(px(8.))
-                            .rounded(px(RADIUS))
-                            .bg(move || if on() { wash() } else { clear() })
-                            .hover(|s| s.bg(wash))
-                            .focus(|s| s.outline(px(2.)).outline_color(accent))
-                            .child(label(s.schema.name.clone()).number_of_lines(1).style_with(
-                                move |st| {
-                                    if on() {
-                                        st.font_weight(FontWeight::SEMIBOLD)
-                                    } else {
-                                        st
-                                    }
-                                },
-                            ))
-                            .child(caption(if s.schema.is_builtin { "Built-in" } else { "" })),
-                    );
+            let keys = Rc::new(keys.clone());
+            let pick = slugs.clone();
+            let edit = Rc::new(move |row: u32| {
+                if let Some(slug) = pick.get(row as usize) {
+                    imported.set(None);
+                    editing.set(Some(slug.clone()));
+                    open.set(true);
                 }
-                let schemas = stored(
-                    schemas
-                        .iter()
-                        .map(|s| SchemaDefinition {
-                            schema: s.schema.clone(),
-                            fields: s.fields.clone(),
-                            pipeline_steps: s.pipeline_steps.clone(),
-                        })
-                        .collect::<Vec<_>>(),
-                );
-                wrap()
-                    .items_start()
-                    .gap_x(px(32.))
-                    .gap_y(px(16.))
-                    .child(nav)
-                    .child(view().flex_1().min_w(px(320.)).child(dynamic(move || {
-                        let key = selection.get();
-                        let import = imported.get();
-                        untracked(|| {
-                            schemas.with(|v| {
-                                let def = import.as_deref().or_else(|| {
-                                    v.iter().find(|s| Some(&s.schema.id) == key.as_ref())
-                                });
-                                editor(app, def, key.is_some(), selection, imported)
-                            })
-                        })
-                    })))
-                    .into_element()
+            });
+            let double = edit.clone();
+            let cell = move |c: &nsh_base::DataTableCell| {
+                if c.key.as_str() == "pipeline" {
+                    return row().child(badge(c.text.to_string())).into_element();
+                }
+                let mut line = row()
+                    .gap_2()
+                    .min_w_0()
+                    .child(label(c.text.to_string()).number_of_lines(1).flex_shrink(1.));
+                if builtin.get(c.row as usize).copied().unwrap_or(false) {
+                    line = line.child(badge("Built-in"));
+                }
+                line.into_element()
+            };
+            table(
+                "Schemas",
+                cols.clone(),
+                move || n,
+                move || rows.clone(),
+                cell,
+                move |t| {
+                    t.on_row_press(move |p: &nsh_base::DataTablePress| {
+                        match pressed_key(&keys, p) {
+                            Some("edit") => edit(p.row),
+                            Some("export") => {
+                                if let Some(slug) = slugs.get(p.row as usize) {
+                                    export(slug.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    })
+                    .on_double_press(move |t: &nsh_base::DataTableTarget| {
+                        if let Some(row) = t.row {
+                            double(row);
+                        }
+                    })
+                },
+            )
+            .into_element()
+        }
+    });
+    let dialog = modal(
+        open,
+        move || {
+            if editing.with_untracked(Option::is_some) {
+                "Edit schema"
+            } else if imported.with_untracked(Option::is_some) {
+                "Import schema"
+            } else {
+                "New schema"
+            }
+            .to_owned()
+        },
+        760.,
+        move || {
+            // Made once the schemas are here; a later refresh leaves the
+            // editor alone.
+            let ready = computed(move || data.with(Option::is_some));
+            dynamic(move || {
+                if !ready.get() {
+                    return caption("Loading…").into_element();
+                }
+                untracked(|| {
+                    let key = editing.get();
+                    let import = imported.get();
+                    match data.get().as_deref() {
+                        Some(Ok(list)) => {
+                            let def = import.as_deref().or_else(|| {
+                                list.iter().find(|s| Some(&s.schema.id) == key.as_ref())
+                            });
+                            editor(app, def, key.is_some(), open)
+                        }
+                        Some(Err(e)) => label(e.clone()).into_element(),
+                        None => view().into_element(),
+                    }
+                })
             })
-        }))
-        .into_element()
+            .into_element()
+        },
+    );
+    ui::page(
+        header,
+        page_body()
+            .child(about(
+                "A schema defines a resource type: which files it accepts, which fields its files carry, and which import pipeline runs. Categories bind to a schema and files inherit it from their category. Built-in schemas can be edited but not deleted. Export shares a schema as a JSON file of its fields and pipeline steps.",
+            ))
+            .child(shown)
+            .child(dialog),
+    )
+    .into_element()
 }
+
 fn editor(
     app: App,
     def: Option<&SchemaDefinition>,
     existing: bool,
-    selection: Signal<Option<String>>,
-    imported: Signal<Option<Rc<SchemaDefinition>>>,
+    open: Signal<bool>,
 ) -> AnyElement {
     let slug = signal(def.map(|s| s.schema.id.clone()).unwrap_or_default());
     let name = signal(def.map(|s| s.schema.name.clone()).unwrap_or_default());
@@ -179,17 +292,9 @@ fn editor(
     let mut body = view()
         .gap_3()
         .child(if existing {
-            view()
-                .gap_1()
-                .child(subheading(name.get_untracked()))
-                .child(caption(format!("Schema · {}", slug.get_untracked())))
-                .into_element()
+            caption(format!("Schema ID · {}", slug.get_untracked())).into_element()
         } else {
-            view()
-                .gap_3()
-                .child(subheading("New schema"))
-                .child(field("Schema ID", slug))
-                .into_element()
+            field("Schema ID", slug).into_element()
         })
         .child(field("Schema name", name))
         .child(field("Description", description))
@@ -386,44 +491,33 @@ fn editor(
                     .await?;
                 Ok(id)
             },
-            move |id| {
-                imported.set(None);
-                selection.set(Some(id));
+            move |_| {
+                open.set(false);
+                app.message.set("Saved".into());
                 app.refresh();
             },
         );
     };
-    let mut actions = wrap().gap_2().pt_4().child(primary("Save schema", save));
-    if existing {
-        actions = actions.child(button("Export schema", move || {
-            if let Some(path) = rfd::FileDialog::new()
-                .set_file_name(format!("{}.json", slug.get_untracked()))
-                .save_file()
-            {
-                app.save(schema_transfer::schema_export(
-                    app.db(),
-                    slug.get_untracked(),
-                    path.to_string_lossy().into(),
-                ));
-            }
-        }));
-        if def.is_some_and(|s| !s.schema.is_builtin) {
-            actions = actions.child(confirm(
-                "Delete schema",
-                "Delete this schema?",
-                "Categories that use it must be moved to another schema first. This cannot be undone.",
-                true,
-                move || {
-                    app.local_job(
-                        admin::schema_delete(app.db(), slug.get_untracked()),
-                        move |_| {
-                            selection.set(None);
-                            app.refresh();
-                        },
-                    )
-                },
-            ));
-        }
+    let mut actions = row().justify_end().gap_2().pt_4();
+    if existing && def.is_some_and(|s| !s.schema.is_builtin) {
+        actions = actions.child(view().flex_1().child(confirm(
+            "Delete schema",
+            "Delete this schema?",
+            "Categories that use it must be moved to another schema first. This cannot be undone.",
+            true,
+            move || {
+                app.local_job(
+                    admin::schema_delete(app.db(), slug.get_untracked()),
+                    move |_| {
+                        open.set(false);
+                        app.refresh();
+                    },
+                )
+            },
+        )));
     }
+    actions = actions
+        .child(button("Cancel", move || open.set(false)))
+        .child(primary("Save schema", save));
     body.child(actions).into_element()
 }

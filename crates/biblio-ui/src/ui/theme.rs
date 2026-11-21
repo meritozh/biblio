@@ -77,9 +77,16 @@ const GRAPHITE: [Colors; 2] = [
     },
 ];
 
-fn colors() -> Colors {
+/// The tokens of the current palette and appearance (reactive).
+pub fn colors() -> Colors {
     let graphite = use_context::<Palette>().is_some_and(|p| p.0.get());
     (if graphite { GRAPHITE } else { PORCELAIN })[usize::from(dark())]
+}
+
+/// A token as a CSS hex colour, for the class strings of parts that take
+/// classes rather than typed styles (the data table's).
+pub fn hex(token: u32) -> String {
+    format!("#{token:06x}")
 }
 
 pub fn ink() -> Rgba {
@@ -121,6 +128,10 @@ pub fn danger() -> Rgba {
 /// Fully transparent; lets quiet controls show the surface beneath them.
 pub fn clear() -> Rgba {
     rgba(0x00000000)
+}
+/// The dim behind a dialog.
+pub fn scrim() -> Rgba {
+    rgba(if dark() { 0x0000008c } else { 0x1e222947 })
 }
 
 /// Corner of controls, rows and popups.

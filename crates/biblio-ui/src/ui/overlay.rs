@@ -184,20 +184,6 @@ pub fn menu_radio(
         action,
     )
 }
-/// A setting in a menu (reverse order); the menu stays open.
-pub fn menu_check(
-    caption: impl Into<String>,
-    on: impl Fn() -> bool + Copy + 'static,
-    action: impl Fn() + 'static,
-) -> nsh_base::MenuItemElement {
-    checkable(
-        caption.into(),
-        on,
-        AccessibilityRole::MenuItemCheckbox,
-        false,
-        action,
-    )
-}
 /// A line between groups of menu items.
 pub fn menu_separator() -> nsh_base::MenuSeparatorElement {
     nsh_base::menu_separator()
@@ -299,4 +285,128 @@ pub fn confirm(
             )
         },
     )
+}
+
+/// A toolbar menu face on a quiet fill: the control's muted name, its
+/// current value and a chevron ("Sort  Date added ⌄"). `name` is also its
+/// accessible name.
+pub fn tool_trigger(name: &str, glyph: Option<Icon>, value: impl Fn() -> String + 'static) -> View {
+    let mut face = view()
+        .label(name.to_owned())
+        .flex_row()
+        .items_center()
+        .gap(px(6.))
+        .min_h(px(32.))
+        .px(px(10.))
+        .rounded(px(RADIUS))
+        .bg(rail)
+        .transition()
+        .duration(tween(INSTANT))
+        .hover(|s| s.bg(wash))
+        .active(|s| s.bg(rule).scale(press_scale(0.97)))
+        .focus(|s| {
+            s.outline(px(2.))
+                .outline_color(accent)
+                .outline_offset(px(1.))
+        });
+    if let Some(glyph) = glyph {
+        face = face.child(icon(glyph, secondary));
+    }
+    face.child(note(name.to_owned()).text_size(px(13.)))
+        .child(
+            text(value)
+                .text_size(px(13.))
+                .text_color(ink)
+                .font_weight(FontWeight::MEDIUM)
+                .number_of_lines(1),
+        )
+        .child(
+            icon(Icon::Disclosure, secondary)
+                .w(px(12.))
+                .h(px(12.))
+                .rotate(Radians(std::f32::consts::FRAC_PI_2)),
+        )
+}
+
+/// A dialog: a sheet in the middle of the window over a dim backdrop, with
+/// its title and a Close button at the top and `content` scrolling under
+/// them. Escape, a press on the backdrop and Close set `open` false.
+/// `width` is the sheet's widest.
+pub fn modal(
+    open: Signal<bool>,
+    heading: impl Fn() -> String + 'static,
+    width: f32,
+    content: impl Fn() -> AnyElement + 'static,
+) -> AnyElement {
+    let heading = std::rc::Rc::new(heading);
+    let content = std::rc::Rc::new(content);
+    when(
+        move || open.get(),
+        move || {
+            let heading = heading.clone();
+            let content = content.clone();
+            nsh_base::dialog()
+                .animation(if reduce_motion() {
+                    ModalAnimation::None
+                } else {
+                    ModalAnimation::Fade
+                })
+                .on_cancel(move || open.set(false))
+                .child(
+                    view()
+                        .w(move || window().width)
+                        .h(move || window().height)
+                        .items_center()
+                        .justify_center()
+                        .p_6()
+                        .child(
+                            view()
+                                .absolute()
+                                .inset_0()
+                                .bg(scrim)
+                                .accessible(false)
+                                .on_press(move || open.set(false)),
+                        )
+                        .child(
+                            view()
+                                .label(untracked(|| heading()))
+                                .w_full()
+                                .max_w(px(width))
+                                .max_h(move || window().height - px(48.))
+                                .rounded(px(10.))
+                                .border_1()
+                                .border_color(keyline)
+                                .bg(sheet)
+                                .shadow_lg()
+                                .overflow_hidden()
+                                .child(
+                                    row()
+                                        .justify_between()
+                                        .gap_3()
+                                        .pl_5()
+                                        .pr_3()
+                                        .pt_4()
+                                        .pb_3()
+                                        .border_b_1()
+                                        .border_color(rule)
+                                        .child(
+                                            subheading(untracked(|| heading()))
+                                                .number_of_lines(1)
+                                                .flex_1(),
+                                        )
+                                        .child(icon_button(
+                                            "Close",
+                                            Icon::Close,
+                                            Some("Esc"),
+                                            move || open.set(false),
+                                        )),
+                                )
+                                .child(scroll().flex_shrink(1.).min_h_0().child(
+                                    view().px_5().pt_4().pb_5().child(untracked(|| content())),
+                                )),
+                        ),
+                )
+        },
+    )
+    .into_element()
 }

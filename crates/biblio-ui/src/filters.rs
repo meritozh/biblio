@@ -39,27 +39,29 @@ type Presets = BTreeMap<String, Vec<FilterCondition>>;
 /// The Filters button and its popover: build a condition (field,
 /// operator, value), add it, and keep named presets.
 pub fn editor(app: App, chips: Signal<Vec<Chip>>) -> AnyElement {
-    let opener = trigger("Filters", Some(Icon::Filter), true, false).child(dynamic(move || {
-        let n = chips.with(Vec::len);
-        if n == 0 {
-            return view().hidden().into_element();
-        }
-        view()
-            .min_w(px(18.))
-            .h(px(18.))
-            .px(px(5.))
-            .items_center()
-            .justify_center()
-            .rounded(px(9.))
-            .bg(accent)
-            .child(
-                text(n.to_string())
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(on_accent),
-            )
-            .into_element()
-    }));
+    let opener = trigger("Filters", Some(Icon::Filter), true, false)
+        .border_color(clear)
+        .child(dynamic(move || {
+            let n = chips.with(Vec::len);
+            if n == 0 {
+                return view().hidden().into_element();
+            }
+            view()
+                .min_w(px(18.))
+                .h(px(18.))
+                .px(px(5.))
+                .items_center()
+                .justify_center()
+                .rounded(px(9.))
+                .bg(accent)
+                .child(
+                    text(n.to_string())
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(on_accent),
+                )
+                .into_element()
+        }));
     popover(opener, move || {
         let field = signal(0usize);
         let op = signal("includes".to_owned());

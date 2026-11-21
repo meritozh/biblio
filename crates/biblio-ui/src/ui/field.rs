@@ -147,3 +147,30 @@ pub fn tick(
             .h(px(12.)),
         )
 }
+
+/// A search field bound to `value`: a leading magnifier, `hint` as its
+/// label and placeholder, and Clear once it holds text.
+pub fn search_field(hint: &str, value: Signal<String>) -> View {
+    view()
+        .min_w_0()
+        .justify_center()
+        .child(input(hint, value).pl(px(34.)).pr(px(34.)).w_full())
+        .child(
+            view()
+                .absolute()
+                .left(px(11.))
+                .pointer_events(PointerEvents::None)
+                .child(icon(Icon::Search, secondary)),
+        )
+        .child(when(
+            move || !value.with(String::is_empty),
+            move || {
+                view().absolute().right(px(2.)).child(icon_button(
+                    "Clear search",
+                    Icon::Close,
+                    None,
+                    move || value.set(String::new()),
+                ))
+            },
+        ))
+}
