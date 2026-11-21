@@ -22,6 +22,7 @@ jobs:
     name: Ship macOS
     environment: release
     env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
       CHANNEL: ${{ github.event.inputs.channel || 'developer-id' }}
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -40,17 +41,10 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "./src-tauri -> target"
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Test native desktop
+        run: cargo test --locked --workspace
       - name: Install apple-ship
         run: cargo install apple-ship --git https://github.com/meritozh/apple-ship --locked
       - name: Ship

@@ -1,0 +1,140 @@
+use crate::Library;
+
+/// The two roots that the path resolver needs. Most callers don't care
+/// which one is empty — the resolver tolerates empty roots by returning
+/// the stored value unchanged. Loaded once per command via a single
+/// query; cheap enough that even hot paths can re-read each call rather
+/// than caching.
+#[derive(Debug, Clone, Default)]
+pub struct PathRoots {
+    pub storage_path: String,
+    pub app_root: String,
+}
+
+/// Read both `storage_path` and `remote_app_root` in one shot. Missing
+/// rows / NULL values become empty strings — the resolver passes the
+/// stored path through unchanged in that case, so a freshly-installed
+/// app with no settings still functions for existing absolute rows.
+pub async fn load_path_roots(pool: &sqlx::SqlitePool) -> Result<PathRoots, String> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM app_settings WHERE key IN ('storage_path', 'remote_app_root')",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut roots = PathRoots::default();
+    for (k, v) in rows {
+        match k.as_str() {
+            "storage_path" => roots.storage_path = v,
+            "remote_app_root" => roots.app_root = v,
+            _ => {}
+        }
+    }
+    Ok(roots)
+}
+
+pub async fn settings_get(
+    app: Library,
+    key: String,
+) -> Result<Option<String>, String> {
+    let pool = app.pool.clone();
+
+    let result: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM app_settings WHERE key = ?"
+    )
+    .bind(&key)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(result.map(|r| r.0))
+}
+
+pub async fn settings_set(
+    app: Library,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    let pool = app.pool.clone();
+
+    // Special handling for storage_path: validate accessibility (the
+    // old "block change when any file exists" guard is gone — file rows
+    // now hold paths relative to `storage_path`, so changing the root
+    // is a one-line UPDATE on app_settings with no DB rewrite. The user
+    // is responsible for actually moving the folder contents to the new
+    // location off-band; biblio just resolves against whatever the
+    // setting currently says).
+    if key == "storage_path" {
+        // Validate path is accessible
+        if !value.is_empty() {
+            let path = std::path::PathBuf::from(&value);
+            if !path.exists() {
+                return Err("STORAGE_PATH_NOT_FOUND".to_string());
+            }
+            // Block system directories
+            let path_str = path.to_string_lossy();
+            let lower_path = path_str.to_lowercase();
+
+            // Unix system directories
+            let unix_dangerous = ["/", "/system", "/usr", "/bin", "/etc"];
+            for dangerous in unix_dangerous {
+                if lower_path == dangerous || lower_path.starts_with(&format!("{}/", dangerous)) {
+                    // Allow if it's a user subdirectory like /Users/...
+                    if dangerous == "/" && lower_path.starts_with("/users/") {
+                        continue;
+                    }
+                    return Err("STORAGE_PATH_SYSTEM_DIRECTORY".to_string());
+                }
+            }
+
+            // Windows system directories (check for patterns like C:\Windows, D:\Program Files, etc.)
+            let windows_patterns = ["\\windows", "\\program files", "\\program files (x86)"];
+            for pattern in windows_patterns {
+                if lower_path.contains(pattern) {
+                    return Err("STORAGE_PATH_SYSTEM_DIRECTORY".to_string());
+                }
+            }
+
+            // Try to create a test file to verify write permission
+            let test_file = path.join(".biblio_test");
+            if std::fs::write(&test_file, b"").is_err() {
+                return Err("STORAGE_PATH_NOT_WRITABLE".to_string());
+            }
+            let _ = std::fs::remove_file(&test_file);
+        }
+    }
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)"
+    )
+    .bind(&key)
+    .bind(&value)
+    .execute(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+pub async fn storage_get_path(app: Library) -> Result<Option<String>, String> {
+    settings_get(app, "storage_path".to_string()).await
+}
+
+pub async fn storage_check_access(app: Library) -> Result<bool, String> {
+    let pool = app.pool.clone();
+
+    let result: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM app_settings WHERE key = 'storage_path'"
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let path = match result {
+        Some((p,)) if !p.is_empty() => p,
+        _ => return Ok(false),
+    };
+
+    let path = std::path::PathBuf::from(&path);
+    Ok(path.exists() && path.is_dir())
+}

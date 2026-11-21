@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>Biblio</string>
+  <key>CFBundleDisplayName</key><string>Biblio</string>
+  <key>CFBundleIdentifier</key><string>io.augite.biblio</string>
+  <key>CFBundleExecutable</key><string>biblio-desktop</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.10.1</string>
+  <key>CFBundleVersion</key><string>0</string>
+  <key>CFBundleIconFile</key><string>AppIcon.icns</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict></plist>

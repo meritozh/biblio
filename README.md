@@ -1,107 +1,52 @@
 # Biblio
 
-A desktop app for organizing a local library of novels and comics into
-category-based folders with searchable metadata, tags, and authors. Built
-with Tauri 2 (Rust backend, React frontend).
+Biblio is a Rust desktop app for organizing novels, comics and visual novels. The native interface uses [NSH](https://nsh.dev/). The library, search, import pipelines and transfer workers run in the same process and store their records in SQLite.
 
-Biblio moves imported files into a `{storage_path}/{category}/` layout,
-records metadata in a local SQLite database, and can optionally use an
-LLM to extract titles, authors, and tags at import time. It also supports
-syncing files to and from Baidu Netdisk.
+## Run and build
 
-## Features
+Install stable Rust and the native build tools for your platform. On macOS, use macOS 14 or later with Xcode Command Line Tools.
 
-- **Library** — grid view of files with cover thumbnails, full-text
-  search (trigram FTS, works mid-word and on CJK), and a composable
-  filter editor (by tag, author, progress, status, storage, name length).
-- **Category-driven schemas** — `novel` (text) and `comic` (archives /
-  image folders) each drive their own import pipeline, form layout, and
-  card layout. Categories own their default view config.
-- **Tags & authors** — paginated, searchable pickers; bulk and per-file
-  assignment.
-- **LLM-assisted import** (optional) — filename and content analysis via
-  any OpenAI-compatible endpoint (e.g. LM Studio, Ollama). Prompts are
-  editable in-app per schema and step.
-- **Comic handling** — reads `.cbz` / `.zip` / `.cbr` / `.rar` and image
-  folders, picks a cover from the archive, and can regenerate missing
-  covers.
-- **Remote storage** (optional) — upload, download, and delete against
-  Baidu Netdisk, with files stored under paths relative to a configurable
-  root.
-- **Cleanup tools** — re-analyze novels missing tags, bulk-assign an
-  author to authorless files, and regenerate missing comic covers.
-
-## Tech stack
-
-- **Frontend**: React 19, TypeScript 5, TanStack Router / Table / Form /
-  Store / Virtual, shadcn/ui (Radix primitives), Tailwind CSS 4, Vite.
-- **Backend**: Rust, Tauri 2, `tauri-plugin-sql` (sqlx + SQLite), `rig`
-  for LLM calls.
-- **Tests**: Vitest (unit), Playwright (e2e), `cargo test` (Rust).
-
-## Project structure
-
-```text
-src/
-  components/   React components (ui/ holds shadcn primitives)
-  routes/       TanStack Router pages (library, categories, tags, authors,
-                cleanup, prompts)
-  lib/          utilities + Tauri API wrappers
-  stores/       TanStack Store state
-  types/        TypeScript type definitions
-src-tauri/
-  src/
-    commands/   Tauri command handlers
-    database/   schema.sql + migrations (mod.rs)
-    pipeline/   import pipeline (sampling, decoding, LLM nodes)
-    providers/  remote storage (baidu_netdisk)
-    services/   background workers (import, upload, download, delete)
+```sh
+cargo run --locked
 ```
 
-## Development
+Choose a storage folder in **Settings**, create a category, then choose or drop files or folders in **Import**. Review extracted metadata before importing. The storage setting controls the destination, and the import mode determines whether source files are moved or copied.
 
-Prerequisites: Node.js with [pnpm](https://pnpm.io/), Rust 1.75+, and the
-[Tauri 2 system dependencies](https://tauri.app/start/prerequisites/).
+Build a locally signed macOS app with the project icon and bundle identifier:
 
-```bash
-pnpm install
-pnpm tauri:dev        # run the app in dev mode
+```sh
+./scripts/bundle-macos.sh release
+open target/release/Biblio.app
 ```
 
-Other useful commands:
+Use `debug` for a development bundle. Cargo can use a custom target directory. The bundling script prints the resulting path.
 
-```bash
-pnpm typecheck        # tsc --noEmit
-pnpm lint             # ESLint (zero-warning gate)
-pnpm test:run         # Vitest unit tests
-pnpm test:e2e         # Playwright e2e
-pnpm tauri:build      # production bundle
+## Library
+
+- Search titles and paths, select tag and author suggestions, combine filter conditions, and save presets. Browse by category, author or title group.
+- Edit titles, covers, reading progress, favorites, tags, authors and schema-defined metadata. Use bulk selection for transfers and file management.
+- The built-in novel, comic and visual novel schemas control accepted files and import steps. Manage custom schemas and prompts inside the app. Comics can be imported from image folders or archives.
+- Optional OpenAI-compatible endpoints provide metadata extraction. Visual novel imports can use VNDB. Optional Baidu Netdisk storage uses the existing encrypted container format, including multipart files and legacy downloads.
+
+## Existing installations
+
+The native app opens the existing Biblio profile. On macOS the catalog is at `~/Library/Application Support/io.augite.biblio/biblio.db`. The storage folder, associations, cover bytes, remote settings and migration history live in this database. Configure `BIBLIO_CONFIG_DIR` to use a separate native profile for development or testing. Close the running app before opening the same profile in another build.
+
+The earlier React/Tauri interface is available in Git at `9171902`. The native desktop reads appearance settings and named filters from SQLite. Preferences saved only in the former WebView can be set again in **Settings** and **Filters**.
+
+## Source and verification
+
+| Path | Purpose |
+| --- | --- |
+| `src/main.rs` | Native desktop executable |
+| `src/lib.rs` and `src/` | NSH window, views and interactions |
+| `crates/biblio-core/src/` | Catalog services, SQLite migrations, import pipelines and remote storage |
+| `tests/` | Desktop integration tests |
+| `assets/` and `packaging/` | Source artwork and platform packaging resources |
+
+```sh
+cargo test --locked --workspace
+cargo check --locked --workspace --all-targets
 ```
 
-Rust-side checks run from `src-tauri/`:
-
-```bash
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test  --manifest-path src-tauri/Cargo.toml
-```
-
-## Configuration
-
-Both the LLM and remote storage are optional and configured inside the
-app:
-
-- **LLM** — point it at an OpenAI-compatible base URL and model. With LLM
-  disabled, import still works; it just skips the metadata extraction
-  steps.
-- **Baidu Netdisk** — authorize the app to enable remote upload/download.
-
-The dev database lives at
-`~/Library/Application Support/io.augite.biblio/biblio.db`.
-
-## Database
-
-The schema is migration-driven through `tauri-plugin-sql`. `schema.sql` is
-the consolidated v1 baseline; evolve the schema by adding a new numbered
-entry in `src-tauri/src/database/mod.rs::get_migrations()` rather than
-editing `schema.sql` (editing it changes v1's checksum and breaks existing
-databases).
+Add numbered migrations in `crates/biblio-core/src/database/mod.rs`. Existing installations verify the checksum of each applied migration, including the baseline in `schema.sql`.

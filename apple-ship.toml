@@ -1,4 +1,5 @@
-kind = "tauri"
+# apple-ship calls its Cargo binary + Info.plist packager "gpui".
+kind = "gpui"
 team_id = "N59353RP3W"
 bundle_id = "io.augite.biblio"
 product_name = "Biblio"
@@ -6,5 +7,9 @@ version = "0.10.1"
 build = 0
 channels = ["developer-id"]
 
-[tauri]
-app_path = "src-tauri"
+[gpui]
+bin = "biblio-desktop"
+package = "biblio-desktop"
+info_plist = "packaging/Info.plist"
+icon = "packaging/icons/icon.icns"
+entitlements = "packaging/developer-id.entitlements"

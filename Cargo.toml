@@ -1,0 +1,64 @@
+[package]
+name = "biblio-desktop"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+biblio-core = { path = "crates/biblio-core" }
+dirs = "6"
+nsh-core = "=0.4.0"
+nsh-base = { version = "=0.4.0", default-features = false }
+rfd = "0.16"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+open = "5"
+url = "2"
+base64 = "0.23"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = { version = "=0.4.0", default-features = false }
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-platform-linux = { version = "=0.4.0", default-features = false }
+[target.'cfg(target_os = "windows")'.dependencies]
+nsh-platform-windows = { version = "=0.4.0", default-features = false }
+
+[dev-dependencies]
+nsh-engine = { version = "=0.4.0", default-features = false }
+nsh-testing = { version = "=0.4.0", default-features = false }
+tempfile = "3"
+
+[workspace]
+members = ["crates/biblio-core"]
+default-members = [".", "crates/biblio-core"]
+resolver = "3"
+
+[workspace.package]
+version = "0.10.1"
+edition = "2024"
+
+# Optimize the per-byte crypto/hash hot loops even in debug builds. The
+# encrypted-container wrap (XChaCha20-Poly1305) and Baidu block_list (MD5) both
+# stream the whole file byte-by-byte; at the default debug `opt-level = 0` the
+# cipher runs ~20-100x slower (no SIMD/inlining, bounds checks everywhere),
+# which made an 8 GB upload's "Encrypting" phase take ~30 min in debug builds. Optimizing only these dependency crates keeps fast incremental
+# compiles for our own code while restoring near-release crypto throughput.
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.dev.package.md-5]
+opt-level = 3
+
+# Max-performance release build. `opt-level = 3` is already the release default,
+# so the real gains come from cross-crate LTO + a single codegen unit — both
+# matter most for the byte-streaming crypto/hash hot loops. Trade-off: a much
+# slower optimized build. Keep unwinding available for background jobs.
+[profile.release]
+opt-level = 3
+lto = "fat"           # link-time optimization across all crates
+codegen-units = 1     # optimize the whole program as one unit (slower build)
+strip = "debuginfo"   # drop heavy DWARF but KEEP the symbol table, so crash reports
+                      # show function names instead of `??? (biblio + offset)`
