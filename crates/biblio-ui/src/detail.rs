@@ -1,3 +1,4 @@
+//! One file: its slip, the commands about it, and its form.
 use crate::{
     app::{App, Page},
     ui::*,
@@ -7,12 +8,6 @@ use biblio_core::commands::{
 };
 use nsh_core::prelude::*;
 
-pub fn cover(app: App, id: i64, height: f32) -> AnyElement {
-    app.load(cover_uri(app.db(), id), move |uri| match uri {
-        Some(url) => image(url.clone()).h(px(height)).w_full().into_element(),
-        None => view().into_element(),
-    })
-}
 async fn cover_uri(db: biblio_core::Library, id: i64) -> Result<Option<String>, String> {
     match artwork::cover_get(db, id).await {
         Ok(c) => Ok(Some(format!("data:{};base64,{}", c.mime_type, c.data))),
@@ -21,199 +16,418 @@ async fn cover_uri(db: biblio_core::Library, id: i64) -> Result<Option<String>, 
     }
 }
 
-pub fn card_face(app: App, file: &api::FileListItem) -> AnyElement {
-    let id = file.id;
-    let title = file.display_name.clone();
-    let progress = file.progress.clone().unwrap_or_default();
-    // Match the previous shell's tagSeed and gradientFromSeed.
-    let mut ids = file.tags.iter().map(|t| t.id).collect::<Vec<_>>();
-    ids.sort_unstable();
-    let key = if ids.is_empty() {
-        format!("f{id}")
-    } else {
-        ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
-    };
-    let seed = key.bytes().fold(0x811c9dc5u32, |hash, b| {
-        (hash ^ u32::from(b)).wrapping_mul(0x01000193)
-    });
-    let hue = seed % 360;
-    let to = (hue + 30 + (seed >> 8) % 60) % 360;
-    let from_color = format!("oklch(0.92 0.075 {hue})")
-        .parse::<Rgba>()
-        .unwrap_or(rgb(0xe0e9da));
-    let to_color = format!("oklch(0.78 0.10 {to})")
-        .parse::<Rgba>()
-        .unwrap_or(rgb(0xb6cbbf));
-    let preview = app.load(cover_uri(app.db(), id), move |uri| {
+fn extension_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_uppercase()
+}
+
+/// A catalogue slip in a 3:4 frame: the real cover when there is one,
+/// otherwise the title typeset on a plain ruled slip. `with_title` adds
+/// the title under a real cover (the shelf; the file page has its own).
+fn slip_face(
+    app: App,
+    id: i64,
+    title: String,
+    extension: String,
+    progress: String,
+    with_title: bool,
+) -> AnyElement {
+    app.load(cover_uri(app.db(), id), move |uri| {
         if let Some(uri) = uri {
-            return stack()
-                .gap_1()
-                .child(image(uri.clone()).h(px(142.)).w_full())
-                .child(label(&title))
-                .into_element();
+            let mut art = view().gap_2().child(
+                image(uri.clone())
+                    .w_full()
+                    .aspect_ratio(0.75)
+                    .rounded(px(RADIUS_SM))
+                    .border_1()
+                    .border_color(rule),
+            );
+            if with_title {
+                art = art.child(
+                    label(&title)
+                        .font_weight(FontWeight::MEDIUM)
+                        .number_of_lines(2),
+                );
+            }
+            return art.into_element();
         }
         view()
-            .h(px(142.))
             .w_full()
-            .px_3()
-            .justify_center()
-            .items_center()
+            .aspect_ratio(0.75)
+            .justify_between()
+            .p_3()
             .gap_2()
-            .rounded_md()
-            .bg_linear(deg(((seed >> 16) % 12 * 15) as f32))
-            .gradient_from(from_color)
-            .gradient_to(to_color)
+            .rounded(px(RADIUS_SM))
+            .bg(sheet)
+            .border_1()
+            .border_color(keyline)
             .child(
-                text(title.clone())
-                    .text_center()
-                    .number_of_lines(5)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x302a26)),
+                caption(extension.clone())
+                    .letter_spacing(px(0.8))
+                    .number_of_lines(1),
             )
             .child(
-                (!progress.is_empty())
-                    .then(|| text(progress.clone()).text_xs().text_color(rgb(0x433c36))),
+                subheading(&title)
+                    .text_size(px(16.))
+                    .line_height(px(21.))
+                    .number_of_lines(5),
+            )
+            .child(
+                row()
+                    .pt_2()
+                    .min_h(px(25.))
+                    .border_t_1()
+                    .border_color(rule)
+                    .child(caption(progress.clone()).number_of_lines(1)),
             )
             .into_element()
-    });
+    })
+}
+
+/// The shelf's slip: pressing it opens the file.
+pub fn card_face(app: App, file: &api::FileListItem) -> AnyElement {
+    let id = file.id;
     nsh_base::button()
         .accessibility_label(file.display_name.clone())
         .on_press(move || app.page.set(Page::File(id)))
         .w_full()
-        .child(preview)
+        .rounded(px(RADIUS_SM))
+        .transition()
+        .duration(tween(INSTANT))
+        .hover(|s| s.opacity(0.86))
+        .active(|s| s.opacity(0.74).scale(press_scale(0.98)))
+        .focus(|s| {
+            s.outline(px(2.))
+                .outline_color(accent)
+                .outline_offset(px(2.))
+        })
+        .child(slip_face(
+            app,
+            id,
+            file.display_name.clone(),
+            extension_of(&file.path),
+            file.progress.clone().unwrap_or_default(),
+            true,
+        ))
         .into_element()
 }
+
 pub fn screen(app: App, id: i64) -> AnyElement {
-    stack()
-        .flex_1()
-        .min_h_0()
-        .child(button("Back to library", move || {
-            app.page.set(Page::Library)
-        }))
-        .child(dynamic(move || {
-            app.revision.get();
-            app.load(file::create_replace::file_get(app.db(), id), move |f| {
-                form(app, f)
-            })
-        }))
-        .into_element()
+    dynamic(move || {
+        app.revision.get();
+        app.load(file::create_replace::file_get(app.db(), id), move |f| {
+            page(app, f)
+        })
+    })
+    .into_element()
 }
-fn form(app: App, file: &api::FileWithDetails) -> AnyElement {
+
+fn reveal_in_folder(app: App, path: String) {
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open")
+        .arg("-R")
+        .arg(&path)
+        .spawn()
+        .map(|_| ());
+    #[cfg(not(target_os = "macos"))]
+    let result = open::that_detached(
+        std::path::Path::new(&path)
+            .parent()
+            .unwrap_or(std::path::Path::new(".")),
+    );
+    if let Err(e) = result {
+        app.message.set(e.to_string());
+    }
+}
+
+fn choose_cover(app: App, id: i64) {
+    if let Some(path) = rfd::FileDialog::new()
+        .add_filter("Images", &["jpg", "jpeg", "png", "webp"])
+        .pick_file()
+    {
+        let db = app.db();
+        app.save(async move {
+            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+            artwork::cover_set(db, id, bytes, None).await
+        });
+    }
+}
+
+/// Every command about the file that is not part of its form.
+fn actions(app: App, file: &api::FileWithDetails) -> impl IntoElement {
     let id = file.id;
-    let name = signal(file.display_name.clone());
-    let progress = signal(file.progress.clone().unwrap_or_default());
+    let name = file.display_name.clone();
     let path = file.path.clone();
     let local = file
         .local_cache_path
         .clone()
         .or_else(|| (file.storage_kind.as_deref() != Some("remote")).then(|| file.path.clone()));
+    let remote_file = file.storage_kind.as_deref() == Some("remote");
+    let cached = file.local_cache_path.is_some();
+    let mut m = menu(trigger("More actions", Some(Icon::More), false, false))
+        .align(Align::End)
+        .child(menu_item("Copy path", Some(Icon::Copy), move || {
+            set_clipboard(path.clone());
+            app.message.set("Path copied".into());
+        }));
+    if let Some(local) = local {
+        m = m.child(menu_item("Show in folder", Some(Icon::Reveal), move || {
+            reveal_in_folder(app, local.clone())
+        }));
+    }
+    m = m
+        .child(menu_separator())
+        .child(menu_item("Choose cover…", Some(Icon::Cover), move || {
+            choose_cover(app, id)
+        }))
+        .child(menu_item("Remove cover", Some(Icon::Close), move || {
+            ask(
+                "Remove the cover?",
+                "The file keeps its catalogue slip; you can choose a cover again later.",
+                "Remove cover",
+                true,
+                move || app.save(artwork::cover_delete(app.db(), id)),
+            )
+        }))
+        .child(menu_separator());
+    if remote_file {
+        m = m.child(menu_item("Download", Some(Icon::Download), move || {
+            app.job(
+                remote::file_download_from_remote(app.db(), vec![id]),
+                |_| {},
+            )
+        }));
+        if cached {
+            m = m.child(menu_item(
+                "Clear cached file",
+                Some(Icon::Trash),
+                move || {
+                    ask(
+                        "Clear the cached copy?",
+                        "The remote copy stays; open the file again to download it.",
+                        "Clear cached file",
+                        false,
+                        move || app.save(cache::cache_clear(app.db(), id)),
+                    )
+                },
+            ));
+        }
+    } else {
+        m = m.child(menu_item(
+            "Move to Baidu Netdisk",
+            Some(Icon::Upload),
+            move || {
+                ask(
+                    "Move this file to Baidu Netdisk?",
+                    "It is encrypted on this computer, uploaded, and removed from local storage.",
+                    "Move to Baidu Netdisk",
+                    false,
+                    move || app.job(remote::file_upload_to_remote(app.db(), vec![id]), |_| {}),
+                )
+            },
+        ));
+    }
+    m.child(menu_separator())
+        .child(menu_danger("Delete file and library record", Icon::Trash, move || {
+            ask(
+                format!("Delete “{name}”?"),
+                "The file is removed from storage, including any remote copy, and its library record is deleted. This cannot be undone.",
+                "Delete",
+                true,
+                move || {
+                    app.job(file::delete_move::file_delete(app.db(), id), move |_| {
+                        app.page.set(Page::Library);
+                        app.refresh();
+                    })
+                },
+            )
+        }))
+}
+
+fn page(app: App, file: &api::FileWithDetails) -> AnyElement {
+    let id = file.id;
+    let favorite = file.is_favorite;
+    let top = row()
+        .justify_between()
+        .child(control(
+            "Back to library",
+            Variant::Ghost,
+            ButtonSize::Sm,
+            Some(Icon::Back),
+            move || app.page.set(Page::Library),
+        ))
+        .child(actions(app, file));
+    let aside = view()
+        .gap_2()
+        .w(move || if compact() { px(160.) } else { px(200.) })
+        .flex_shrink_0()
+        .child(slip_face(
+            app,
+            id,
+            file.display_name.clone(),
+            extension_of(&file.path),
+            file.progress.clone().unwrap_or_default(),
+            false,
+        ))
+        .child(
+            control(
+                "Open file",
+                Variant::Default,
+                ButtonSize::Md,
+                Some(Icon::Open),
+                move || app.job(cache::cache_open(app.db(), id), |_| {}),
+            )
+            .w_full(),
+        )
+        .child(
+            control(
+                if favorite { "Unfavorite" } else { "Favorite" },
+                Variant::Ghost,
+                ButtonSize::Md,
+                Some(Icon::Star),
+                move || {
+                    app.save(file::update_favorite::file_set_favorite(
+                        app.db(),
+                        id,
+                        !favorite,
+                    ))
+                },
+            )
+            .w_full(),
+        );
+    let body = form(app, file);
+    scroll()
+        .flex_1()
+        .min_h_0()
+        .child(
+            view().gap_5().pb_8().child(top).child(
+                wrap()
+                    .items_start()
+                    .gap_x(px(40.))
+                    .gap_y(px(24.))
+                    .child(aside)
+                    .child(body),
+            ),
+        )
+        .into_element()
+}
+
+fn form(app: App, file: &api::FileWithDetails) -> View {
+    let id = file.id;
+    let name = signal(file.display_name.clone());
+    let progress = signal(file.progress.clone().unwrap_or_default());
     let cat = signal(file.category_id);
     let original = file.category_id;
-    let favorite = file.is_favorite;
-    let mut body = stack()
-        .child(title(&file.display_name))
-        .child(label(&file.path))
-        .child(cover(app, id, 180.))
+    let mut body = view()
+        .gap_4()
+        .flex_1()
+        .min_w(px(280.))
+        .max_w(px(640.))
         .child(
-            wrap()
-                .child(button("Open file", move || {
-                    app.job(cache::cache_open(app.db(), id), |_| {})
-                }))
-                .child(button(
-                    if favorite { "Unfavorite" } else { "Favorite" },
-                    move || {
-                        app.save(file::update_favorite::file_set_favorite(
-                            app.db(),
-                            id,
-                            !favorite,
-                        ))
-                    },
-                )),
+            view()
+                .gap_1()
+                .child(title(&file.display_name).number_of_lines(3))
+                .child(caption(&file.path).selectable(true).number_of_lines(2)),
         )
-        .child(field("Title", name))
-        .child(field("Progress", progress))
-        .child(category_picker(app, cat))
-        .child(button("Save file", move || {
-            app.save(file::update_favorite::file_update(
-                app.db(),
-                id,
-                Some(name.get_untracked()),
-                cat.get_untracked().filter(|v| Some(*v) != original),
-                Some(progress.get_untracked()),
-            ))
-        }));
-    let mut paths = wrap().child(button("Copy path", move || set_clipboard(path.clone())));
-    if let Some(path) = local {
-        paths = paths.child(button("Show in folder", move || {
-            #[cfg(target_os = "macos")]
-            let result = std::process::Command::new("open")
-                .arg("-R")
-                .arg(&path)
-                .spawn()
-                .map(|_| ());
-            #[cfg(not(target_os = "macos"))]
-            let result = open::that_detached(
-                std::path::Path::new(&path)
-                    .parent()
-                    .unwrap_or(std::path::Path::new(".")),
-            );
-            if let Err(e) = result {
-                app.message.set(e.to_string());
-            }
-        }));
-    }
-    body = body.child(paths);
+        .child(
+            section("Details")
+                .child(field("Title", name))
+                .child(field("Progress", progress))
+                .child(
+                    view()
+                        .gap_1()
+                        .child(field_label("Category"))
+                        .child(category_picker(app, cat)),
+                )
+                .child(primary("Save file", move || {
+                    app.save(file::update_favorite::file_update(
+                        app.db(),
+                        id,
+                        Some(name.get_untracked()),
+                        cat.get_untracked().filter(|v| Some(*v) != original),
+                        Some(progress.get_untracked()),
+                    ))
+                })),
+        );
     for (kind, is_tag) in [("Tags", true), ("Authors", false)] {
-        let mut attached = wrap();
-        if is_tag {
-            for t in &file.tags {
-                let tid = t.id;
-                attached = attached.child(button(format!("{} ×", t.name), move || {
-                    app.save(tag::tag_unassign(app.db(), id, vec![tid]))
-                }));
-            }
+        let mut attached = wrap().gap(px(6.));
+        let names: Vec<(i64, String)> = if is_tag {
+            file.tags.iter().map(|t| (t.id, t.name.clone())).collect()
         } else {
-            for a in &file.authors {
-                let aid = a.id;
-                attached = attached.child(button(format!("{} ×", a.name), move || {
-                    app.save(author::author_unassign(app.db(), id, vec![aid]))
-                }));
-            }
+            file.authors
+                .iter()
+                .map(|a| (a.id, a.name.clone()))
+                .collect()
+        };
+        if names.is_empty() {
+            attached = attached.child(caption(if is_tag {
+                "No tags yet."
+            } else {
+                "No authors yet."
+            }));
+        }
+        for (other, label_text) in names {
+            attached = attached.child(chip(label_text, move || {
+                if is_tag {
+                    app.save(tag::tag_unassign(app.db(), id, vec![other]))
+                } else {
+                    app.save(author::author_unassign(app.db(), id, vec![other]))
+                }
+            }));
         }
         let q = signal(String::new());
-        body = body
-            .child(label(kind))
-            .child(attached)
-            .child(input(&format!("Find {kind}"), q))
-            .child(dynamic(move || {
-                let name = q.get();
-                if name.is_empty() {
-                    return view().into_element();
-                }
-                let db = app.db();
-                app.load(
-                    async move { find_names(db, is_tag, name).await },
-                    move |values| {
-                        let mut r = wrap();
-                        for (tid, name) in values {
-                            let tid = *tid;
-                            r = r.child(button(name, move || {
-                                if is_tag {
-                                    app.save(tag::tag_assign(app.db(), id, vec![tid]));
-                                } else {
-                                    app.save(author::author_assign(app.db(), id, vec![tid]));
-                                }
-                            }));
-                        }
-                        r.into_element()
-                    },
-                )
-            }));
+        let finder = if is_tag { "Find tags" } else { "Find authors" };
+        body = body.child(
+            section(kind)
+                .child(attached)
+                .child(input(finder, q))
+                .child(dynamic(move || {
+                    let name = q.get();
+                    if name.is_empty() {
+                        return view().into_element();
+                    }
+                    let db = app.db();
+                    app.load(
+                        async move { find_names(db, is_tag, name).await },
+                        move |values| {
+                            if values.is_empty() {
+                                return caption("No matching names.").into_element();
+                            }
+                            let mut r = wrap().gap(px(6.));
+                            for (other, name) in values {
+                                let other = *other;
+                                r = r.child(control(
+                                    name,
+                                    Variant::Default,
+                                    ButtonSize::Sm,
+                                    Some(Icon::Plus),
+                                    move || {
+                                        if is_tag {
+                                            app.save(tag::tag_assign(app.db(), id, vec![other]));
+                                        } else {
+                                            app.save(author::author_assign(
+                                                app.db(),
+                                                id,
+                                                vec![other],
+                                            ));
+                                        }
+                                    },
+                                ));
+                            }
+                            r.into_element()
+                        },
+                    )
+                })),
+        );
     }
+    let mut meta = section("Metadata");
     let mut keys = std::collections::HashSet::new();
     for m in &file.metadata {
         keys.insert(m.key.clone());
-        body = body.child(metadata_field(
+        meta = meta.child(metadata_field(
             app,
             id,
             m.key.clone(),
@@ -223,9 +437,9 @@ fn form(app: App, file: &api::FileWithDetails) -> AnyElement {
     }
     if let Some(category) = &file.category {
         let slug = category.schema_slug.clone();
-        body = body.child(
+        meta = meta.child(
             app.load(api::schemas::schema_list(app.db()), move |schemas| {
-                let mut fields = stack();
+                let mut fields = view().gap_3();
                 if let Some(s) = schemas.iter().find(|s| s.schema.id == slug) {
                     for f in &s.fields {
                         if f.semantic.is_none() && f.form_visible && !keys.contains(&f.field_key) {
@@ -245,80 +459,44 @@ fn form(app: App, file: &api::FileWithDetails) -> AnyElement {
     }
     let key = signal(String::new());
     let value = signal(String::new());
-    body = body
-        .child(
-            row()
-                .child(input("Metadata key", key))
-                .child(input("Value", value))
-                .child(button("Add metadata", move || {
-                    app.save(metadata::metadata_set(
-                        app.db(),
-                        id,
-                        key.get_untracked(),
-                        value.get_untracked(),
-                        None,
-                    ))
-                })),
-        )
-        .child(
+    meta = meta.child(
+        view().gap_1().child(field_label("Add a value")).child(
             wrap()
-                .child(button("Choose cover", move || {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Images", &["jpg", "jpeg", "png", "webp"])
-                        .pick_file()
-                    {
-                        let db = app.db();
-                        app.save(async move {
-                            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-                            artwork::cover_set(db, id, bytes, None).await
-                        });
-                    }
-                }))
-                .child(confirm("Remove cover", move || {
-                    app.save(artwork::cover_delete(app.db(), id))
-                })),
-        );
-    let mut actions = wrap();
-    if file.storage_kind.as_deref() == Some("remote") {
-        actions = actions.child(button("Download", move || {
-            app.job(
-                remote::file_download_from_remote(app.db(), vec![id]),
-                |_| {},
-            )
-        }));
-        if file.local_cache_path.is_some() {
-            actions = actions.child(confirm("Clear cached file", move || {
-                app.save(cache::cache_clear(app.db(), id))
-            }));
-        }
-    } else {
-        actions = actions.child(confirm("Move to Baidu Netdisk", move || {
-            app.job(remote::file_upload_to_remote(app.db(), vec![id]), |_| {})
-        }));
-    }
-    scroll()
-        .flex_1()
-        .min_h_0()
-        .child(
-            body.child(actions)
-                .child(confirm("Delete file and library record", move || {
-                    app.job(file::delete_move::file_delete(app.db(), id), move |_| {
-                        app.page.set(Page::Library);
-                        app.refresh();
-                    })
-                })),
-        )
-        .into_element()
+                .gap_2()
+                .child(input("Metadata key", key).flex_1().min_w(px(140.)))
+                .child(input("Value", value).flex_1().min_w(px(140.)))
+                .child(control(
+                    "Add metadata",
+                    Variant::Default,
+                    ButtonSize::Md,
+                    Some(Icon::Plus),
+                    move || {
+                        app.save(metadata::metadata_set(
+                            app.db(),
+                            id,
+                            key.get_untracked(),
+                            value.get_untracked(),
+                            None,
+                        ))
+                    },
+                )),
+        ),
+    );
+    body.child(meta)
 }
 
 fn metadata_field(app: App, id: i64, key: String, initial: String, ty: String) -> AnyElement {
     let value = signal(initial);
     let name = key.clone();
-    stack()
-        .child(field(&key, value))
+    let doomed = key.clone();
+    view()
+        .gap_1()
+        .child(field_label(key.clone()))
         .child(
-            wrap()
-                .child(button("Save value", move || {
+            row()
+                .gap_2()
+                .child(input(&key, value).flex_1())
+                .child(small("Save value", move || {
                     app.save(metadata::metadata_set(
                         app.db(),
                         id,
@@ -327,9 +505,23 @@ fn metadata_field(app: App, id: i64, key: String, initial: String, ty: String) -
                         Some(ty.clone()),
                     ))
                 }))
-                .child(confirm("Remove value", move || {
-                    app.save(metadata::metadata_delete(app.db(), id, key.clone()))
-                })),
+                .child(icon_button(
+                    format!("Remove value {key}"),
+                    Icon::Trash,
+                    None,
+                    move || {
+                        let doomed = doomed.clone();
+                        ask(
+                            format!("Remove “{doomed}”?"),
+                            "The value is deleted from this file.",
+                            "Remove value",
+                            true,
+                            move || {
+                                app.save(metadata::metadata_delete(app.db(), id, doomed.clone()))
+                            },
+                        )
+                    },
+                )),
         )
         .into_element()
 }
@@ -354,28 +546,22 @@ pub async fn find_names(
             .collect())
     }
 }
+/// A select of the library's categories bound to `selected`.
 pub fn category_picker(app: App, selected: Signal<Option<i64>>) -> AnyElement {
     app.load(api::category::category_list(app.db()), move |categories| {
-        let values = categories
+        if categories.is_empty() {
+            return caption("Create a category first, under Categories.").into_element();
+        }
+        let items = categories
             .iter()
-            .map(|c| (c.id, c.name.clone()))
+            .map(|c| (c.id.to_string(), c.name.clone()))
             .collect::<Vec<_>>();
-        dynamic(move || {
-            let active = selected.get();
-            let mut r = wrap().child(label("Category"));
-            for (id, n) in &values {
-                let id = *id;
-                r = r.child(button(
-                    if active == Some(id) {
-                        format!("✓ {n}")
-                    } else {
-                        n.clone()
-                    },
-                    move || selected.set(Some(id)),
-                ));
-            }
-            r
-        })
+        select(
+            "Category",
+            items,
+            move || selected.get().map(|v| v.to_string()),
+            move |v| selected.set(v.parse().ok()),
+        )
         .into_element()
     })
 }

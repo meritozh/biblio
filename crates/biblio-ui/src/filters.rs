@@ -36,88 +36,145 @@ const OPS: &[(&str, &str, &[&str])] = &[
     ),
 ];
 type Presets = BTreeMap<String, Vec<FilterCondition>>;
+/// The Filters button and its popover: build a condition (field,
+/// operator, value), add it, and keep named presets.
 pub fn editor(app: App, chips: Signal<Vec<Chip>>) -> AnyElement {
-    let opened = signal(false);
-    stack()
-        .child(button("Filters", move || opened.update(|v| *v = !*v)))
-        .child(when(
-            move || opened.get(),
-            move || {
-                let field = signal(0usize);
-                let op = signal("includes".to_owned());
-                let value = signal(String::new());
-                let key = signal(String::new());
-                let mut fields = wrap();
-                for (i, (name, _, ops)) in OPS.iter().enumerate() {
-                    fields = fields.child(button(*name, move || {
-                        field.set(i);
-                        op.set(ops[0].into());
-                        value.set(String::new());
-                    }));
+    let opener = trigger("Filters", Some(Icon::Filter), true, false).child(dynamic(move || {
+        let n = chips.with(Vec::len);
+        if n == 0 {
+            return view().hidden().into_element();
+        }
+        view()
+            .min_w(px(18.))
+            .h(px(18.))
+            .px(px(5.))
+            .items_center()
+            .justify_center()
+            .rounded(px(9.))
+            .bg(accent)
+            .child(
+                text(n.to_string())
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(on_accent),
+            )
+            .into_element()
+    }));
+    popover(opener, move || {
+        let field = signal(0usize);
+        let op = signal("includes".to_owned());
+        let value = signal(String::new());
+        let key = signal(String::new());
+        let fields = OPS
+            .iter()
+            .enumerate()
+            .map(|(i, (name, _, _))| (i.to_string(), name.to_string()))
+            .collect::<Vec<_>>();
+        view()
+            .gap_3()
+            .child(subheading("Add a condition"))
+            .child(view().gap_1().child(field_label("Field")).child(select(
+                "Field",
+                fields,
+                move || Some(field.get().to_string()),
+                move |v| {
+                    let i = v.parse().unwrap_or(0);
+                    field.set(i);
+                    op.set(OPS[i].2[0].into());
+                    value.set(String::new());
+                },
+            )))
+            .child(dynamic(move || {
+                let mut ops = wrap().gap(px(6.));
+                for o in OPS[field.get()].2 {
+                    ops = ops.child(choice(
+                        op_caption(o),
+                        move || op.with(|v| v == o),
+                        move || op.set((*o).into()),
+                    ));
                 }
-                stack()
-                    .child(fields)
-                    .child(dynamic(move || {
-                        let mut row = wrap();
-                        for o in OPS[field.get()].2 {
-                            row =
-                                row.child(button(o.replace('_', " "), move || op.set((*o).into())));
-                        }
-                        row
-                    }))
-                    .child(
-                        text(move || {
-                            format!("{} · {}", OPS[field.get()].0, op.get().replace('_', " "))
-                        })
-                        .text_color(ink),
-                    )
-                    .child(when(
-                        move || OPS[field.get()].1 == "custom",
-                        move || input("Metadata key", key),
-                    ))
-                    .child(dynamic(move || {
-                        let f = OPS[field.get()].1;
-                        let op = op.get();
-                        if matches!(op.as_str(), "empty" | "not_empty") {
-                            return view().into_element();
-                        }
-                        let options: &[&str] = match f {
-                            "file_status" => &["available", "missing", "moved"],
-                            "storage_kind" => &["local", "remote"],
-                            "favorite" => &["true", "false"],
-                            _ => &[],
-                        };
-                        let mut line = wrap().child(input(
-                            match (f, op.as_str()) {
-                                ("authors", "includes") => "Author ID",
-                                ("tags", "includes" | "excludes") => "Tag ID",
-                                ("tags", "includes_any" | "excludes_any") => {
-                                    "Tag IDs, comma-separated"
-                                }
-                                _ => "Value",
-                            },
-                            value,
-                        ));
-                        for opt in options {
-                            line = line.child(button(*opt, move || value.set((*opt).into())));
-                        }
-                        line.into_element()
-                    }))
-                    .child(button("Add condition", move || {
-                        match condition(
-                            OPS[field.get_untracked()].1,
-                            op.get_untracked(),
-                            value.get_untracked(),
-                            key.get_untracked(),
-                        ) {
-                            Ok(c) => chips.update(|v| v.push(chip(c))),
-                            Err(e) => app.message.set(e),
-                        }
-                    }))
-                    .child(presets(app, chips))
-            },
-        ))
-        .into_element()
+                view().gap_1().child(field_label("Condition")).child(ops)
+            }))
+            .child(when(
+                move || OPS[field.get()].1 == "custom",
+                move || crate::ui::field("Metadata key", key),
+            ))
+            .child(dynamic(move || {
+                let f = OPS[field.get()].1;
+                let op = op.get();
+                if matches!(op.as_str(), "empty" | "not_empty") {
+                    return view().into_element();
+                }
+                let options: &[&str] = match f {
+                    "file_status" => &["available", "missing", "moved"],
+                    "storage_kind" => &["local", "remote"],
+                    "favorite" => &["true", "false"],
+                    _ => &[],
+                };
+                let name = match (f, op.as_str()) {
+                    ("authors", "includes") => "Author ID",
+                    ("tags", "includes" | "excludes") => "Tag ID",
+                    ("tags", "includes_any" | "excludes_any") => "Tag IDs, comma-separated",
+                    _ => "Value",
+                };
+                if options.is_empty() {
+                    return crate::ui::field(name, value).into_element();
+                }
+                let mut line = wrap().gap(px(6.));
+                for opt in options {
+                    line = line.child(choice(
+                        *opt,
+                        move || value.with(|v| v == opt),
+                        move || value.set((*opt).into()),
+                    ));
+                }
+                view()
+                    .gap_1()
+                    .child(field_label(name))
+                    .child(line)
+                    .into_element()
+            }))
+            .child(control(
+                "Add condition",
+                Variant::Primary,
+                ButtonSize::Sm,
+                Some(Icon::Plus),
+                move || match condition(
+                    OPS[field.get_untracked()].1,
+                    op.get_untracked(),
+                    value.get_untracked(),
+                    key.get_untracked(),
+                ) {
+                    Ok(c) => {
+                        chips.update(|v| v.push(chip(c)));
+                        value.set(String::new());
+                    }
+                    Err(e) => app.message.set(e),
+                },
+            ))
+            .child(separator())
+            .child(presets(app, chips))
+            .into_element()
+    })
+    .into_element()
+}
+/// How an operator reads in the condition builder.
+fn op_caption(op: &str) -> &'static str {
+    match op {
+        "includes" => "Includes",
+        "excludes" => "Excludes",
+        "includes_any" => "Includes any",
+        "excludes_any" => "Excludes any",
+        "empty" => "Is empty",
+        "not_empty" => "Is not empty",
+        "count_gte" => "At least",
+        "count_lt" => "Fewer than",
+        "length_gte" => "At least",
+        "length_lt" => "Shorter than",
+        "contains" => "Contains",
+        "is" => "Is",
+        _ => "Matches",
+    }
 }
 pub fn chip(c: FilterCondition) -> Chip {
     let v = c
@@ -241,39 +298,72 @@ fn presets(app: App, chips: Signal<Vec<Chip>>) -> AnyElement {
                         move |_| revision.update(|n| *n += 1),
                     );
                 };
-                let mut s = stack().child(row().child(input("Preset name", name)).child(button(
-                    "Save current filter",
-                    move || {
-                        let name = name.get_untracked().trim().to_owned();
-                        let conditions = chips
-                            .get_untracked()
-                            .into_iter()
-                            .map(|c| c.1)
-                            .collect::<Vec<_>>();
-                        if name.is_empty() || conditions.is_empty() {
-                            app.message
-                                .set("Choose a name and at least one condition".into());
-                            return;
-                        }
-                        let mut all = data.with(|v| v.clone());
-                        all.insert(name, conditions);
-                        write(all);
-                    },
-                )));
-                for (name, conditions) in data.with(|v| v.clone()) {
-                    s = s.child(
+                let mut list = view().gap(px(1.));
+                for (preset, conditions) in data.with(|v| v.clone()) {
+                    let doomed = preset.clone();
+                    list = list.child(
                         row()
-                            .child(button(&name, move || {
-                                chips.set(conditions.iter().cloned().map(chip).collect())
-                            }))
-                            .child(confirm("Delete preset", move || {
-                                let mut all = data.with(|v| v.clone());
-                                all.remove(&name);
-                                write(all);
-                            })),
+                            .gap_1()
+                            .child(
+                                control(
+                                    preset.clone(),
+                                    Variant::Ghost,
+                                    ButtonSize::Sm,
+                                    None,
+                                    move || {
+                                        chips.set(conditions.iter().cloned().map(chip).collect())
+                                    },
+                                )
+                                .flex_1()
+                                .justify_start(),
+                            )
+                            .child(icon_button(
+                                format!("Delete preset {preset}"),
+                                Icon::Trash,
+                                None,
+                                move || {
+                                    let doomed = doomed.clone();
+                                    ask(
+                                        format!("Delete the preset “{doomed}”?"),
+                                        "The filter conditions it saved are forgotten.",
+                                        "Delete",
+                                        true,
+                                        move || {
+                                            let mut all = data.with(|v| v.clone());
+                                            all.remove(&doomed);
+                                            write(all);
+                                        },
+                                    )
+                                },
+                            )),
                     );
                 }
-                s.into_element()
+                view()
+                    .gap_2()
+                    .child(subheading("Presets"))
+                    .child(list)
+                    .child(
+                        row()
+                            .gap_2()
+                            .child(input("Preset name", name).flex_1())
+                            .child(small("Save current filter", move || {
+                                let name = name.get_untracked().trim().to_owned();
+                                let conditions = chips
+                                    .get_untracked()
+                                    .into_iter()
+                                    .map(|c| c.1)
+                                    .collect::<Vec<_>>();
+                                if name.is_empty() || conditions.is_empty() {
+                                    app.message
+                                        .set("Choose a name and at least one condition".into());
+                                    return;
+                                }
+                                let mut all = data.with(|v| v.clone());
+                                all.insert(name, conditions);
+                                write(all);
+                            })),
+                    )
+                    .into_element()
             },
         )
     })
