@@ -32,6 +32,7 @@ pub fn screen(app: App, page: Page) -> AnyElement {
 }
 
 fn names(app: App, tags: bool) -> AnyElement {
+    const NAME_PAGE: i64 = 30;
     let q = signal(String::new());
     let new = signal(String::new());
     let pos = signal(0i64);
@@ -78,7 +79,7 @@ fn names(app: App, tags: bool) -> AnyElement {
                         let rows = tag::tag_list(
                             db.clone(),
                             Some(true),
-                            Some(30),
+                            Some(NAME_PAGE),
                             Some(p),
                             Some(q.clone()),
                         )
@@ -94,7 +95,7 @@ fn names(app: App, tags: bool) -> AnyElement {
                         let rows = author::author_list(
                             db.clone(),
                             Some(true),
-                            Some(30),
+                            Some(NAME_PAGE),
                             Some(p),
                             Some(q.clone()),
                         )
@@ -109,7 +110,12 @@ fn names(app: App, tags: bool) -> AnyElement {
                     }
                 },
                 move |(total, rows)| {
-                    if rows.is_empty() {
+                    if p > 0 && p >= *total {
+                        let last = (total - 1).max(0) / NAME_PAGE * NAME_PAGE;
+                        pos.set(last);
+                        return label("Loading…").into_element();
+                    }
+                    if *total == 0 {
                         return empty(
                             if tags { "No tags" } else { "No authors" },
                             "Create one above, or let analysis add them while importing.",
@@ -190,10 +196,10 @@ fn names(app: App, tags: bool) -> AnyElement {
                     )));
                     let mut buttons = row().gap_1();
                     if p > 0 {
-                        buttons = buttons.child(icon_button("Previous", Icon::Back, None, move || pos.set(p - 30)));
+                        buttons = buttons.child(icon_button("Previous", Icon::Back, None, move || pos.set(p - NAME_PAGE)));
                     }
-                    if p + 30 < *total {
-                        buttons = buttons.child(icon_button("Next", Icon::Forward, None, move || pos.set(p + 30)));
+                    if p + NAME_PAGE < *total {
+                        buttons = buttons.child(icon_button("Next", Icon::Forward, None, move || pos.set(p + NAME_PAGE)));
                     }
                     pager = pager.child(buttons);
                     body.child(pager).into_element()

@@ -30,8 +30,6 @@ pub struct BrowseState {
     lucky: Signal<bool>,
     /// The size of the result set shown, for the header's count.
     total: Signal<Option<i64>>,
-    /// The files on the page shown, for "Select this page".
-    page_ids: Signal<Vec<i64>>,
 }
 impl BrowseState {
     pub fn new() -> Self {
@@ -47,7 +45,6 @@ impl BrowseState {
             grid: signal(true),
             lucky: signal(false),
             total: signal(None),
-            page_ids: signal(vec![]),
         }
     }
 }
@@ -87,8 +84,8 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
         grid,
         lucky,
         total,
-        page_ids,
     } = app.browse;
+    let page_ids = signal(Vec::new());
     if seen.with(|p| *p) != Some(cat_id) {
         seen.with(|p| *p = Some(cat_id));
         query.set(String::new());
@@ -184,20 +181,25 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
         let group = mode.get();
         let random = lucky.get();
         let is_grid = grid.get();
+        // Nothing is on screen until this load finishes, so "Select this
+        // page" must not reach the view just left.
+        page_ids.set(vec![]);
         if group != "flat" && q.is_empty() && filters.is_empty() && !random {
             return app.load(
                 file::collections::collection_list(db, group, schema.clone(), cat_id),
                 move |groups| {
                     total.set(Some(groups.iter().map(|g| g.file_ids.len() as i64).sum()));
-                    page_ids.set(vec![]);
                     if groups.is_empty() {
                         return shelf_empty(false, cat_id.is_some());
                     }
                     let mut body = view().gap(px(2.)).pb_6();
+                    let mut shown = Vec::with_capacity(groups.len());
                     for group in groups {
                         let ids = group.file_ids.clone();
                         let count = format!("{}", ids.len());
                         let expanded = signal(false);
+                        let loaded = signal(Vec::new());
+                        shown.push((expanded, loaded));
                         body = body.child(reveal(
                             group.title.clone(),
                             Some(count),
@@ -206,16 +208,27 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
                                 view()
                                     .pt_2()
                                     .pb_4()
-                                    .child(group_page(app, ids.clone(), is_grid, selection))
+                                    .child(group_page(app, ids.clone(), is_grid, selection, loaded))
                                     .into_element()
                             },
                         ));
                     }
+                    // The files on screen are the shown page of every open
+                    // group.
+                    effect(move || {
+                        page_ids.set(
+                            shown
+                                .iter()
+                                .filter(|(open, _)| open.get())
+                                .flat_map(|(_, loaded)| loaded.get())
+                                .collect(),
+                        );
+                    });
                     body.into_element()
                 },
             );
         }
-        let pos = offset.get();
+        let pos = if random { 0 } else { offset.get() };
         let key = sort.get();
         let reverse = desc.get();
         let filtered = !q.trim().is_empty() || !filters.is_empty();
@@ -250,6 +263,14 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
                 .await
             },
             move |page| {
+                if pos > 0 && i64::from(pos) >= page.total {
+                    // The last row was removed. Move the pager itself so a
+                    // later refresh starts on the same page the user sees.
+                    let size = i64::from(PAGE_SIZE);
+                    let last = (page.total - 1).max(0) / size * size;
+                    offset.set(last as i32); // last <= pos
+                    return label("Loading…").into_element();
+                }
                 total.set(Some(page.total));
                 page_ids.set(page.files.iter().map(|f| f.id).collect());
                 if page.total == 0 {
@@ -263,10 +284,16 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
                         .child(file_rows(app, &page.files, is_grid, selection));
                 if page.total > i64::from(PAGE_SIZE) {
                     body = body.child(pager(
-                        format!("{}–{} of {}", pos + 1, i64::from(pos) + shown, page.total),
+                        format!(
+                            "{}–{} of {}",
+                            i64::from(pos) + 1,
+                            i64::from(pos) + shown,
+                            page.total
+                        ),
                         (pos > 0).then_some(move || offset.set((pos - PAGE_SIZE).max(0))),
-                        (i64::from(pos + PAGE_SIZE) < page.total)
-                            .then_some(move || offset.set(pos + PAGE_SIZE)),
+                        pos.checked_add(PAGE_SIZE)
+                            .filter(|&next| i64::from(next) < page.total)
+                            .map(|next| move || offset.set(next)),
                         ("Previous", "Next"),
                     ));
                 }
@@ -431,14 +458,25 @@ fn shelf_empty(filtered: bool, category: bool) -> AnyElement {
     empty(heading, help).into_element()
 }
 
-fn group_page(app: App, ids: Vec<i64>, grid: bool, selection: Selection) -> AnyElement {
+/// Publishes the IDs once this group's current page has loaded.
+fn group_page(
+    app: App,
+    ids: Vec<i64>,
+    grid: bool,
+    selection: Selection,
+    loaded: Signal<Vec<i64>>,
+) -> AnyElement {
     let offset = signal(0usize);
     dynamic(move || {
         let start = offset.get();
         let end = (start + PAGE_SIZE as usize).min(ids.len());
+        loaded.set(Vec::new());
         let mut body = view().gap_4().child(app.load(
             file::listing::file_list_by_ids(app.db(), ids[start..end].to_vec()),
-            move |files| file_rows(app, files, grid, selection),
+            move |files| {
+                loaded.set(files.iter().map(|file| file.id).collect());
+                file_rows(app, files, grid, selection)
+            },
         ));
         if ids.len() > PAGE_SIZE as usize {
             body = body.child(pager(
