@@ -3,6 +3,7 @@ use super::session::ReaderSession;
 use crate::ui::*;
 use biblio_core::text_reader::{
     book::{Cursor as BookCursor, Hit, ReadingPosition, TextPoint, TextRow, Window},
+    rules::{ContentKind, Contents},
     store::Typography,
 };
 use nsh_core::prelude::*;
@@ -185,6 +186,8 @@ impl Passage {
     }
 }
 
+const COLUMN_WIDTH: f32 = 720.;
+const PAGE_MARGIN: f32 = 20.;
 const SEGMENT: usize = 32 * 1024;
 type Breaks = HashMap<u64, usize>;
 struct Layout {
@@ -241,12 +244,27 @@ impl Layout {
     }
 }
 
-fn face(content: Text, ty: &Typography) -> Text {
+fn heading(row: &Passage, contents: Option<&Contents>) -> bool {
+    let Some(contents) = contents else {
+        return false;
+    };
+    let paragraph = row.start().paragraph;
+    contents
+        .entries
+        .binary_search_by_key(&paragraph, |entry| entry.anchor.paragraph)
+        .is_ok_and(|i| contents.entries[i].kind != ContentKind::FrontMatter)
+}
+
+fn face(content: Text, ty: &Typography, heading: bool) -> Text {
+    let size = if heading { ty.size * 1.22 } else { ty.size };
     let mut el = content
         .text_color(ink)
-        .text_size(px(ty.size))
-        .line_height(px(ty.size * ty.leading))
+        .text_size(px(size))
+        .line_height(px(size * ty.leading))
         .letter_spacing(px(ty.spacing));
+    if heading {
+        el = el.font_weight(FontWeight::SEMIBOLD);
+    }
     if let Some(family) = &ty.family {
         el = el.font_family(family.clone());
     }
@@ -397,7 +415,7 @@ impl Viewport {
         }
     }
 
-    fn cell(self, row: Passage) -> AnyElement {
+    fn cell(self, row: Passage, heading: bool) -> AnyElement {
         let start = row.start().restart;
         let ty = self.session.state.get_untracked().typography.clone();
         let el = element_ref();
@@ -419,8 +437,11 @@ impl Viewport {
             }
         });
         let content = row.p.slice(row.range.clone());
+        let content_is_empty = content.is_empty();
         let body = highlighted(&row, &content, self.session.hit.get_untracked());
-        face(body, &ty)
+        let first = row.range.start == 0 && !row.p.parts[0].1.continues_from_previous();
+        let last = row.range.end == row.p.len && !row.p.parts.last().unwrap().1.continues_to_next;
+        let text = face(body, &ty, heading)
             .element_ref(&el)
             .min_h(px(ty.size * ty.leading))
             .on(EventKind::TextLayout, move |payload: &EventPayload| {
@@ -444,7 +465,21 @@ impl Viewport {
                     self.target();
                     self.measure(start);
                 }
-            })
+            });
+        view()
+            .items_center()
+            .px(px(PAGE_MARGIN))
+            .pt(px(if first && heading && start > 0 {
+                ty.size * 0.85
+            } else {
+                0.
+            }))
+            .pb(px(if last && !content_is_empty {
+                ty.size * if heading { 0.55 } else { 0.25 }
+            } else {
+                0.
+            }))
+            .child(text.w_full().max_w(px(COLUMN_WIDTH)))
             .into_element()
     }
 
@@ -483,7 +518,10 @@ impl Viewport {
 }
 
 pub fn viewport(session: ReaderSession) -> AnyElement {
-    let width = signal(0.0);
+    // The scrolling surface spans the page. Both visible lines and hidden
+    // line-break probes must use the same inset text width.
+    let available = signal(0.0_f32);
+    let width = computed(move || (available.get() - 2. * PAGE_MARGIN).clamp(0., COLUMN_WIDTH));
     let breaks = stored(Breaks::new());
     let revision = signal(0_u64);
     let paragraphs = signal_with(Rc::new(Vec::new()), SignalEquals::Never);
@@ -495,18 +533,20 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
         }),
         SignalEquals::Never,
     );
-    let geometry = stored(None);
+    let typography = computed(move || session.state.get().typography.clone());
     effect(move || {
-        let w = width.get();
-        let ty = session.state.get().typography.clone();
-        let changed =
-            geometry.with(|g| g.replace((w, ty.clone())).is_some_and(|old| old != (w, ty)));
-        if changed {
-            breaks.with(|b| b.clear());
-            if let Some(at) = session.anchor.with(|a| *a) {
-                session.destination.set(Some(at.into()));
-            }
+        width.get();
+        typography.get();
+        session.contents.get();
+        breaks.with(|b| b.clear());
+        if session.destination.get_untracked().is_none()
+            && let Some(at) = session.anchor.get_untracked()
+        {
+            session.destination.set(Some(at.into()));
         }
+        revision.update(|n| *n += 1);
+    });
+    effect(move || {
         revision.get();
         layout.set(Rc::new(breaks.with(|b| Layout::new(&paragraphs.get(), b))));
     });
@@ -573,6 +613,10 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
                             session.state.get_untracked().typography.size
                                 * session.state.get_untracked().typography.leading
                         };
+                        // A key press takes over from a resume or reflow still
+                        // waiting for the target paragraph's native line metrics.
+                        vp.positioning.replace(None);
+                        session.destination.set(None);
                         vp.list.scroll_to_offset(
                             px((vp.offset.with(|v| *v) + dir * step).max(0.)),
                             false,
@@ -591,17 +635,19 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
                     .hit
                     .get()
                     .filter(|h| row.offset(h.start) < row.offset(h.end));
-                Some((row, hit, session.state.get().typography.clone()))
+                let heading = session.contents.with(|c| heading(&row, c.as_deref()));
+                Some((row, hit, typography.get(), heading))
             });
             dynamic(move || {
                 item.get().map_or_else(
                     || view().into_element(),
-                    |(row, _, _)| untracked(|| vp.cell(row)),
+                    |(row, _, _, heading)| untracked(|| vp.cell(row, heading)),
                 )
             })
         },
     )
     .keys(move || layout.with(|l| l.rows.iter().map(|r| r.start().restart).collect::<Vec<_>>()))
+    .content_padding_bottom(px(48.))
     .element_ref(&vp.list)
     // AppKit reserves Space for activating a focused pressable control.
     // Put keyboard focus on the reading list when the body is clicked.
@@ -622,14 +668,12 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
     .on_load_more(move || vp.more(false));
 
     let next_probe = computed(move || {
-        Some((
-            layout.with(|l| l.probe.clone())?,
-            width.get(),
-            session.state.get().typography.clone(),
-        ))
+        let row = layout.with(|l| l.probe.clone())?;
+        let heading = session.contents.with(|c| heading(&row, c.as_deref()));
+        Some((row, width.get(), typography.get(), heading))
     });
     let probe = dynamic(move || {
-        let Some((row, w, ty)) = next_probe.get() else {
+        let Some((row, w, ty, heading)) = next_probe.get() else {
             return view().into_element();
         };
         let start = row.start().restart;
@@ -637,7 +681,7 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
         if w <= 0. {
             return view().into_element();
         }
-        face(text(content.clone()), &ty)
+        face(text(content.clone()), &ty, heading)
             .key(format!("measure-{start}"))
             .absolute()
             .top(px(0.))
@@ -665,12 +709,13 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
     view()
         .flex_1()
         .min_h_0()
-        .mx(inset)
+        .min_w_0()
         .overflow_hidden()
+        .pt(move || px(if compact() { 18. } else { 28. }))
         .label("Book text")
         .focusable(false)
         .on_press(move || vp.list.focus())
-        .on_layout(move |b: &Bounds<Points>| width.set(b.size.width.0))
+        .on_layout(move |b: &Bounds<Points>| available.set(b.size.width.0))
         .child(list)
         .child(probe)
         .into_element()

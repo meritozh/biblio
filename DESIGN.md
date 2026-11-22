@@ -61,7 +61,7 @@ Feature modules compose `crate::ui`; they do not style `nsh_base` controls thems
 
 **Sidebar workspace.** A 232-point rail holds the wordmark (at the foot of the title bar band, past the window controls), the Library group (All files, then each category), the Manage group (Categories, Tags, Authors, Cleanup), a hairline, the Advanced group (Schemas, Prompts) and, pinned to the rail's foot, Settings. Import is the library header's Add button. Rows are 32 high with a 16-point icon slot; the current row has the `tint` fill with an accent label and icon. Long category lists scroll inside the rail. The current location stays highlighted while a file is open.
 
-**Pages.** Every page starts with the same header across the workspace: the page's icon, its serif title, a muted count beside it, and its commands at the trailing edge (search, then the primary action). A hairline divides it from the body. On macOS the header is also the window's drag band.
+**Pages.** Every page starts with the same header across the workspace: the page's icon, its serif title, a muted count beside it, and its commands at the trailing edge (search, then the primary action). A hairline divides it from the body. On macOS the header is also the window's drag band. The text reader keeps the book title and reading tools in one drag band. Its scrolling text sits in a centered column, with contents on the left and reading settings on the right when opened. Compact windows present these panels as sheets.
 
 Below 760 points the rail becomes a top bar on the `rail` tone (it is also the window's drag band, inset past the window controls) with the wordmark and a labelled Navigation toggle; opening it shows the full-width rail, and choosing a destination closes it.
 

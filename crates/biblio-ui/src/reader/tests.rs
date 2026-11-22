@@ -336,6 +336,33 @@ fn keeps_visible_passage_across_reflow_and_screen_moves() -> Result<(), String> 
 }
 
 #[test]
+fn reader_panels_adapt_without_losing_the_book_or_its_heading_styles() -> Result<(), String> {
+    let books = Books::new(&[("Night Train", "Introduction\nChapter 1\nOn the platform.")]);
+    let (mut w, _) = books.window(|| {});
+    w.wait_for("id:shelf >> label:Night Train")?;
+    w.press("id:shelf >> label:Night Train")?;
+    w.wait_for("1 chapter")?;
+    w.wait_until("outline styles the chapter in the body", WAIT, |s| {
+        let title = s.span_style("id:reader-viewport >> text:Chapter 1");
+        let body = s.span_style("id:reader-viewport >> text:Introduction");
+        matches!((title, body), (Ok(t), Ok(b)) if t.font_size > b.font_size && t.font_weight > b.font_weight)
+    })?;
+    w.press("id:reader-toolbar >> label:Contents")?;
+    w.wait_for("label:Close Contents")?;
+    w.set_viewport(size(px(420.), px(640.)))?;
+    w.wait_for("label:Close")?;
+    w.press("label:Close")?;
+    w.press("id:reader-toolbar >> label:Reading settings")?;
+    w.wait_for("label:Book encoding")?;
+    w.press("label:Book encoding")?;
+    w.wait_for("label:Confirm encoding")?;
+    w.press("label:Cancel encoding")?;
+    w.wait_for("id:reader-viewport >> text:On the platform.")?;
+    w.press("id:reader-toolbar >> label:Back to library")?;
+    w.wait_for("id:shelf >> label:Night Train")
+}
+
+#[test]
 fn reader_actions_and_theme_stay_within_scope() -> Result<(), String> {
     let books = Books::new(&[(
         "Book",

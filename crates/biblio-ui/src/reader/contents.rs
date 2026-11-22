@@ -106,7 +106,16 @@ pub(super) fn list(
     session: ReaderSession,
     contents: Signal<Option<Rc<Contents>>>,
     navigate: Option<Signal<bool>>,
-) -> AnyElement {
+) -> VirtualList {
+    let current = computed(move || {
+        let at = session.anchor.get().unwrap_or_default().paragraph;
+        contents.with(|c| {
+            c.as_ref()?
+                .entries
+                .partition_point(|entry| entry.anchor.paragraph <= at)
+                .checked_sub(1)
+        })
+    });
     virtual_list(
         move || contents.with(|c| c.as_ref().map_or(0, |c| c.entries.len())),
         move |pos| {
@@ -120,11 +129,23 @@ pub(super) fn list(
                     title_text(session, item.title, move |name| {
                         let label = format!("{name} · {}", item.words);
                         if let Some(open) = navigate {
-                            ghost(label, move || {
-                                open.set(false);
-                                session.reveal(at.into());
-                            })
-                            .into_element()
+                            let active = move || current.get() == Some(pos.index());
+                            nsh_base::button()
+                                .selected(active)
+                                .bg(move || if active() { tint() } else { clear() })
+                                .accessibility_label(label)
+                                .on_press(move || {
+                                    open.set(false);
+                                    session.reveal(at.into());
+                                })
+                                .px_4()
+                                .py_2()
+                                .w_full()
+                                .items_start()
+                                .hover(|s| s.bg(wash))
+                                .focus(|s| s.bg(tint))
+                                .child(crate::ui::label(name).number_of_lines(2))
+                                .into_element()
                         } else {
                             text(label).text_color(ink).py_1().into_element()
                         }
@@ -133,11 +154,14 @@ pub(super) fn list(
             })
         },
     )
+    .initial_scroll_index(if navigate.is_some() {
+        current.get_untracked().unwrap_or(0)
+    } else {
+        0
+    })
     .label(if navigate.is_some() {
         "Table of contents"
     } else {
         "Preview contents"
     })
-    .h(px(168.))
-    .into_element()
 }

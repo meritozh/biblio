@@ -141,6 +141,7 @@ fn preview_cancel_apply_and_set_default_have_distinct_effects() -> Result<(), St
     click(&mut w, "Contents")?;
     w.wait_for("label:Chapter 1 · 10")?;
     click(&mut w, "Contents")?;
+    click(&mut w, "Reading settings")?;
     click(&mut w, "Chapter rules")?;
     click(&mut w, "纯数字")?;
     click(&mut w, "Apply to this book")?;
@@ -274,6 +275,7 @@ fn encoding_preview_cancel_and_commit_preserve_the_source() -> Result<(), String
     open(&mut w, "Book")?;
     w.wait_for("id:reader-viewport")?;
     started.recv_timeout(WAIT).unwrap();
+    click(&mut w, "Reading settings")?;
     click(&mut w, "Book encoding")?;
     click(&mut w, "UTF-16 BE")?;
     w.wait_for("text:/新正文/")?;

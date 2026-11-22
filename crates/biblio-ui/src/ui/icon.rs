@@ -15,6 +15,7 @@ pub enum Icon {
     Cleanup,
     Settings,
     Search,
+    Typography,
     Plus,
     Menu,
     Back,
@@ -60,6 +61,9 @@ impl Icon {
             }
             Self::Settings => {
                 "M3 6.5h5m4 0h9 M3 12h11m4 0h3 M3 17.5h3m4 0h11 M8 4.5v4h4v-4z M14 10v4h4v-4z M6 15.5v4h4v-4z"
+            }
+            Self::Typography => {
+                "M2 18.5 7 5l5 13.5 M4 14h6 M20.5 18.5v-8 M20.5 12.5c-2-4-7-2-7 2s4.8 6 7 1.5"
             }
             Self::Search => "M16.5 10.5a6 6 0 1 1-12 0 6 6 0 1 1 12 0 M15 15l5.5 5.5",
             Self::Plus => "M12 4.5v15 M4.5 12h15",

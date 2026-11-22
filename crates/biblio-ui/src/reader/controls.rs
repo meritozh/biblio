@@ -216,7 +216,7 @@ impl Controls {
                                 return;
                             }
                             if old.collapse_blanks != new.collapse_blanks {
-                                s.reveal(s.anchor.get().unwrap_or_default().into());
+                                s.reveal(s.anchor.get_untracked().unwrap_or_default().into());
                             }
                             if old.rules != new.rules {
                                 s.scan();
@@ -239,6 +239,14 @@ impl Controls {
         self.commit(Change::Preference(p), None, |_| {});
     }
 
+    fn layout_setting(self, name: &str, control: impl IntoElement) -> View {
+        if self.session.is_some() {
+            view().gap_1().py_1().child(label(name)).child(control)
+        } else {
+            setting(name, None, control)
+        }
+    }
+
     fn metric(self, metric: Metric) -> AnyElement {
         let adjust = move |dir| {
             let value = self.desired.with(|ty| {
@@ -249,33 +257,38 @@ impl Controls {
             self.commit(Change::Metric(metric, value), None, |_| {});
         };
         let name = metric.name();
-        setting(
-            name,
-            None,
+        let stepper = row()
+            .gap_2()
+            .child(icon_button(
+                format!("Decrease {}", name.to_lowercase()),
+                Icon::ArrowDown,
+                None,
+                move || adjust(-1.),
+            ))
+            .child(
+                text(move || {
+                    metric
+                        .value(&mut self.state.get().typography.clone())
+                        .to_string()
+                })
+                .min_w(px(36.))
+                .text_center(),
+            )
+            .child(icon_button(
+                format!("Increase {}", name.to_lowercase()),
+                Icon::ArrowUp,
+                None,
+                move || adjust(1.),
+            ));
+        if self.session.is_some() {
             row()
-                .gap_2()
-                .child(icon_button(
-                    format!("Decrease {}", name.to_lowercase()),
-                    Icon::ArrowDown,
-                    None,
-                    move || adjust(-1.),
-                ))
-                .child(
-                    text(move || {
-                        metric
-                            .value(&mut self.state.get().typography.clone())
-                            .to_string()
-                    })
-                    .min_w(px(36.))
-                    .text_center(),
-                )
-                .child(icon_button(
-                    format!("Increase {}", name.to_lowercase()),
-                    Icon::ArrowUp,
-                    None,
-                    move || adjust(1.),
-                )),
-        )
+                .py_1()
+                .justify_between()
+                .child(label(name))
+                .child(stepper)
+        } else {
+            setting(name, None, stepper)
+        }
         .into_element()
     }
 
@@ -290,9 +303,8 @@ impl Controls {
         if self.session.is_none() {
             panel = panel.child(self.opening());
         }
-        panel = panel.child(setting(
+        panel = panel.child(self.layout_setting(
             "Font family",
-            None,
             select(
                 "Font family",
                 items,
@@ -326,15 +338,18 @@ impl Controls {
                 self.desired.replace(Typography::default());
                 self.prefer(Preference::ResetType);
             }))
-            .child(tick(
-                "Collapse blank lines".into(),
-                move || self.collapse.get(),
-                move || {
-                    let next = !self.collapse.get_untracked();
-                    self.collapse.set(next);
-                    self.prefer(Preference::Collapse(next))
-                },
-            ))
+            .child(
+                tick(
+                    "Collapse blank lines".into(),
+                    move || self.collapse.get(),
+                    move || {
+                        let next = !self.collapse.get_untracked();
+                        self.collapse.set(next);
+                        self.prefer(Preference::Collapse(next))
+                    },
+                )
+                .child(label("Collapse blank lines")),
+            )
             .child(button("Chapter rules", move || manager.set(true)))
             .child(text(move || self.error.get()).text_color(danger))
             .child(modal(

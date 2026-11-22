@@ -287,7 +287,7 @@ impl Manager {
                 move || {
                     view()
                         .gap_2()
-                        .child(contents::list(session, result, None))
+                        .child(contents::list(session, result, None).h(px(168.)))
                         .child(primary("Apply to this book", move || {
                             let id = key.get();
                             let submitted = id.clone();

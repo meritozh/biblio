@@ -1,5 +1,5 @@
 //! Owns a single open request from routing through the last external side effect.
-use super::session;
+use super::{session, toolbar::Toolbar};
 use crate::{
     app::{App, Page, run_service},
     ui::*,
@@ -147,17 +147,7 @@ pub fn screen(app: App, id: i64) -> nsh_core::element::Screen {
     let retry = signal(0_u64);
     let route = app.reader.route.get();
     let serial = route.serial;
-    let header = header_bar(
-        icon_button("Back to library", Icon::Back, Some("⌘["), move || {
-            back(app)
-        })
-        .into_element(),
-        route.title,
-        None,
-        None,
-    )
-    .pl(move || controls() + inset())
-    .pr(move || nsh_core::element::desktop::title_bar().right + inset());
+    let toolbar = Toolbar::new();
     nsh_base::nav_page()
         .key(format!("reader-{serial}"))
         .header_visible(false)
@@ -172,10 +162,10 @@ pub fn screen(app: App, id: i64) -> nsh_core::element::Screen {
                 .w_full()
                 .h_full()
                 .bg(paper)
-                .child(header)
+                .child(toolbar.header(app, route.title))
                 .child(dynamic(move || {
                     retry.get();
-                    untracked(move || copy_screen(app, id, serial, retry))
+                    untracked(move || copy_screen(app, id, serial, retry, toolbar))
                 })),
         )
 }
@@ -186,7 +176,7 @@ enum OpenStatus {
     Failed(String),
 }
 
-fn copy_screen(app: App, id: i64, serial: u64, retry: Signal<u64>) -> AnyElement {
+fn copy_screen(app: App, id: i64, serial: u64, retry: Signal<u64>, toolbar: Toolbar) -> AnyElement {
     let route = app.reader.route.get();
     let services = use_context::<OpenServices>().unwrap_or_default();
     let status = signal_with(
@@ -247,7 +237,9 @@ fn copy_screen(app: App, id: i64, serial: u64, retry: Signal<u64>) -> AnyElement
             .child(notice(error.clone()))
             .child(button("Retry", move || retry.update(|n| *n += 1)))
             .into_element(),
-        OpenStatus::Ready(path) => untracked(|| session::screen(app, id, path.clone(), retry)),
+        OpenStatus::Ready(path) => {
+            untracked(|| session::screen(app, id, path.clone(), retry, toolbar))
+        }
     })
     .into_element()
 }
