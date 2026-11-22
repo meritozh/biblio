@@ -5,7 +5,7 @@ mod scan;
 use fancy_regex::{Regex, RegexBuilder, RuntimeError};
 use thiserror::Error;
 
-pub use presets::{AUTO_ID, builtin_rules};
+pub use presets::{AUTO_ID, builtin_rules, preset_example};
 pub use scan::{
     ContentEntry, ContentKind, Contents, RuleCard, RuleStats, RuleSurvey, ScanError, Title,
     outline, survey,

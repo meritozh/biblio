@@ -1,14 +1,17 @@
 //! One document owner and independent, cancellable blocking readers. A slow
 //! directory scan never occupies the viewport or search lane.
-use super::viewport::{self, Pages};
+use super::{
+    controls, encoding,
+    viewport::{self, Pages},
+};
 use crate::{
     app::{App, run_service},
     ui::*,
 };
 use biblio_core::text_reader::{
     book::{Cursor, Direction, Hit, ReadFrom, ReadingPosition, TextBook, TextPoint, Window},
-    rules::{self, ChapterRule, Contents, RuleSurvey, Title},
-    store::{DefaultRule, ReaderState, ReaderStore},
+    rules::{self, Contents, RuleSurvey},
+    store::{ReaderState, ReaderStore},
 };
 use nsh_core::prelude::*;
 use std::{fs::File, path::PathBuf, rc::Rc, sync::Arc};
@@ -23,26 +26,30 @@ impl Drop for CurrentRequest {
 }
 
 #[derive(Clone, Copy)]
-struct Lane {
+pub(super) struct Lane {
     owner: Owner,
     token: Stored<CurrentRequest>,
     permit: Stored<Arc<Semaphore>>,
 }
 
 impl Lane {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
+        Self::with_parallelism(1)
+    }
+
+    pub(super) fn with_parallelism(n: usize) -> Self {
         Self {
             owner: Owner::current(),
             token: stored(CurrentRequest(CancellationToken::new())),
-            permit: stored(Arc::new(Semaphore::new(1))),
+            permit: stored(Arc::new(Semaphore::new(n))),
         }
     }
 
-    fn cancel(self) {
+    pub(super) fn cancel(self) {
         self.token.with(|s| s.0.cancel());
     }
 
-    fn run<T: Send + 'static>(
+    pub(super) fn run<T: Send + 'static>(
         self,
         work: impl FnOnce(&CancellationToken) -> Result<T, String> + Send + 'static,
         done: impl FnOnce(Result<T, String>) + 'static,
@@ -110,6 +117,24 @@ fn visible_window(
 }
 
 pub fn screen(app: App, id: i64, path: PathBuf, retry: Signal<u64>) -> AnyElement {
+    // Re-decode the same held source after a confirmed preview, including
+    // when a cache path has been replaced while the book was open.
+    let reopen = signal_with(None::<Arc<TextBook>>, SignalEquals::Never);
+    dynamic(move || {
+        let previous = reopen.get();
+        untracked(|| load_document(app, id, path.clone(), previous, reopen, retry))
+    })
+    .into_element()
+}
+
+fn load_document(
+    app: App,
+    id: i64,
+    path: PathBuf,
+    previous: Option<Arc<TextBook>>,
+    reopen: Signal<Option<Arc<TextBook>>>,
+    retry: Signal<u64>,
+) -> AnyElement {
     let store = ReaderStore::new(app.db());
     let saved = app
         .writes
@@ -119,14 +144,21 @@ pub fn screen(app: App, id: i64, path: PathBuf, retry: Signal<u64>) -> AnyElemen
     spawn(async move {
         match saved.await.map_err(|e| e.to_string()).and_then(|r| r) {
             Err(e) => loaded.set(Some(Err(e))),
-            Ok(state) => {
+            Ok(mut state) => {
+                controls::resolve_font(&mut state);
                 let saved = state.book.clone().unwrap_or_default();
                 let resume = saved.checkpoint.as_ref().map(|c| c.at.into());
                 open.run(
                     move |cancel| {
-                        let file = File::open(path).map_err(|e| e.to_string())?;
-                        let book = TextBook::open(file, saved.encoding, cancel)
-                            .map_err(|e| e.to_string())?;
+                        let book = match previous {
+                            Some(source) => source.with_encoding(saved.encoding, cancel),
+                            None => TextBook::open(
+                                File::open(path).map_err(|e| e.to_string())?,
+                                saved.encoding,
+                                cancel,
+                            ),
+                        }
+                        .map_err(|e| e.to_string())?;
                         let window = visible_window(
                             &book,
                             ReadFrom::Resume(saved.checkpoint),
@@ -137,7 +169,15 @@ pub fn screen(app: App, id: i64, path: PathBuf, retry: Signal<u64>) -> AnyElemen
                     },
                     move |r| {
                         loaded.set(Some(r.map(|(book, state, window, resume)| {
-                            ReaderSession::new(app, id, book, state, Pages::new(window), resume)
+                            ReaderSession::new(
+                                app,
+                                id,
+                                book,
+                                state,
+                                Pages::new(window),
+                                resume,
+                                reopen,
+                            )
                         })))
                     },
                 );
@@ -171,13 +211,17 @@ pub struct ReaderSession {
     reading: Lane,
     looking: Lane,
     positioning_match: Stored<bool>,
-    scanning: Lane,
+    pub(super) scanning: Lane,
     pub loading: Signal<bool>,
     last_query: Stored<String>,
     find_status: Signal<String>,
     pub contents: Signal<Option<Rc<Contents>>>,
-    pub survey: Stored<Option<RuleSurvey>>,
-    scan_status: Signal<String>,
+    pub survey: Signal<Option<Rc<RuleSurvey>>>,
+    pub(super) scan_status: Signal<String>,
+    pub(super) scanning_rules: Lane,
+    pub(super) scanner: Stored<Scanner>,
+    pub(super) outliner: Stored<super::contents::Outliner>,
+    pub(super) reopen: Signal<Option<Arc<TextBook>>>,
 }
 
 impl ReaderSession {
@@ -188,6 +232,7 @@ impl ReaderSession {
         state: ReaderState,
         pages: Pages,
         resume: Option<TextPoint>,
+        reopen: Signal<Option<Arc<TextBook>>>,
     ) -> Self {
         let session = Self {
             app,
@@ -207,7 +252,11 @@ impl ReaderSession {
             last_query: stored(String::new()),
             find_status: signal(String::new()),
             contents: signal_with(None, SignalEquals::Never),
-            survey: stored(None),
+            survey: signal_with(None, SignalEquals::Never),
+            scanning_rules: Lane::new(),
+            scanner: stored(use_context::<Scanner>().unwrap_or_default()),
+            outliner: stored(use_context::<super::contents::Outliner>().unwrap_or_default()),
+            reopen,
             scan_status: signal(String::new()),
         };
         let writes = app.writes.with(|w| w.clone());
@@ -328,44 +377,14 @@ impl ReaderSession {
         );
     }
 
-    pub fn scan(self) {
-        let book = self.book.with(|b| b.clone());
-        let state = self.state.get_untracked();
-        let effective = state.effective_rule();
-        let rules = state.rules.clone();
-        let scanner = use_context::<Scanner>().unwrap_or_default();
-        self.scan_status.set("Scanning chapters…".into());
-        self.scanning.run(
-            move |stop| {
-                let survey = (scanner.0)(&book, &rules, stop)?;
-                let id = match effective {
-                    DefaultRule::Auto => survey.detected.as_ref(),
-                    DefaultRule::Fixed(ref id) => Some(id),
-                };
-                let mut contents = Contents::default();
-                if let Some(rule) = rules.iter().find(|r| Some(&r.id) == id) {
-                    let compiled = ChapterRule::compile(&rule.draft).map_err(|e| e.to_string())?;
-                    contents = rules::outline(&book, &compiled, stop).map_err(|e| e.to_string())?;
-                }
-                Ok((survey, contents))
-            },
-            move |r| match r {
-                Ok((survey, contents)) => {
-                    self.scan_status
-                        .set(counted(contents.chapters as i64, "chapter", "chapters"));
-                    self.survey.with(|s| *s = Some(survey));
-                    self.contents.set(Some(Rc::new(contents)));
-                }
-                Err(e) => self.scan_status.set(e),
-            },
-        );
-    }
-
     fn body(self) -> AnyElement {
         let query = signal(String::new());
         let input_ref = element_ref();
         let open_find = signal(false);
         let open_contents = signal(false);
+        let open_settings = signal(false);
+        let open_encoding = signal(false);
+        let controls = controls::Controls::new(self.app, self.state, Some(self));
         let nav = self.app.reader;
         let focus = move || {
             if open_find.get_untracked() {
@@ -393,8 +412,30 @@ impl ReaderSession {
                         open_contents.update(|v| *v = !*v)
                     }))
                     .child(text(move || self.scan_status.get()).text_color(secondary))
-                    .child(ghost("Find in book", focus)),
+                    .child(ghost("Find in book", focus))
+                    .child(ghost("Reading settings", move || {
+                        open_settings.update(|v| *v = !*v)
+                    }))
+                    .child(ghost("Book encoding", move || open_encoding.set(true))),
             )
+            .child(when(
+                move || open_settings.get(),
+                move || {
+                    scroll()
+                        .max_h(move || px((window().height.0 * 0.42).max(80.)))
+                        .child(view().px(inset).child(controls.panel()))
+                },
+            ))
+            .child(modal(
+                open_encoding,
+                || "Book encoding".into(),
+                560.,
+                move || encoding::panel(controls, self, open_encoding),
+            ))
+            .child(when(
+                move || self.book.with(|b| b.encoding_uncertain()),
+                || note("Encoding uncertain. Preview a book encoding."),
+            ))
             .child(when(
                 move || open_find.get(),
                 move || {
@@ -430,7 +471,7 @@ impl ReaderSession {
             ))
             .child(when(
                 move || open_contents.get(),
-                move || self.contents_list(open_contents),
+                move || super::contents::list(self, self.contents, Some(open_contents)),
             ))
             .child(when(
                 move || !self.read_error.get().is_empty(),
@@ -444,54 +485,6 @@ impl ReaderSession {
             ))
             .child(viewport::viewport(self))
             .into_element()
-    }
-
-    fn contents_list(self, open: Signal<bool>) -> AnyElement {
-        virtual_list(
-            move || {
-                self.contents
-                    .with(|c| c.as_ref().map_or(0, |c| c.entries.len()))
-            },
-            move |pos| {
-                dynamic(move || {
-                    let item = self
-                        .contents
-                        .with(|c| c.as_ref()?.entries.get(pos.index()).cloned());
-                    let Some(item) = item else {
-                        return view().into_element();
-                    };
-                    let select = move || {
-                        open.set(false);
-                        self.reveal(item.anchor.into());
-                    };
-                    let words = item.words;
-                    match item.title {
-                        Title::Text(title) => {
-                            ghost(format!("{title} · {words}"), select).into_element()
-                        }
-                        title => untracked(|| {
-                            let book = self.book.with(|b| b.clone());
-                            let lane = Lane::new();
-                            let name = signal("Loading title…".to_string());
-                            lane.run(
-                                move |stop| {
-                                    title
-                                        .resolve(&book, stop)
-                                        .map(|s| s.into_owned())
-                                        .map_err(|e| e.to_string())
-                                },
-                                move |r| name.set(r.unwrap_or_else(|e| e)),
-                            );
-                            dynamic(move || ghost(format!("{} · {words}", name.get()), select))
-                                .into_element()
-                        }),
-                    }
-                })
-            },
-        )
-        .label("Table of contents")
-        .h(px(168.))
-        .into_element()
     }
 }
 

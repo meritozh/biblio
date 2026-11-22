@@ -425,13 +425,18 @@ dependencies = [
  "nsh-core",
  "nsh-engine",
  "nsh-testing",
+ "objc2-core-foundation",
+ "objc2-core-text",
  "open",
+ "pango",
+ "pangocairo",
  "rfd",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
  "url",
+ "windows",
 ]
 
 [[package]]

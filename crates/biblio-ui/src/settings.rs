@@ -15,6 +15,7 @@ pub fn appearance(value: &str) -> Appearance {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     General,
+    Reader,
     Model,
     Remote,
     Database,
@@ -36,6 +37,7 @@ fn tab_strip(current: Signal<Tab>) -> impl IntoElement {
         });
     for (tab, name) in [
         (Tab::General, "General"),
+        (Tab::Reader, "Reader"),
         (Tab::Model, "Language model"),
         (Tab::Remote, "Baidu Netdisk"),
         (Tab::Database, "Database"),
@@ -69,6 +71,9 @@ pub fn screen(app: App) -> AnyElement {
         app.revision.get();
         let db = app.db();
         let current = tab.get();
+        if current == Tab::Reader {
+            return crate::reader::controls::settings_tab(app);
+        }
         app.load(
             async move {
                 Ok((
@@ -87,6 +92,7 @@ pub fn screen(app: App) -> AnyElement {
                 ))
             },
             move |(path, mode, scheme, config, remote, stats)| match current {
+                Tab::Reader => unreachable!(),
                 Tab::General => general(app, path, mode, scheme),
                 Tab::Model => model(app, config),
                 Tab::Remote => remote_form(app, remote),

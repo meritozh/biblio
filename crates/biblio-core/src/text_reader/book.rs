@@ -268,6 +268,21 @@ impl TextBook {
         Ok(book)
     }
 
+    /// Re-detect or override the codec on the same read-only source. Reads
+    /// are positional, so the duplicate handle cannot disturb another lane.
+    pub fn with_encoding(
+        &self,
+        encoding: Option<Encoding>,
+        stop: &CancellationToken,
+    ) -> Result<Self, ReadError> {
+        self.verify(stop)?;
+        let book = Self::open(self.file.try_clone()?, encoding, stop)?;
+        if book.source != self.source {
+            return Err(ReadError::SourceChanged);
+        }
+        Ok(book)
+    }
+
     pub fn encoding(&self) -> Encoding {
         self.codec
     }
@@ -299,7 +314,7 @@ impl TextBook {
         Ok(sample)
     }
 
-    fn verify(&self, stop: &CancellationToken) -> Result<(), ReadError> {
+    pub fn verify(&self, stop: &CancellationToken) -> Result<(), ReadError> {
         check_stop(stop)?;
         let meta = self.file.metadata()?;
         if meta.len() != self.source.len || meta.modified()? != self.source.modified {

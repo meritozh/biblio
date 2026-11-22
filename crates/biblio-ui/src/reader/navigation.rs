@@ -37,15 +37,25 @@ impl Default for OpenServices {
 #[derive(Clone, Copy)]
 pub struct Navigation {
     pub find: Signal<u64>,
+    // Opening a file observes a pending global opener edit, even when the
+    // Settings tab that submitted it has already unmounted.
+    opener_write: Stored<Option<watch::Receiver<()>>>,
     serial: Stored<u64>,
     route: Signal<(u64, Entry, Option<String>)>,
     pub(crate) page_epoch: Stored<u64>,
 }
 
 impl Navigation {
+    pub(super) fn saving_opener(self) -> watch::Sender<()> {
+        let (done, rx) = watch::channel(());
+        self.opener_write.replace(Some(rx));
+        done
+    }
+
     pub fn new() -> Self {
         Self {
             find: signal(0),
+            opener_write: stored(None),
             serial: stored(0),
             route: signal((0, Entry::Shelf, None)),
             page_epoch: stored(0),
@@ -62,7 +72,13 @@ pub fn activate(app: App, id: i64, entry: Entry) {
     let source = app.page.get_untracked();
     let epoch = nav.page_epoch.with(|n| *n);
     let db = app.db();
-    let task = run_service(async move { text_open::target(&db, id, entry).await });
+    let opener = nav.opener_write.get();
+    let task = run_service(async move {
+        if let Some(mut write) = opener {
+            let _ = write.changed().await;
+        }
+        text_open::target(&db, id, entry).await
+    });
     app.owner.run(|| {
         spawn(async move {
             let result = task.await.map_err(|e| e.to_string()).and_then(|r| r);

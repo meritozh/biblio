@@ -82,3 +82,8 @@ pub fn builtin_rules() -> Vec<SavedRule> {
         })
         .collect()
 }
+
+/// Built-in cards remain identifiable and have an example without an open book.
+pub fn preset_example(id: &str) -> Option<&'static str> {
+    PRESETS.iter().find(|p| p.id == id).map(|p| p.example)
+}

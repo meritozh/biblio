@@ -538,3 +538,4 @@ fn reopening_in_the_same_window_waits_for_the_final_position() -> Result<(), Str
     assert!(books.saved().restart >= "Ordered passage 000\n".len() as u64 * 350);
     Ok(())
 }
+mod controls;

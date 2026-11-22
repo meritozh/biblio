@@ -15,11 +15,14 @@ use tokio::sync::{mpsc, oneshot};
 
 type Operation = Pin<Box<dyn Future<Output = ()> + Send>>;
 
+type PendingEdit = Mutex<Option<Operation>>;
+
 type Latest = Mutex<Option<Checkpoint>>;
 
 enum Message {
     Position(ReaderStore, i64, Arc<Latest>),
     Barrier(Operation),
+    Typography(Arc<PendingEdit>),
     Drain(std::sync::mpsc::Sender<Result<(), String>>),
 }
 
@@ -30,6 +33,7 @@ struct Mailbox {
     tx: mpsc::UnboundedSender<Message>,
     // Only the tail position may be updated. Reads and edits seal it.
     last: Option<(i64, Weak<Latest>)>,
+    type_tail: Option<(&'static str, Weak<PendingEdit>)>,
 }
 
 impl ReaderWrites {
@@ -66,6 +70,12 @@ impl ReaderWrites {
                         flush(&mut pending, &mut error).await;
                         match other {
                             Some(Message::Barrier(work)) => work.await,
+                            Some(Message::Typography(slot)) => {
+                                let work = slot.lock().unwrap().take();
+                                if let Some(work) = work {
+                                    work.await
+                                }
+                            }
                             Some(Message::Drain(reply)) => {
                                 let _ = reply.send(error.clone().map_or(Ok(()), Err));
                             }
@@ -76,11 +86,16 @@ impl ReaderWrites {
                 }
             }
         });
-        Self(Arc::new(Mutex::new(Mailbox { tx, last: None })))
+        Self(Arc::new(Mutex::new(Mailbox {
+            tx,
+            last: None,
+            type_tail: None,
+        })))
     }
 
     pub(crate) fn position(&self, store: ReaderStore, file: i64, checkpoint: Checkpoint) {
         let mut mailbox = self.0.lock().unwrap();
+        mailbox.type_tail = None;
         if let Some((id, slot)) = &mailbox.last
             && *id == file
             && let Some(slot) = slot.upgrade()
@@ -99,6 +114,7 @@ impl ReaderWrites {
     fn barrier(&self, message: Message) -> Result<(), String> {
         let mut mailbox = self.0.lock().unwrap();
         mailbox.last = None;
+        mailbox.type_tail = None;
         mailbox
             .tx
             .send(message)
@@ -114,6 +130,33 @@ impl ReaderWrites {
         let _ = self.barrier(Message::Barrier(Box::pin(async move {
             let _ = tx.send(work.await);
         })));
+        rx
+    }
+
+    /// Only adjacent pending edits of one typography field may replace each
+    /// other. Dropping the superseded operation also releases its receiver.
+    pub(crate) fn typography<T: Send + 'static>(
+        &self,
+        field: &'static str,
+        work: impl Future<Output = T> + Send + 'static,
+    ) -> oneshot::Receiver<T> {
+        let (tx, rx) = oneshot::channel();
+        let work: Operation = Box::pin(async move {
+            let _ = tx.send(work.await);
+        });
+        let mut mailbox = self.0.lock().unwrap();
+        mailbox.last = None;
+        if let Some((key, tail)) = &mailbox.type_tail
+            && *key == field
+            && let Some(tail) = tail.upgrade()
+            && let Some(pending) = tail.lock().unwrap().as_mut()
+        {
+            *pending = work;
+            return rx;
+        }
+        let slot = Arc::new(Mutex::new(Some(work)));
+        mailbox.type_tail = Some((field, Arc::downgrade(&slot)));
+        let _ = mailbox.tx.send(Message::Typography(slot));
         rx
     }
 
