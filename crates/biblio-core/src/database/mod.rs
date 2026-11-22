@@ -153,6 +153,11 @@ fn get_migrations() -> Vec<Migration> {
             sql: "INSERT OR IGNORE INTO schema_pipeline_steps (schema_id, step_key, label, enabled, order_index) VALUES \
                       ('galgame', 'vndb', 'VNDB metadata lookup', 1, 1);",
         },
+        Migration {
+            version: 8,
+            description: "text reader state",
+            sql: include_str!("text_reader.sql"),
+        },
     ]
 }
 
@@ -192,43 +197,232 @@ pub(crate) async fn open(directory: &std::path::Path) -> Result<sqlx::SqlitePool
 
 #[cfg(test)]
 mod tests {
-    use super::open;
+    use super::{get_migrations, open};
+    use sqlx::SqlitePool;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::path::Path;
+
+    // SHA-384 checksums in the pre-reader migration ledger, independent of the current SQL.
+    const LEGACY_CHECKSUMS: [&str; 7] = [
+        "E6DA0E47BB56EA628D419AB453B823D44220E6E7DE067DF1ECCF21A4588001F73A1EC334C26201372A3855D317BA6367",
+        "C5B810D7A498A21C85059BAC6DDC162AAA4394DED388EECD6E7A070E5DF4C628650F8CA7E609E4AE69FEB96292EBE024",
+        "70CEA11FCEBA2BDB02E42319184E8147267F1EFA0C7F8F10D28D95EE0C0E8B9A657D4B61275324FE8C6EDF17BA34EF71",
+        "8899942B12BC2D2D10C0478AB5E30484C6595DB4272D367B9992CD031D2D0B920BB72A4726765561A54EFF04B963ECEA",
+        "56D3A963DA0CF1FF18734A3D807BB4CDEDD38AD14C8C050BB7A72DEB3354082AD12F3C91D3368DFB88E2C22653196D0C",
+        "A8496DA36544243EEF23D34F0C10C20D8A68A19FAC140608A65D3DF3C431096BAB860CA9A84C505D5896FBB0E3A7F5BF",
+        "E666EB2749E0E34882AE85DC33F16A964FC6ABDCD4087C9FD94785CEDA61B37B19DE96326750293907EF8861062EFA33",
+    ];
+
+    async fn populate_legacy_database(dir: &Path, version: usize) -> SqlitePool {
+        let options = SqliteConnectOptions::new()
+            .filename(dir.join("biblio.db"))
+            .create_if_missing(true);
+        let old = SqlitePool::connect_with(options).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE _sqlx_migrations(
+                version BIGINT PRIMARY KEY, description TEXT NOT NULL,
+                installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                success BOOLEAN NOT NULL, checksum BLOB NOT NULL, execution_time BIGINT NOT NULL
+             )",
+        )
+        .execute(&old)
+        .await
+        .unwrap();
+        for (migration, checksum) in get_migrations()
+            .into_iter()
+            .zip(&LEGACY_CHECKSUMS[..version])
+        {
+            sqlx::raw_sql(migration.sql).execute(&old).await.unwrap();
+            sqlx::query(
+                "INSERT INTO _sqlx_migrations(version,description,success,checksum,execution_time)
+                         VALUES(?,?,1,unhex(?),0)",
+            )
+            .bind(migration.version)
+            .bind(migration.description)
+            .bind(*checksum)
+            .execute(&old)
+            .await
+            .unwrap();
+        }
+        sqlx::raw_sql(
+            r#"
+            INSERT INTO categories(id,name,schema_slug,view_config)
+                VALUES(71,'Old library','novel','{"open_app":"TextEdit"}');
+            INSERT INTO files(id,path,display_name,category_id,progress)
+                VALUES(91,'Old library/title.txt','水浒传',71,'完结');
+            INSERT INTO tags(id,name) VALUES(81,'经典');
+            INSERT INTO file_tags(file_id,tag_id) VALUES(91,81);
+            UPDATE app_settings SET value='/old/storage' WHERE key='storage_path';
+        "#,
+        )
+        .execute(&old)
+        .await
+        .unwrap();
+        old
+    }
+
+    async fn assert_legacy_data(pool: &SqlitePool) {
+        let row: (String, String, String, String, bool, String) = sqlx::query_as(
+            "SELECT f.path, f.display_name, f.progress, t.name, f.is_favorite, c.view_config
+             FROM files f JOIN categories c ON f.category_id=c.id
+             JOIN file_tags ft ON f.id=ft.file_id JOIN tags t ON t.id=ft.tag_id WHERE f.id=91",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row,
+            (
+                "Old library/title.txt".into(),
+                "水浒传".into(),
+                "完结".into(),
+                "经典".into(),
+                false,
+                r#"{"open_app":"TextEdit"}"#.into()
+            )
+        );
+        let storage: String =
+            sqlx::query_scalar("SELECT value FROM app_settings WHERE key='storage_path'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(storage, "/old/storage");
+    }
+
+    async fn assert_ledger(pool: &SqlitePool, version: usize) {
+        let ledger: Vec<(i64, bool, String)> = sqlx::query_as(
+            "SELECT version,success,hex(checksum) FROM _sqlx_migrations ORDER BY version",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(ledger.len(), version);
+        for (i, (v, success, checksum)) in ledger.iter().enumerate() {
+            assert_eq!((*v, *success), (i as i64 + 1, true));
+            if let Some(expected) = LEGACY_CHECKSUMS.get(i) {
+                assert_eq!(checksum, expected, "checksum for migration {v}");
+            }
+        }
+    }
 
     #[tokio::test]
     async fn opens_populated_tauri_database_and_preserves_migration_history() {
         let dir = tempfile::tempdir().unwrap();
-        let options = SqliteConnectOptions::new()
-            .filename(dir.path().join("biblio.db"))
-            .create_if_missing(true);
-        let old = SqlitePoolOptions::new()
-            .connect_with(options)
-            .await
-            .unwrap();
-        sqlx::raw_sql(include_str!("schema.sql"))
-            .execute(&old)
-            .await
-            .unwrap();
-        // Ledger format and SHA-384 of v1 shipped by the Tauri SQL plugin.
-        sqlx::raw_sql("CREATE TABLE _sqlx_migrations(version BIGINT PRIMARY KEY, description TEXT NOT NULL, installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, success BOOLEAN NOT NULL, checksum BLOB NOT NULL, execution_time BIGINT NOT NULL);
-            INSERT INTO _sqlx_migrations(version,description,success,checksum,execution_time) VALUES(1,'complete schema',1,X'E6DA0E47BB56EA628D419AB453B823D44220E6E7DE067DF1ECCF21A4588001F73A1EC334C26201372A3855D317BA6367',0);
-            INSERT INTO categories(id,name,schema_slug) VALUES(71,'Old library','novel');
-            INSERT INTO files(id,path,display_name,category_id) VALUES(91,'Old library/title.txt','水浒传',71);
-            INSERT INTO tags(id,name) VALUES(81,'经典');
-            INSERT INTO file_tags(file_id,tag_id) VALUES(91,81);").execute(&old).await.unwrap();
-        old.close().await;
+        populate_legacy_database(dir.path(), 1).await.close().await;
         for _ in 0..2 {
             let pool = open(dir.path()).await.unwrap();
-            let ledger: Vec<(i64, bool)> =
-                sqlx::query_as("SELECT version,success FROM _sqlx_migrations ORDER BY version")
+            assert_ledger(&pool, 8).await;
+            assert_legacy_data(&pool).await;
+            let rules: Vec<String> =
+                sqlx::query_scalar("SELECT id FROM reader_rules WHERE kind='builtin' ORDER BY id")
                     .fetch_all(&pool)
                     .await
                     .unwrap();
-            assert_eq!(ledger, (1..=7).map(|v| (v, true)).collect::<Vec<_>>());
-            let row: (String,String,bool)=sqlx::query_as("SELECT f.path,t.name,f.is_favorite FROM files f JOIN file_tags ft ON f.id=ft.file_id JOIN tags t ON t.id=ft.tag_id WHERE f.id=91").fetch_one(&pool).await.unwrap();
-            assert_eq!(row, ("Old library/title.txt".into(), "经典".into(), false));
+            assert_eq!(
+                rules,
+                [
+                    "auto",
+                    "classic",
+                    "common",
+                    "digits",
+                    "english",
+                    "number-title",
+                    "symbols"
+                ]
+            );
+            let defaults: (Option<String>, Option<String>, f64, f64, f64, bool, Option<String>) =
+                sqlx::query_as("SELECT external_app,font_family,size_pt,line_ratio,spacing_pt,collapse_blanks,default_rule
+                                FROM reader_preferences WHERE id=1")
+                    .fetch_one(&pool).await.unwrap();
+            assert_eq!(defaults, (None, None, 18.0, 1.6, 0.0, true, None));
+            let books: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM reader_books")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(books, 0);
             pool.close().await;
         }
+    }
+
+    #[tokio::test]
+    async fn reader_migration_rolls_back_and_retries_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = populate_legacy_database(dir.path(), 7).await;
+        // Force the last statement of v8 to fail after all three tables have been created.
+        sqlx::query("CREATE INDEX reader_books_by_rule ON files(path)")
+            .execute(&old)
+            .await
+            .unwrap();
+        let error = open(dir.path()).await.unwrap_err();
+        assert!(
+            error.contains("reader_books_by_rule already exists"),
+            "{error}"
+        );
+        assert_legacy_data(&old).await;
+        assert_ledger(&old, 7).await;
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name GLOB 'reader_*'",
+        )
+        .fetch_all(&old)
+        .await
+        .unwrap();
+        assert!(tables.is_empty(), "{tables:?}");
+
+        sqlx::query("DROP INDEX reader_books_by_rule")
+            .execute(&old)
+            .await
+            .unwrap();
+        old.close().await;
+        let upgraded = open(dir.path()).await.unwrap();
+        assert_ledger(&upgraded, 8).await;
+        assert_legacy_data(&upgraded).await;
+        upgraded.close().await;
+    }
+
+    #[tokio::test]
+    async fn deleting_rules_clears_references_and_deleting_files_cascades_to_reader_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(dir.path()).await.unwrap();
+        sqlx::raw_sql("
+            INSERT INTO files(id,path,display_name) VALUES (1,'a.txt','A'),(2,'b.txt','B'),(3,'c.txt','C');
+            INSERT INTO reader_rules(id,kind,name,mode,chapter) VALUES ('my-rule','custom','My rule','regex','Chapter');
+            UPDATE reader_preferences SET default_rule='my-rule' WHERE id=1;
+            INSERT INTO reader_books(file_id,paragraph_byte,restart_byte,rule_id)
+                VALUES (1,10,15,'my-rule'),(2,50,50,'my-rule'),(3,0,0,'auto');
+            DELETE FROM reader_rules WHERE id='my-rule';
+        ").execute(&db).await.unwrap();
+        let default: Option<String> =
+            sqlx::query_scalar("SELECT default_rule FROM reader_preferences WHERE id=1")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(default, None);
+        let books: Vec<(i64, i64, i64, Option<String>)> = sqlx::query_as(
+            "SELECT file_id,paragraph_byte,restart_byte,rule_id FROM reader_books ORDER BY file_id",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            books,
+            [
+                (1, 10, 15, None),
+                (2, 50, 50, None),
+                (3, 0, 0, Some("auto".into()))
+            ]
+        );
+
+        sqlx::query("DELETE FROM files WHERE id=1")
+            .execute(&db)
+            .await
+            .unwrap();
+        let remaining: Vec<i64> =
+            sqlx::query_scalar("SELECT file_id FROM reader_books ORDER BY file_id")
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        assert_eq!(remaining, [2, 3]);
+        db.close().await;
     }
 
     #[tokio::test]
