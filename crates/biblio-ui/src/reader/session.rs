@@ -394,6 +394,17 @@ impl ReaderSession {
         toolbar.ready.set(true);
         cleanup(move || toolbar.ready.set(false));
         let open_encoding = signal(false);
+        let book_text = element_ref();
+        spawn(async move {
+            next_frame().await;
+            if !open_find.get_untracked()
+                && !open_contents.get_untracked()
+                && !open_settings.get_untracked()
+                && !open_encoding.get_untracked()
+            {
+                book_text.focus();
+            }
+        });
         let controls = controls::Controls::new(self.app, self.state, Some(self));
         let nav = self.app.reader;
         let focus = move || {
@@ -528,7 +539,7 @@ impl ReaderSession {
                             .border_color(rule)
                         },
                     ))
-                    .child(viewport::viewport(self))
+                    .child(viewport::viewport(self, book_text))
                     .child(when(
                         move || open_settings.get() && !compact(),
                         move || {

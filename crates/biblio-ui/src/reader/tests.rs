@@ -248,10 +248,22 @@ fn menu_action(window: &mut Headless, name: &str) -> Result<(), String> {
 #[test]
 fn find_targets_the_active_reader() -> Result<(), String> {
     let books = Books::new(&[("Book", "sentence for search")]);
-    let (mut w, _) = books.window(|| {});
+    let (copy, states) = watch::channel(CopyState::Queued);
+    let (mut w, _) = books.window(move || {
+        let states = states.clone();
+        provide_context(OpenServices {
+            readable: Rc::new(move |_, _| {
+                let states = states.clone();
+                Box::pin(async move { Ok(states) })
+            }),
+            ..OpenServices::default()
+        });
+    });
     open(&mut w, "Book")?;
-    w.wait_for("sentence for search")?;
+    w.wait_for("Download queued…")?;
     menu_action(&mut w, "Find")?;
+    copy.send_replace(CopyState::Ready(books.paths[0].1.clone()));
+    w.wait_for("sentence for search")?;
     w.wait_for("label:Find text")?;
     w.press_key("x")?;
     assert_eq!(w.screen().input_text("label:Find text")?, Some("x"));

@@ -525,7 +525,7 @@ impl Viewport {
     }
 }
 
-pub fn viewport(session: ReaderSession) -> AnyElement {
+pub fn viewport(session: ReaderSession, list: ElementRef) -> AnyElement {
     // The scrolling surface spans the page. Both visible lines and hidden
     // line-break probes must use the same inset text width.
     let available = signal(0.0_f32);
@@ -562,7 +562,7 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
     });
     let vp = Viewport {
         session,
-        list: element_ref(),
+        list,
         layout,
         measured: stored(Rc::new(RefCell::new(HashMap::new()))),
         first: signal(None),
@@ -715,10 +715,6 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
                 }
             })
             .into_element()
-    });
-    spawn(async move {
-        next_frame().await;
-        vp.list.focus();
     });
     view()
         .flex_1()
