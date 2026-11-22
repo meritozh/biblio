@@ -254,6 +254,7 @@ fn actions(app: App, file: &api::FileWithDetails) -> impl IntoElement {
 
 fn file_page(app: App, file: &api::FileWithDetails) -> AnyElement {
     let id = file.id;
+    let title = file.display_name.clone();
     let favorite = file.is_favorite;
     let header = header_bar(
         icon_button("Back to library", Icon::Back, Some("⌘["), move || {
@@ -290,6 +291,7 @@ fn file_page(app: App, file: &api::FileWithDetails) -> AnyElement {
                     crate::reader::navigation::activate(
                         app,
                         id,
+                        &title,
                         biblio_core::commands::text_open::Entry::DetailOpen,
                     )
                 },

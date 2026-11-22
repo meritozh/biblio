@@ -150,6 +150,69 @@ fn open(window: &mut Headless, name: &str) -> Result<(), String> {
     window.press("label:Open file")
 }
 
+#[test]
+fn opening_and_closing_a_novel_shows_only_the_two_page_headers() -> Result<(), String> {
+    let books = Books::new(&[("Night Train", "The train departed.")]);
+    let (tx, _) = watch::channel(CopyState::Queued);
+    let download = tx.clone();
+    let (mut w, _) = books.window(move || {
+        let download = download.clone();
+        provide_context(OpenServices {
+            readable: Rc::new(move |_, _| {
+                let states = download.subscribe();
+                Box::pin(async move { Ok(states) })
+            }),
+            ..OpenServices::default()
+        });
+    });
+    let mut screen = nsh_testing::Screen::default();
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let seen = frames.clone();
+    w.observe(move |_, batch| {
+        screen.apply(batch);
+        let header = if screen.matches("label:Back to library").unwrap() {
+            if screen.shows("Night Train") {
+                "novel"
+            } else {
+                "placeholder title"
+            }
+        } else if screen.matches("label:Search library").unwrap() {
+            "shelf"
+        } else {
+            "no page header"
+        };
+        let mut seen = seen.lock().unwrap();
+        if seen.last() != Some(&header) {
+            seen.push(header);
+        }
+    });
+    w.wait_for("id:navigation >> label:Shelf")?;
+    w.press("id:navigation >> label:Shelf")?;
+    w.wait_for("id:shelf >> label:Night Train")?;
+    let select = w.screen().press_target("label:Select files")?.unwrap();
+    *frames.lock().unwrap() = vec!["shelf"];
+    w.press("id:shelf >> label:Night Train")?;
+    w.wait_for("Download queued…")?;
+    w.wait_for("text:Night Train")?;
+    tx.send_replace(CopyState::Ready(books.paths[0].1.clone()));
+    w.wait_for("The train departed.")?;
+    let rail_visible = w.screen().matches("id:navigation")?;
+    w.press("label:Back to library")?;
+    w.wait_for("id:shelf >> label:Night Train")?;
+    assert_eq!(*frames.lock().unwrap(), ["shelf", "novel", "shelf"]);
+    assert!(!rail_visible, "the reader occupies the whole window");
+    assert_eq!(w.screen().press_target("label:Select files")?, Some(select));
+    w.set_viewport(size(px(640.), px(760.)))?;
+    w.wait_for("label:Navigation")?;
+    w.press("id:shelf >> label:Night Train")?;
+    w.wait_for("The train departed.")?;
+    assert!(!w.screen().matches("label:Navigation")?);
+    w.back()?;
+    w.wait_for("id:shelf >> label:Night Train")?;
+    w.wait_for("label:Navigation")?;
+    Ok(())
+}
+
 fn menu_action(window: &mut Headless, name: &str) -> Result<(), String> {
     let items = window
         .screen()

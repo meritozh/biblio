@@ -432,13 +432,38 @@ fn workspace(app: App) -> AnyElement {
     let menu = signal(false);
     shortcuts(app, menu);
     chrome(app, menu);
+    let workspace_page = computed(move || match app.page.get() {
+        Page::Reader(_) => app.reader.return_page(),
+        page => page,
+    });
+    let workspace = workspace_content(app, menu, workspace_page);
+    nsh_base::nav_stack()
+        .w_full()
+        .h_full()
+        .child(
+            nsh_base::nav_page()
+                .key("workspace")
+                .header_visible(false)
+                .child(workspace),
+        )
+        .child(dynamic(move || {
+            let page = app.page.get();
+            app.reader.page_epoch.with(|n| *n += 1);
+            match page {
+                Page::Reader(id) => Some(untracked(|| reader::navigation::screen(app, id))),
+                _ => None,
+            }
+        }))
+        .into_element()
+}
+
+fn workspace_content(app: App, menu: Signal<bool>, workspace_page: Memo<Page>) -> AnyElement {
     let narrow = computed(compact);
     let page = view().flex_1().min_w_0().min_h_0().child(dynamic(move || {
-        let page = app.page.get();
-        app.reader.page_epoch.with(|n| *n += 1);
+        let page = workspace_page.get();
         untracked(|| match page {
             Page::Library => catalog::screen(app),
-            Page::Reader(id) => reader::navigation::screen(app, id),
+            Page::Reader(_) => unreachable!("the reader has its own navigation page"),
             Page::File(id) => detail::screen(app, id),
             Page::Import => imports::screen(app),
             Page::Settings => settings::screen(app),

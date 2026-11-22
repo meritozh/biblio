@@ -8,7 +8,6 @@ use biblio_core::{
     Library,
     commands::{
         cache,
-        file::create_replace::file_get,
         text_open::{self, CopyState, Entry, ExternalOpener, OpenTarget, SystemOpener},
     },
 };
@@ -41,8 +40,16 @@ pub struct Navigation {
     // Settings tab that submitted it has already unmounted.
     opener_write: Stored<Option<watch::Receiver<()>>>,
     serial: Stored<u64>,
-    route: Signal<(u64, Entry, Option<String>)>,
+    route: Stored<Route>,
     pub(crate) page_epoch: Stored<u64>,
+}
+
+#[derive(Clone)]
+struct Route {
+    serial: u64,
+    title: String,
+    return_to: Page,
+    program: Option<String>,
 }
 
 impl Navigation {
@@ -57,19 +64,29 @@ impl Navigation {
             find: signal(0),
             opener_write: stored(None),
             serial: stored(0),
-            route: signal((0, Entry::Shelf, None)),
+            route: stored(Route {
+                serial: 0,
+                title: String::new(),
+                return_to: Page::Library,
+                program: None,
+            }),
             page_epoch: stored(0),
         }
     }
+
+    pub fn return_page(self) -> Page {
+        self.route.with(|route| route.return_to)
+    }
 }
 
-pub fn activate(app: App, id: i64, entry: Entry) {
+pub fn activate(app: App, id: i64, title: &str, entry: Entry) {
     let nav = app.reader;
     let serial = nav.serial.with(|n| {
         *n += 1;
         *n
     });
     let source = app.page.get_untracked();
+    let title = title.to_owned();
     let epoch = nav.page_epoch.with(|n| *n);
     let db = app.db();
     let opener = nav.opener_write.get();
@@ -97,7 +114,19 @@ pub fn activate(app: App, id: i64, entry: Entry) {
                             _ => None,
                         };
                         nav.find.set(0);
-                        nav.route.set((serial, entry, program));
+                        // An external launch gives control back to its caller. The
+                        // reader's Back to library action returns to the shelf.
+                        let return_to = if program.is_some() {
+                            source
+                        } else {
+                            Page::Library
+                        };
+                        nav.route.replace(Route {
+                            serial,
+                            title,
+                            return_to,
+                            program,
+                        });
                         app.page.set(Page::Reader(id));
                     }
                     Err(error) => app.message.set(error),
@@ -114,37 +143,41 @@ pub fn back(app: App) {
     }
 }
 
-pub fn screen(app: App, id: i64) -> AnyElement {
+pub fn screen(app: App, id: i64) -> nsh_core::element::Screen {
     let retry = signal(0_u64);
-    let title = app.resource(move || file_get(app.db(), id));
-    let header = dynamic(move || {
-        let name = title
-            .get()
-            .as_deref()
-            .and_then(|r| r.as_ref().ok())
-            .map(|file| file.display_name.clone())
-            .unwrap_or_else(|| "Text Reader".into());
-        header_bar(
-            icon_button("Back to library", Icon::Back, Some("⌘["), move || {
-                back(app)
-            })
-            .into_element(),
-            name,
-            None,
-            None,
+    let route = app.reader.route.get();
+    let serial = route.serial;
+    let header = header_bar(
+        icon_button("Back to library", Icon::Back, Some("⌘["), move || {
+            back(app)
+        })
+        .into_element(),
+        route.title,
+        None,
+        None,
+    )
+    .pl(move || controls() + inset())
+    .pr(move || nsh_core::element::desktop::title_bar().right + inset());
+    nsh_base::nav_page()
+        .key(format!("reader-{serial}"))
+        .header_visible(false)
+        .on_dismiss(move || {
+            if app.page.get_untracked() == Page::Reader(id) && app.reader.serial.get() == serial {
+                back(app);
+            }
+        })
+        .child(
+            stack()
+                .gap_0()
+                .w_full()
+                .h_full()
+                .bg(paper)
+                .child(header)
+                .child(dynamic(move || {
+                    retry.get();
+                    untracked(move || copy_screen(app, id, serial, retry))
+                })),
         )
-    });
-    stack()
-        .gap_0()
-        .flex_1()
-        .min_h_0()
-        .child(header)
-        .child(dynamic(move || {
-            retry.get();
-            let serial = app.reader.route.with(|r| r.0);
-            untracked(move || copy_screen(app, id, serial, retry))
-        }))
-        .into_element()
 }
 
 enum OpenStatus {
@@ -154,7 +187,7 @@ enum OpenStatus {
 }
 
 fn copy_screen(app: App, id: i64, serial: u64, retry: Signal<u64>) -> AnyElement {
-    let (_, entry, program) = app.reader.route.get_untracked();
+    let route = app.reader.route.get();
     let services = use_context::<OpenServices>().unwrap_or_default();
     let status = signal_with(
         Rc::new(OpenStatus::Waiting("Opening file…")),
@@ -179,12 +212,9 @@ fn copy_screen(app: App, id: i64, serial: u64, retry: Signal<u64>) -> AnyElement
                 let state = watch.borrow_and_update().clone();
                 match state {
                     CopyState::Ready(path) => {
-                        if let Some(program) = &program {
+                        if let Some(program) = &route.program {
                             services.launcher.launch(&path, Some(program))?;
-                            app.page.set(match entry {
-                                Entry::Shelf => Page::Library,
-                                Entry::DetailOpen => Page::File(id),
-                            });
+                            app.page.set(route.return_to);
                         } else {
                             status.set(Rc::new(OpenStatus::Ready(path)));
                         }

@@ -6,11 +6,11 @@ use biblio_core::commands::text_open::Entry;
 use nsh_base::{DataTable, DataTableApi, DataTableContextMenu, DataTableElement, DataTableRange};
 use nsh_core::element::desktop::{MenuItem, popup_menu_at};
 
-fn press_file(app: App, id: i64, selection: Selection) {
+fn press_file(app: App, id: i64, title: &str, selection: Selection) {
     if selection.active.get_untracked() {
         selection.toggle(id);
     } else {
-        navigation::activate(app, id, Entry::Shelf);
+        navigation::activate(app, id, title, Entry::Shelf);
     }
 }
 
@@ -271,7 +271,7 @@ pub(super) fn file_table(
                                 !item.file.is_favorite,
                             ));
                         } else {
-                            press_file(app, id, selection);
+                            press_file(app, id, &item.file.display_name, selection);
                         }
                     })
                     .on_context_menu(move |hit: &DataTableContextMenu| {
@@ -450,13 +450,14 @@ pub(super) fn lucky_picks(
                         .gap_x(px(20.));
                     for file in picks {
                         let id = file.id;
+                        let title = file.display_name.clone();
                         shelf = shelf.child(
                             view()
                                 .gap(px(6.))
                                 .min_w_0()
                                 .child(detail::card_face(app, file, move || {
                                     open.set(false);
-                                    press_file(app, id, selection);
+                                    press_file(app, id, &title, selection);
                                 }))
                                 .child(
                                     label(file.display_name.clone())
@@ -602,11 +603,12 @@ fn file_menu(app: App, file: &FileListItem, selection: Selection, about: View) -
 fn slip(app: App, item: &Shelved, selection: Selection) -> AnyElement {
     let file = &item.file;
     let id = file.id;
+    let title = file.display_name.clone();
     let authors = authors_of(file);
     let cover = view()
         .w_full()
         .child(detail::card_face(app, file, move || {
-            press_file(app, id, selection)
+            press_file(app, id, &title, selection)
         }))
         .child(view().absolute().top(px(8.)).left(px(8.)).child(favorite(
             app,
