@@ -12,6 +12,12 @@ pub enum TxtOpener {
     External(String),
 }
 
+impl TxtOpener {
+    fn from_program(program: Option<String>) -> Self {
+        program.map_or(Self::BuiltIn, Self::External)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Typography {
     pub family: Option<String>,
@@ -137,6 +143,15 @@ impl ReaderStore {
         Self { db }
     }
 
+    /// Resolve an open request without loading the rule library or book state.
+    pub async fn opener(&self) -> Result<TxtOpener, StoreError> {
+        let program =
+            sqlx::query_scalar("SELECT external_app FROM reader_preferences WHERE id = 1")
+                .fetch_one(&self.db.pool)
+                .await?;
+        Ok(TxtOpener::from_program(program))
+    }
+
     pub async fn load(&self, file: Option<i64>) -> Result<ReaderState, StoreError> {
         // Rule deletion can change all three tables. Read them from one snapshot.
         let mut tx = self.db.pool.begin().await?;
@@ -171,9 +186,7 @@ impl ReaderStore {
         tx.commit().await?;
         let default: Option<String> = prefs.try_get("default_rule")?;
         Ok(ReaderState {
-            opener: prefs
-                .try_get::<Option<String>, _>("external_app")?
-                .map_or(TxtOpener::BuiltIn, TxtOpener::External),
+            opener: TxtOpener::from_program(prefs.try_get("external_app")?),
             typography: Typography {
                 family: prefs.try_get("font_family")?,
                 size: prefs.try_get("size_pt")?,

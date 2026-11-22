@@ -16,6 +16,23 @@ use tokio::sync::watch;
 
 pub use crate::services::download_worker::CopyState;
 
+/// Launch a resolved local path with an explicit program or its system default.
+pub trait ExternalOpener {
+    fn launch(&self, path: &Path, program: Option<&str>) -> Result<(), String>;
+}
+
+pub struct SystemOpener;
+
+impl ExternalOpener for SystemOpener {
+    fn launch(&self, path: &Path, program: Option<&str>) -> Result<(), String> {
+        match program {
+            Some(program) => open::with_detached(path, program),
+            None => open::that_detached(path),
+        }
+        .map_err(|e| format!("Failed to open: {e}"))
+    }
+}
+
 /// Read the current value before waiting for a change. Dropping this subscription
 /// leaves the shared transfer running for later opens and manual downloads.
 pub async fn readable_copy(
@@ -107,6 +124,14 @@ pub struct CacheActionResponse {
 /// opener can still fail (no default app for the extension, or the
 /// configured app isn't installed); that error is surfaced as-is.
 pub async fn cache_open(app: Library, file_id: i64) -> Result<CacheActionResponse, String> {
+    cache_open_with(&app, file_id, &SystemOpener).await
+}
+
+pub(super) async fn cache_open_with(
+    app: &Library,
+    file_id: i64,
+    opener: &impl ExternalOpener,
+) -> Result<CacheActionResponse, String> {
     let _read = app.cache_access.read().await;
     let pool = app.pool.clone();
 
@@ -133,11 +158,7 @@ pub async fn cache_open(app: Library, file_id: i64) -> Result<CacheActionRespons
 
     let configured_app = extract_open_app(view_config.as_deref());
 
-    match configured_app {
-        Some(program) => open::with_detached(target, program),
-        None => open::that_detached(target),
-    }
-    .map_err(|e| format!("Failed to open: {e}"))?;
+    opener.launch(&target, configured_app.as_deref())?;
 
     Ok(CacheActionResponse { success: true })
 }

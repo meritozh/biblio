@@ -8,6 +8,7 @@ pub mod metadata;
 pub mod validation;
 pub mod author;
 pub mod cache;
+pub mod text_open;
 pub mod cover;
 pub mod settings;
 pub mod processing;
