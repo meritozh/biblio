@@ -549,7 +549,6 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
         },
     );
     let focused = signal(false);
-    let body = element_ref();
     effect(move || {
         if focused.get() {
             for (key, dir, screen) in [
@@ -604,6 +603,11 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
     )
     .keys(move || layout.with(|l| l.rows.iter().map(|r| r.start().restart).collect::<Vec<_>>()))
     .element_ref(&vp.list)
+    // AppKit reserves Space for activating a focused pressable control.
+    // Put keyboard focus on the reading list when the body is clicked.
+    .focusable(true)
+    .on_focus(move || focused.set(true))
+    .on_blur(move || focused.set(false))
     .test_id("reader-viewport")
     .flex_1()
     .min_h_0()
@@ -656,7 +660,7 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
     });
     spawn(async move {
         next_frame().await;
-        body.focus();
+        vp.list.focus();
     });
     view()
         .flex_1()
@@ -664,11 +668,8 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
         .mx(inset)
         .overflow_hidden()
         .label("Book text")
-        .element_ref(&body)
-        .focusable(true)
-        .on_press(move || body.focus())
-        .on_focus(move || focused.set(true))
-        .on_blur(move || focused.set(false))
+        .focusable(false)
+        .on_press(move || vp.list.focus())
         .on_layout(move |b: &Bounds<Points>| width.set(b.size.width.0))
         .child(list)
         .child(probe)

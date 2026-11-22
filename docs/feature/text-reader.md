@@ -2,7 +2,7 @@
 
 读者可以在 Biblio 书库中单击一本 TXT 小说，在当前窗口从上次读到的段落继续阅读。
 
-Status: decided
+Status: shipped
 
 ## Behavior
 

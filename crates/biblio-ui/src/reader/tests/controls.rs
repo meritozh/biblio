@@ -303,6 +303,15 @@ fn encoding_preview_cancel_and_commit_preserve_the_source() -> Result<(), String
 
 #[test]
 fn later_preview_can_finish_before_a_cancelled_outline() -> Result<(), String> {
+    reverse_previews(true)
+}
+
+#[test]
+fn late_successful_preview_cannot_replace_the_selected_outline() -> Result<(), String> {
+    reverse_previews(false)
+}
+
+fn reverse_previews(fail_first: bool) -> Result<(), String> {
     let books = Books::new(&[("Book", "Chapter 1\nA\n1\na\n2\nb\n【Title】\nlast")]);
     let (started, rx) = mpsc::channel();
     let (release, gate) = mpsc::channel();
@@ -311,15 +320,17 @@ fn later_preview_can_finish_before_a_cancelled_outline() -> Result<(), String> {
     let (mut w, _) = books.window(move || {
         let (started, gate, done) = (started.clone(), gate.clone(), done.clone());
         provide_context(Outliner(Arc::new(move |book, draft, stop| {
+            let rule = ChapterRule::compile(draft).map_err(|e| e.to_string())?;
+            let contents = rules::outline(book, &rule, stop).map_err(|e| e.to_string())?;
             if draft.name == "纯数字" {
                 started.send(()).unwrap();
                 let _ = gate.lock().unwrap().recv_timeout(WAIT * 2);
                 done.send(stop.is_cancelled()).ok();
-                Err("stale preview error".into())
-            } else {
-                let rule = ChapterRule::compile(draft).map_err(|e| e.to_string())?;
-                rules::outline(book, &rule, stop).map_err(|e| e.to_string())
+                if fail_first {
+                    return Err("stale preview error".into());
+                }
             }
+            Ok(contents)
         })));
     });
     open(&mut w, "Book")?;

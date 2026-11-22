@@ -22,7 +22,6 @@ use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 use std::{
     fs::File,
-    io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
@@ -409,25 +408,14 @@ fn gated(
 
 #[test]
 fn reads_and_leaves_while_indexer_is_blocked_at_50_mib() -> Result<(), String> {
-    const SIZE: u64 = 50 * 1024 * 1024;
-    const MIDDLE: u64 = 32 * 1024 * 1024;
     let books = Books::new(&[("Long", ""), ("Short", "Chapter 1\nSecond book")]);
     let path = &books.paths[0].1;
-    let mut file = File::create(path).unwrap();
-    // Regular 128-byte paragraphs make both anchors exact source boundaries.
-    let mut block = vec![b'x'; 64 * 1024];
-    for i in (127..block.len()).step_by(128) {
-        block[i] = b'\n';
-    }
-    for _ in 0..SIZE / block.len() as u64 {
-        file.write_all(&block).unwrap();
-    }
-    for (offset, mark) in [(0, "First book begins"), (MIDDLE, "Lower half begins")] {
-        file.seek(SeekFrom::Start(offset)).unwrap();
-        file.write_all(format!("{mark}\n").as_bytes()).unwrap();
-    }
-    drop(file);
-    for (at, mark) in [(0, "First book begins"), (MIDDLE, "Lower half begins")] {
+    sample::write_sample(path).unwrap();
+    assert_eq!(path.metadata().unwrap().len(), sample::SIZE);
+    for (at, mark) in [
+        (0, "First book begins"),
+        (sample::MIDDLE, "Lower half begins"),
+    ] {
         if at > 0 {
             let book =
                 TextBook::open(File::open(path).unwrap(), None, &CancellationToken::new()).unwrap();
@@ -449,12 +437,21 @@ fn reads_and_leaves_while_indexer_is_blocked_at_50_mib() -> Result<(), String> {
         w.press("label:Book text")?;
         w.press_key("space")?;
         w.press_key("mod+[")?;
+        w.wait_for("label:Short")?;
         open(&mut w, "Short")?;
         w.wait_for("Second book")?;
         release.send(()).unwrap();
         assert!(ended.recv_timeout(WAIT).unwrap(), "old scanner cancelled");
         w.wait_for("1 chapter")?;
+        w.press("label:Contents")?;
+        w.wait_for("label:Chapter 1 · 10")?;
         assert!(!w.shows("abandoned directory"));
+        drop(w);
+        let reached = books.saved().paragraph;
+        assert!(
+            reached > at && reached < at + 8192,
+            "screen move from {at} to {reached}"
+        );
     }
     Ok(())
 }
@@ -546,3 +543,4 @@ fn reopening_in_the_same_window_waits_for_the_final_position() -> Result<(), Str
     Ok(())
 }
 mod controls;
+mod sample;
