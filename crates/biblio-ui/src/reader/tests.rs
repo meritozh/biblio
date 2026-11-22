@@ -634,3 +634,35 @@ fn reopening_in_the_same_window_waits_for_the_final_position() -> Result<(), Str
 }
 mod controls;
 mod sample;
+
+#[test]
+fn scrolls_both_ways_after_a_distant_contents_jump() -> Result<(), String> {
+    let mut source = String::new();
+    for chapter in 1..=9 {
+        source.push_str(&format!("第{chapter}章 旅途\n"));
+        for i in 0..1000 {
+            source.push_str(&format!(
+                "段落{chapter}-{i:04}。{}\n",
+                "清晨的雨落在石阶上，他收起书卷，向渡口走去。".repeat(3)
+            ));
+        }
+    }
+    let books = Books::new(&[("Journey", &source)]);
+    let (mut w, _) = books.window(|| {});
+    w.wait_for("id:shelf >> label:Journey")?;
+    w.press("id:shelf >> label:Journey")?;
+    w.wait_for("9 chapters")?;
+    for chapter in [8, 9] {
+        w.press("label:Contents")?;
+        w.press(&format!("label:/^第{chapter}章 旅途 ·/"))?;
+        w.wait_for(&format!("id:reader-viewport >> text:第{chapter}章 旅途"))?;
+        w.scroll("id:reader-viewport", px(1150.))?;
+        w.wait_for(&format!("id:reader-viewport >> text:/段落{chapter}-0025/"))?;
+        w.scroll("id:reader-viewport", px(-1600.))?;
+        w.wait_for(&format!(
+            "id:reader-viewport >> text:/段落{}-0995/",
+            chapter - 1
+        ))?;
+    }
+    Ok(())
+}

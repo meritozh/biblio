@@ -299,6 +299,16 @@ fn highlighted(row: &Passage, s: &str, hit: Option<Hit>) -> Text {
     })
 }
 
+fn target_line_y(byte: usize, lines: &[(usize, f32)]) -> Option<f32> {
+    // The start of a passage is also the top of its list item. A reused
+    // native text layout need not send its line metrics again.
+    if byte == 0 {
+        return Some(0.);
+    }
+    let i = lines.partition_point(|(start, _)| *start <= byte);
+    lines.get(i.saturating_sub(1)).map(|(_, y)| *y)
+}
+
 struct Measurement {
     element: ElementRef,
     // UTF-8 start and native y for each display line.
@@ -393,9 +403,8 @@ impl Viewport {
         let off = row.offset(point);
         let line_y = self.measured.with(|m| {
             let map = m.borrow();
-            let lines = &map.get(&row.start().restart)?.lines;
-            let i = lines.partition_point(|(byte, _)| *byte <= off);
-            lines.get(i.saturating_sub(1)).map(|(_, y)| *y)
+            let lines = map.get(&row.start().restart).map(|m| m.lines.as_slice());
+            target_line_y(off, lines.unwrap_or_default())
         });
         self.list
             .scroll_to_index(i as u32, Percentage(0.), px(-line_y.unwrap_or(0.)), false);
@@ -719,4 +728,16 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
         .child(list)
         .child(probe)
         .into_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::target_line_y;
+
+    #[test]
+    fn chapter_jump_settles_without_a_new_text_layout_event() {
+        assert_eq!(target_line_y(0, &[]), Some(0.));
+        assert_eq!(target_line_y(21, &[]), None);
+        assert_eq!(target_line_y(21, &[(0, 0.), (18, 29.)]), Some(29.));
+    }
 }
