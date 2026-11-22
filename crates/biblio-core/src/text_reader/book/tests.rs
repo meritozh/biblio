@@ -368,7 +368,34 @@ fn empty_and_cancelled_reads() {
 }
 
 #[test]
-fn long_whitespace_is_projected_in_bounded_requests_and_indentation_survives() {
+fn refined_prefixes_keep_search_and_resume_in_source_coordinates() {
+    let source = "甲\r\n　\t \u{a0}乙🌿  丙\n　\n\t\n丁";
+    let bytes: Vec<u8> = source.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let (_, book, stop) = fixture(&bytes, Some(Encoding::Utf16Le));
+    let view = book.window(ReadFrom::Resume(None), true, &stop).unwrap();
+    assert_eq!(view.rows.len(), 4);
+    assert_eq!(view.rows[0].body_start, Some(0));
+    let row = &view.rows[1];
+    let body = row.body_start.unwrap();
+    assert_eq!(&row.text[body..], "乙🌿  丙");
+    assert!(view.rows[2].text.is_empty());
+    assert_eq!(view.rows[2].body_start, None);
+    let hit = book
+        .find("乙🌿", &TextPoint::default(), Direction::Next, &stop)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.point_at(body), Some(hit.start));
+    assert_eq!(row.offset_of(hit.end), Some(body + "乙🌿".len()));
+    let resumed = book
+        .window(ReadFrom::Around(hit.start), true, &stop)
+        .unwrap();
+    assert_eq!(resumed.rows[0].body_start, Some(body));
+    let original = book.window(ReadFrom::Resume(None), false, &stop).unwrap();
+    assert_eq!(raw(&original), source);
+}
+
+#[test]
+fn long_indentation_and_blank_runs_are_projected_in_bounded_requests() {
     let spaces = " ".repeat(WINDOW as usize * 3);
     let text = format!("title\n{spaces}whole line\r\n{spaces}\n\t\nend");
     let (_, book, stop) = fixture(text.as_bytes(), None);
@@ -383,11 +410,11 @@ fn long_whitespace_is_projected_in_bounded_requests_and_indentation_survives() {
         assert!(requests < 40);
         for row in &page.rows {
             blank_rows += usize::from(row.text.is_empty());
-            display.push_str(&row.text);
+            display.push_str(&row.text[row.body_start.unwrap_or(0)..]);
         }
     }
     assert_eq!(blank_rows, 1);
-    assert_eq!(display, format!("{spaces}whole lineend"));
+    assert_eq!(display, "whole lineend");
 }
 
 #[test]

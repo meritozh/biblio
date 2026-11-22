@@ -66,11 +66,11 @@ fn settings_and_reader_share_type_and_reset_only_typography() -> Result<(), Stri
     click(&mut w, "Increase font size")?;
     click(&mut w, "Increase line height")?;
     click(&mut w, "Increase letter spacing")?;
-    click(&mut w, "Collapse blank lines")?;
+    click(&mut w, "Refine paragraphs")?;
     click(&mut w, "All files")?;
     open(&mut w, "Book")?;
     w.wait_for("  Line with indent")?;
-    let style = w.screen().span_style("text:Start")?;
+    let style = w.screen().span_style("text:/Start$/")?;
     assert_eq!(style.font_size, px(19.));
     assert_eq!(style.line_height, px(19. * 1.7));
     assert_eq!(style.letter_spacing, px(0.25));
@@ -103,11 +103,11 @@ fn settings_and_reader_share_type_and_reset_only_typography() -> Result<(), Stri
     })?;
     assert_eq!(
         w.screen()
-            .accessibility_state("label:Collapse blank lines")?
+            .accessibility_state("label:Refine paragraphs")?
             .checked,
         Some(nsh_core::Checked::False)
     );
-    click(&mut w, "Collapse blank lines")?;
+    click(&mut w, "Refine paragraphs")?;
     w.wait_for("Marker 200")?;
     drop(w);
     writes.drain()?;
@@ -287,7 +287,7 @@ fn encoding_preview_cancel_and_commit_preserve_the_source() -> Result<(), String
     click(&mut w, "UTF-16 BE")?;
     w.wait_for("text:/新正文/")?;
     click(&mut w, "Confirm encoding")?;
-    w.wait_for("id:reader-viewport >> text:新正文")?;
+    w.wait_for("id:reader-viewport >> label:新正文")?;
     w.wait_for("1 chapter")?;
     release.send(()).unwrap();
     assert!(ended.recv_timeout(WAIT).unwrap());
@@ -354,6 +354,53 @@ fn reverse_previews(fail_first: bool) -> Result<(), String> {
 }
 
 #[test]
+fn paragraph_refinement_uses_one_two_em_indent_for_each_body_paragraph() -> Result<(), String> {
+    let wrapped = "行内空格  和换行后的文字".repeat(20);
+    let source = format!("第一章 山行\n无缩进\n\t　    有缩进\n{wrapped}");
+    let books = Books::new(&[("山行", &source)]);
+    let (mut w, _) = books.window(|| {});
+    let layouts = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let seen = layouts.clone();
+    w.observe(move |_, batch| {
+        for item in &batch.items {
+            if let nsh_core::MountItem::Text { text, .. } = item {
+                let indents: Vec<_> = text
+                    .attachments
+                    .iter()
+                    .map(|a| (a.index, a.width))
+                    .collect();
+                seen.lock().unwrap().insert(text.text.to_string(), indents);
+            }
+        }
+    });
+    open(&mut w, "山行")?;
+    w.wait_for("1 chapter")?;
+    let paragraphs = ["无缩进", "有缩进", &wrapped];
+    let has_width = |width| {
+        let seen = layouts.lock().unwrap();
+        paragraphs.iter().all(|body| {
+            let text = format!("{}{body}", nsh_core::ATTACHMENT_CHAR);
+            seen.get(&text)
+                .is_some_and(|items| items == &[(0, px(width))])
+        })
+    };
+    w.wait_until("one two-em spacer at each paragraph start", WAIT, |_| {
+        has_width(36.)
+    })?;
+    assert_eq!(layouts.lock().unwrap().get("第一章 山行"), Some(&vec![]));
+    click(&mut w, "Reading settings")?;
+    click(&mut w, "Increase font size")?;
+    w.wait_until("indent scales with the reader font", WAIT, |_| {
+        has_width(38.)
+    })?;
+    click(&mut w, "Refine paragraphs")?;
+    w.wait_until("original leading whitespace restored", WAIT, |s| {
+        s.texts().contains(&"\t　    有缩进") && s.texts().contains(&"无缩进")
+    })?;
+    Ok(())
+}
+
+#[test]
 fn a_missing_family_falls_back_and_blank_changes_reproject_the_visible_text() -> Result<(), String>
 {
     let books = Books::new(&[("Book", "Start\n\n \n\t\n  Indented")]);
@@ -369,23 +416,28 @@ fn a_missing_family_falls_back_and_blank_changes_reproject_the_visible_text() ->
     let (mut w, _) =
         books.window(|| provide_context(FontFamilies(vec!["Available".into()].into())));
     open(&mut w, "Book")?;
-    w.wait_for("  Indented")?;
-    assert!(w.screen().span_style("text:Start")?.font_family.is_none());
+    w.wait_for("label:Indented")?;
+    assert!(
+        w.screen()
+            .span_style("text:/Start$/")?
+            .font_family
+            .is_none()
+    );
     assert!(!w.screen().texts().contains(&"\t"));
     click(&mut w, "Reading settings")?;
     w.wait_for("System font")?;
-    click(&mut w, "Collapse blank lines")?;
+    click(&mut w, "Refine paragraphs")?;
     w.wait_until("whitespace-only lines restored", WAIT, |s| {
         s.texts().contains(&"\t")
     })?;
-    click(&mut w, "Collapse blank lines")?;
+    click(&mut w, "Refine paragraphs")?;
     w.wait_until("extra blank lines collapsed", WAIT, |s| {
-        !s.texts().contains(&"\t") && s.texts().contains(&"  Indented")
+        !s.texts().contains(&"\t") && s.matches("label:Indented") == Ok(true)
     })?;
     click(&mut w, "Font family")?;
     w.press("text:Available")?;
     w.wait_until("replacement font applied", WAIT, |s| {
-        s.span_style("text:Start").is_ok_and(|s| {
+        s.span_style("text:/Start$/").is_ok_and(|s| {
             s.font_family
                 .is_some_and(|f| f.name().as_ref() == "Available")
         })

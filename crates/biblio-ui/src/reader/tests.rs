@@ -295,7 +295,7 @@ fn finds_literal_across_windows_and_reveals_each_hit() -> Result<(), String> {
                 .zip(["needle", "bridge"])
                 .all(|(line, part)| {
                     screen
-                        .span_style(&format!("text:{line} >> text:/{part}/"))
+                        .span_style(&format!("label:{line} >> text:/{part}/"))
                         .is_ok_and(|s| s.background.is_some())
                 })
         })?;
@@ -344,7 +344,7 @@ fn reader_panels_adapt_without_losing_the_book_or_its_heading_styles() -> Result
     w.wait_for("1 chapter")?;
     w.wait_until("outline styles the chapter in the body", WAIT, |s| {
         let title = s.span_style("id:reader-viewport >> text:Chapter 1");
-        let body = s.span_style("id:reader-viewport >> text:Introduction");
+        let body = s.span_style("id:reader-viewport >> text:/Introduction$/");
         matches!((title, body), (Ok(t), Ok(b)) if t.font_size > b.font_size && t.font_weight > b.font_weight)
     })?;
     w.press("id:reader-toolbar >> label:Contents")?;
@@ -357,7 +357,7 @@ fn reader_panels_adapt_without_losing_the_book_or_its_heading_styles() -> Result
     w.press("label:Book encoding")?;
     w.wait_for("label:Confirm encoding")?;
     w.press("label:Cancel encoding")?;
-    w.wait_for("id:reader-viewport >> text:On the platform.")?;
+    w.wait_for("id:reader-viewport >> label:On the platform.")?;
     w.press("id:reader-toolbar >> label:Back to library")?;
     w.wait_for("id:shelf >> label:Night Train")
 }
@@ -377,7 +377,7 @@ fn reader_actions_and_theme_stay_within_scope() -> Result<(), String> {
     w.press("label:Chapter 2 · 6")?;
     w.wait_for("Ending")?;
     assert!(!w.shows("Bookmark") && !w.shows("Reader theme"));
-    let style = w.screen().span_style("text:Ending")?;
+    let style = w.screen().span_style("text:/Ending$/")?;
     assert_eq!(style.font_size, px(18.));
     assert_eq!(style.line_height, px(18. * 1.6));
     w.set_environment("switch to dark appearance", |e| {
@@ -385,7 +385,7 @@ fn reader_actions_and_theme_stay_within_scope() -> Result<(), String> {
         e.color_scheme = nsh_core::platform::ColorScheme::Dark
     })?;
     w.wait_until("book text follows the dark appearance", WAIT, |s| {
-        s.span_style("text:Ending")
+        s.span_style("text:/Ending$/")
             .is_ok_and(|dark| dark.color != style.color)
     })?;
     drop(w);
@@ -611,7 +611,7 @@ fn reopening_in_the_same_window_waits_for_the_final_position() -> Result<(), Str
     w.wait_for("label:Find text")?;
     w.type_text("label:Find text", "Ordered passage 350")?;
     w.wait_until("jump to passage 350", WAIT, |s| {
-        s.span_style("id:reader-viewport >> text:Ordered passage 350")
+        s.span_style("id:reader-viewport >> text:/Ordered passage 350$/")
             .is_ok_and(|style| style.background.is_some())
     })?;
     w.press("label:Book text")?;
@@ -623,7 +623,8 @@ fn reopening_in_the_same_window_waits_for_the_final_position() -> Result<(), Str
     w.wait_for("id:reader-viewport")?;
     w.wait_until("the last position, past the opening page", WAIT, |s| {
         s.texts().iter().any(|t| {
-            t.strip_prefix("Ordered passage ")
+            t.trim_start_matches(nsh_core::ATTACHMENT_CHAR)
+                .strip_prefix("Ordered passage ")
                 .and_then(|n| n.parse::<usize>().ok())
                 .is_some_and(|n| n >= 350)
         })

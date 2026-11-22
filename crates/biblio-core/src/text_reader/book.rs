@@ -593,7 +593,7 @@ impl TextBook {
             raw.pop_front()
         } {
             if collapse_blanks {
-                let Some(blank) = blanks.blank(self, &row, &mut budget, stop)? else {
+                let Some(prefix) = blanks.prefix(self, &row, &mut budget, stop)? else {
                     if backward {
                         first = row.end;
                     } else {
@@ -603,6 +603,7 @@ impl TextBook {
                 };
                 // At the near edge the adjacent window may already display
                 // this blank run. Only one of the two windows claims it.
+                let blank = matches!(prefix, blanks::Prefix::Blank);
                 near_edge.get_or_insert(blank && !previous_blank);
                 if blank {
                     row.collapse();
@@ -614,6 +615,18 @@ impl TextBook {
                     }
                 }
                 previous_blank = blank;
+                if let blanks::Prefix::Body(at) = prefix {
+                    if row.end.restart <= at {
+                        continue;
+                    }
+                    if row.start.restart <= at {
+                        let point = ReadingPosition {
+                            paragraph: row.start.paragraph,
+                            restart: at,
+                        };
+                        row.body_start = row.offset_of(point.into());
+                    }
+                }
             }
             rows.push(row);
         }

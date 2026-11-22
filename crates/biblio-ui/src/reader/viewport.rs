@@ -1,10 +1,11 @@
 //! Source-keyed native paragraphs over a bounded set of adjacent book windows.
+mod text;
+
 use super::session::ReaderSession;
 use crate::ui::*;
 use biblio_core::text_reader::{
     book::{Cursor as BookCursor, Hit, ReadingPosition, TextPoint, TextRow, Window},
     rules::{ContentKind, Contents},
-    store::Typography,
 };
 use nsh_core::prelude::*;
 use std::{
@@ -93,7 +94,7 @@ impl Pages {
         let mut out = Vec::new();
         let mut current: Option<Paragraph> = None;
         for row in self.0.iter().flat_map(|b| &b.rows) {
-            if !row.continues_from_previous()
+            if (!row.continues_from_previous() || row.body_start.is_some())
                 && let Some(previous) = current.take()
             {
                 out.push(Rc::new(previous));
@@ -116,6 +117,15 @@ struct Paragraph {
 }
 
 impl Paragraph {
+    fn start(&self) -> ReadingPosition {
+        let row = &self.parts[0].1;
+        let mut at = row.start;
+        if row.body_start.is_some() {
+            at.restart = at.paragraph;
+        }
+        at
+    }
+
     fn point(&self, offset: usize) -> TextPoint {
         let i = self
             .parts
@@ -169,14 +179,32 @@ struct Passage {
 // or a new measured break may move an unchanged passage to a different index.
 impl PartialEq for Passage {
     fn eq(&self, other: &Self) -> bool {
-        self.start() == other.start() && self.range.len() == other.range.len()
+        self.break_key() == other.break_key() && self.range.len() == other.range.len()
     }
 }
 
 impl Passage {
+    fn is_refined_start(&self) -> bool {
+        self.p.parts[0].1.body_start == Some(self.range.start)
+    }
+
+    fn break_key(&self) -> (u64, Option<u64>) {
+        (
+            self.start().restart,
+            self.is_refined_start()
+                .then(|| self.p.point(self.range.start).restart.restart),
+        )
+    }
+
+    fn indent_hit(&self, hit: Hit) -> bool {
+        self.is_refined_start()
+            && hit.start.restart.restart < self.p.point(self.range.start).restart.restart
+            && hit.end.restart.restart > self.start().restart
+    }
+
     fn start(&self) -> ReadingPosition {
-        if self.range.start == 0 {
-            self.p.parts[0].1.start
+        if self.range.start == self.p.parts[0].1.body_start.unwrap_or(0) {
+            self.p.start()
         } else {
             self.p.point(self.range.start).restart
         }
@@ -189,7 +217,7 @@ impl Passage {
 const COLUMN_WIDTH: f32 = 720.;
 const PAGE_MARGIN: f32 = 20.;
 const SEGMENT: usize = 32 * 1024;
-type Breaks = HashMap<u64, usize>;
+type Breaks = HashMap<(u64, Option<u64>), usize>;
 struct Layout {
     rows: Vec<Passage>,
     probe: Option<Passage>,
@@ -200,21 +228,23 @@ impl Layout {
     fn new(paragraphs: &[Rc<Paragraph>], breaks: &mut Breaks) -> Self {
         let mut rows = Vec::new();
         let mut probe = None;
-        let first = paragraphs.first().map_or(0, |p| p.parts[0].1.start.restart);
+        let first = paragraphs.first().map_or(0, |p| p.start().restart);
         let end = paragraphs
             .last()
             .map_or(0, |p| p.parts.last().unwrap().1.end.restart);
-        breaks.retain(|at, _| (first..end).contains(at));
+        breaks.retain(|(at, _), _| (first..end).contains(at));
         for p in paragraphs {
-            let mut start = 0;
+            let mut start = p.parts[0].1.body_start.unwrap_or(0);
             loop {
-                let limit = p.boundary(start + SEGMENT);
+                let attachment_bytes = usize::from(p.parts[0].1.body_start == Some(start))
+                    * nsh_core::ATTACHMENT_CHAR.len_utf8();
+                let limit = p.boundary(start + SEGMENT - attachment_bytes);
                 let mut row = Passage {
                     p: p.clone(),
                     range: start..limit,
                 };
                 if limit < p.len {
-                    if let Some(n) = breaks.get(&row.start().restart) {
+                    if let Some(n) = breaks.get(&row.break_key()) {
                         row.range.end = start + *n;
                     } else {
                         probe.get_or_insert_with(|| row.clone());
@@ -255,22 +285,6 @@ fn heading(row: &Passage, contents: Option<&Contents>) -> bool {
         .is_ok_and(|i| contents.entries[i].kind != ContentKind::FrontMatter)
 }
 
-fn face(content: Text, ty: &Typography, heading: bool) -> Text {
-    let size = if heading { ty.size * 1.22 } else { ty.size };
-    let mut el = content
-        .text_color(ink)
-        .text_size(px(size))
-        .line_height(px(size * ty.leading))
-        .letter_spacing(px(ty.spacing));
-    if heading {
-        el = el.font_weight(FontWeight::SEMIBOLD);
-    }
-    if let Some(family) = &ty.family {
-        el = el.font_family(family.clone());
-    }
-    el
-}
-
 fn byte_for_utf16(s: &str, units: u32) -> usize {
     let mut n = 0;
     for (i, c) in s.char_indices() {
@@ -280,23 +294,6 @@ fn byte_for_utf16(s: &str, units: u32) -> usize {
         n += c.len_utf16() as u32;
     }
     s.len()
-}
-
-fn highlighted(row: &Passage, s: &str, hit: Option<Hit>) -> Text {
-    if let Some(hit) = hit {
-        let a = row.offset(hit.start);
-        let b = row.offset(hit.end);
-        if a < b {
-            return text(s[..a].to_owned())
-                .child(text(s[a..b].to_owned()).bg(accent).text_color(on_accent))
-                .child(text(s[b..].to_owned()));
-        }
-    }
-    text(if s.is_empty() {
-        " ".to_string()
-    } else {
-        s.to_owned()
-    })
 }
 
 fn target_line_y(byte: usize, lines: &[(usize, f32)]) -> Option<f32> {
@@ -447,17 +444,18 @@ impl Viewport {
         });
         let content = row.p.slice(row.range.clone());
         let content_is_empty = content.is_empty();
-        let body = highlighted(&row, &content, self.session.hit.get_untracked());
-        let first = row.range.start == 0 && !row.p.parts[0].1.continues_from_previous();
+        let indent = row.is_refined_start() && !heading;
+        let body = row.text(&content, &ty, heading, self.session.hit.get_untracked());
+        let first = row.is_refined_start()
+            || (row.range.start == 0 && !row.p.parts[0].1.continues_from_previous());
         let last = row.range.end == row.p.len && !row.p.parts.last().unwrap().1.continues_to_next;
-        let text = face(body, &ty, heading)
-            .element_ref(&el)
-            .min_h(px(ty.size * ty.leading))
-            .on(EventKind::TextLayout, move |payload: &EventPayload| {
+        let text = body.element_ref(&el).min_h(px(ty.size * ty.leading)).on(
+            EventKind::TextLayout,
+            move |payload: &EventPayload| {
                 if let EventPayload::TextLayout(lines) = payload {
                     let mut metrics = Vec::with_capacity(lines.len());
                     let mut chars = content.char_indices().peekable();
-                    let mut units = 0;
+                    let mut units = u32::from(indent);
                     for line in lines {
                         while units < line.start
                             && let Some((_, c)) = chars.next()
@@ -474,7 +472,8 @@ impl Viewport {
                     self.target();
                     self.measure(start);
                 }
-            });
+            },
+        );
         view()
             .items_center()
             .px(px(PAGE_MARGIN))
@@ -543,9 +542,11 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
         SignalEquals::Never,
     );
     let typography = computed(move || session.state.get().typography.clone());
+    let refine = computed(move || session.state.get().collapse_blanks);
     effect(move || {
         width.get();
         typography.get();
+        refine.get();
         session.contents.get();
         breaks.with(|b| b.clear());
         if session.destination.get_untracked().is_none()
@@ -643,7 +644,7 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
                 let hit = session
                     .hit
                     .get()
-                    .filter(|h| row.offset(h.start) < row.offset(h.end));
+                    .filter(|h| row.offset(h.start) < row.offset(h.end) || row.indent_hit(*h));
                 let heading = session.contents.with(|c| heading(&row, c.as_deref()));
                 Some((row, hit, typography.get(), heading))
             });
@@ -685,12 +686,14 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
         let Some((row, w, ty, heading)) = next_probe.get() else {
             return view().into_element();
         };
-        let start = row.start().restart;
+        let key = row.break_key();
+        let start = key.0;
         let content = row.p.slice(row.range.clone());
         if w <= 0. {
             return view().into_element();
         }
-        face(text(content.clone()), &ty, heading)
+        let indent = row.is_refined_start() && !heading;
+        row.text(&content, &ty, heading, None)
             .key(format!("measure-{start}"))
             .absolute()
             .top(px(0.))
@@ -703,8 +706,10 @@ pub fn viewport(session: ReaderSession) -> AnyElement {
                     let cut = lines
                         .last()
                         .filter(|l| l.start > 0)
-                        .map_or(content.len(), |l| byte_for_utf16(&content, l.start));
-                    if cut > 0 && breaks.with(|b| b.insert(start, cut) != Some(cut)) {
+                        .map_or(content.len(), |l| {
+                            byte_for_utf16(&content, l.start.saturating_sub(u32::from(indent)))
+                        });
+                    if cut > 0 && breaks.with(|b| b.insert(key, cut) != Some(cut)) {
                         revision.update(|n| *n += 1);
                     }
                 }

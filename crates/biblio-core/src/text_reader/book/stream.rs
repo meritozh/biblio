@@ -34,6 +34,9 @@ pub struct TextRow {
     pub start: ReadingPosition,
     pub end: ReadingPosition,
     pub text: String,
+    /// UTF-8 offset of the paragraph's first visible character in a refined
+    /// window. Only the fragment containing that character has an offset.
+    pub body_start: Option<usize>,
     pub ending: LineEnding,
     pub continues_to_next: bool,
     collapsed: bool,
@@ -189,6 +192,7 @@ impl<'a> Chunks<'a> {
             start: self.at,
             end: self.at,
             text: String::new(),
+            body_start: None,
             ending: LineEnding::None,
             continues_to_next: false,
             collapsed: false,

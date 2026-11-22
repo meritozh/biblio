@@ -340,7 +340,7 @@ impl Controls {
             }))
             .child(
                 tick(
-                    "Collapse blank lines".into(),
+                    "Refine paragraphs".into(),
                     move || self.collapse.get(),
                     move || {
                         let next = !self.collapse.get_untracked();
@@ -348,8 +348,11 @@ impl Controls {
                         self.prefer(Preference::Collapse(next))
                     },
                 )
-                .child(label("Collapse blank lines")),
+                .child(label("Refine paragraphs")),
             )
+            .child(note(
+                "Merge blank lines and indent the first line by two character widths.",
+            ))
             .child(button("Chapter rules", move || manager.set(true)))
             .child(text(move || self.error.get()).text_color(danger))
             .child(modal(
