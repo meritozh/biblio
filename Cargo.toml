@@ -39,6 +39,11 @@ opt-level = 3
 [profile.dev.package.md-5]
 opt-level = 3
 
+# Unoptimized nsh-base generates enough unwind data to push the macOS
+# desktop binary over the 16 MiB compact-unwind offset limit.
+[profile.dev.package.nsh-base]
+opt-level = 1
+
 # Max-performance release build. `opt-level = 3` is already the release default,
 # so the real gains come from cross-crate LTO + a single codegen unit — both
 # matter most for the byte-streaming crypto/hash hot loops. Trade-off: a much
