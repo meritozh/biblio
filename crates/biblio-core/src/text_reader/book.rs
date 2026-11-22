@@ -69,8 +69,47 @@ pub struct Hit {
 pub struct SourceStamp {
     pub version: u8,
     pub len: u64,
+    #[serde(with = "file_time")]
     pub modified: SystemTime,
     pub head_digest: [u8; 16],
+}
+
+// Serde's SystemTime representation only supports timestamps from 1970 onward.
+// Preserve that representation and store older file times as a distance before 1970.
+mod file_time {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(untagged)]
+    enum FileTime {
+        SinceEpoch(SystemTime),
+        BeforeEpoch { before_epoch: Duration },
+    }
+
+    pub(super) fn serialize<S: Serializer>(
+        time: &SystemTime,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match time.duration_since(UNIX_EPOCH) {
+            Ok(_) => FileTime::SinceEpoch(*time),
+            Err(error) => FileTime::BeforeEpoch {
+                before_epoch: error.duration(),
+            },
+        }
+        .serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<SystemTime, D::Error> {
+        match FileTime::deserialize(deserializer)? {
+            FileTime::SinceEpoch(time) => Ok(time),
+            FileTime::BeforeEpoch { before_epoch } => UNIX_EPOCH
+                .checked_sub(before_epoch)
+                .ok_or_else(|| serde::de::Error::custom("file time is out of range")),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

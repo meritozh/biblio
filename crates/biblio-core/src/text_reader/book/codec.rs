@@ -2,8 +2,9 @@ use charset_normalizer_rs::entity::NormalizerSettings;
 use encoding_rs::{BIG5, DecoderResult, GB18030, GBK, UTF_8, UTF_16BE, UTF_16LE};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
 pub enum Encoding {
     Utf8,
     Utf16Le,

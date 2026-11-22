@@ -13,7 +13,8 @@ pub use scan::{
 
 pub type RuleId = String;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sqlx::Type)]
+#[sqlx(rename_all = "lowercase")]
 pub enum PatternMode {
     Template,
     Regex,
