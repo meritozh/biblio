@@ -137,7 +137,40 @@ pub struct TextBook {
 
 pub(super) type TextChunk = TextRow;
 
-fn check_stop(stop: &CancellationToken) -> Result<(), ReadError> {
+/// A complete logical line in the open book, including any original terminator.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LineRange {
+    book: u64,
+    start: ReadingPosition,
+    end: u64,
+}
+
+impl LineRange {
+    pub(super) fn new(book: &TextBook, start: ReadingPosition, end: u64) -> Self {
+        Self {
+            book: book.id,
+            start,
+            end,
+        }
+    }
+
+    pub(super) fn text(
+        &self,
+        book: &TextBook,
+        stop: &CancellationToken,
+    ) -> Result<String, ReadError> {
+        if self.book != book.id {
+            return Err(ReadError::InvalidCursor);
+        }
+        let mut text = String::new();
+        for chunk in Chunks::new(book, self.start, self.end, stop) {
+            text.push_str(&chunk?.text);
+        }
+        Ok(text)
+    }
+}
+
+pub(super) fn check_stop(stop: &CancellationToken) -> Result<(), ReadError> {
     if stop.is_cancelled() {
         Err(ReadError::Cancelled)
     } else {
