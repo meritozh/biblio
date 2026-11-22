@@ -24,8 +24,8 @@ fn settings(w: &mut Headless) -> Result<(), String> {
 }
 
 fn book_rules(w: &mut Headless) -> Result<(), String> {
-    w.press("label:Reading settings")?;
-    w.press("label:Chapter rules")?;
+    click(w, "Reading settings")?;
+    click(w, "Chapter rules")?;
     w.wait_for("label:New rule")
 }
 
