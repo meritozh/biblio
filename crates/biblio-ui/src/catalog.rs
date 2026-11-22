@@ -188,7 +188,13 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
                     let page = ids[start..end].to_vec();
                     let total = ids.len() as i64;
                     async move {
-                        let found = file::listing::file_list_by_ids(db.clone(), page).await?;
+                        // The ID lookup returns a set. Keep the group's order
+                        // whether these rows arrive in chunks or all at once
+                        // when restoring a deep scroll position.
+                        let order: std::collections::HashMap<_, _> =
+                            page.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+                        let mut found = file::listing::file_list_by_ids(db.clone(), page).await?;
+                        found.sort_unstable_by_key(|row| order[&row.id]);
                         Ok((with_fields(db, found).await?, total))
                     }
                 });
@@ -422,9 +428,9 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
                 Some(Err(e)) => view().px(inset).child(label(e.clone())).into_element(),
                 _ => view().into_element(),
             },
-            4 => group_shelf(app, groups, opened, is_grid),
+            4 => group_shelf(app, groups, opened, is_grid, anchor),
             _ if is_grid => file_grid(app, files, selection, anchor),
-            _ => file_table(app, files, selection),
+            _ => file_table(app, files, selection, anchor),
         })
     });
     let shown = move || {
@@ -436,7 +442,7 @@ fn browse(app: App, category: Option<&Category>) -> AnyElement {
         lucky,
         || "Lucky picks".to_owned(),
         720.,
-        move || lucky_picks(app, cat_id, query, chips, lucky),
+        move || lucky_picks(app, cat_id, query, chips, lucky, selection),
     );
     ui::page(
         header,

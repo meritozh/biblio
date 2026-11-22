@@ -92,12 +92,13 @@ pub(crate) fn slip_face(
 }
 
 /// The shelf's slip: pressing it opens the file.
-pub fn card_face(app: App, file: &api::FileListItem) -> AnyElement {
+pub fn card_face(app: App, file: &api::FileListItem, press: impl Fn() + 'static) -> AnyElement {
     let id = file.id;
     nsh_base::button()
         .accessibility_label(file.display_name.clone())
-        .on_press(move || app.page.set(Page::File(id)))
+        .on_press(press)
         .w_full()
+        .aspect_ratio(0.75)
         .rounded(px(RADIUS_SM))
         .transition()
         .duration(tween(INSTANT))

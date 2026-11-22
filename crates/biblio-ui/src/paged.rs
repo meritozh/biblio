@@ -99,24 +99,28 @@ impl<T: Send + 'static> Paged<T> {
                 if !self.owner.is_live() || self.generation.with(|g| *g) != generation {
                     return;
                 }
-                self.loading.set(false);
-                match result {
-                    Ok((items, total)) => {
-                        self.total.set(Some(total));
-                        let fresh = items.into_iter().map(Rc::new);
-                        if replace {
-                            self.rows.set(Rc::new(fresh.collect()));
-                        } else {
-                            self.rows.update(|rows| {
-                                let mut next = Vec::with_capacity(rows.len() + limit as usize);
-                                next.extend(rows.iter().cloned());
-                                next.extend(fresh);
-                                *rows = Rc::new(next);
-                            });
+                // The shelf mounts when the count arrives and can immediately
+                // restore a scroll position into this same batch of rows.
+                batch(|| {
+                    self.loading.set(false);
+                    match result {
+                        Ok((items, total)) => {
+                            self.total.set(Some(total));
+                            let fresh = items.into_iter().map(Rc::new);
+                            if replace {
+                                self.rows.set(Rc::new(fresh.collect()));
+                            } else {
+                                self.rows.update(|rows| {
+                                    let mut next = Vec::with_capacity(rows.len() + limit as usize);
+                                    next.extend(rows.iter().cloned());
+                                    next.extend(fresh);
+                                    *rows = Rc::new(next);
+                                });
+                            }
                         }
+                        Err(e) => self.app.message.set(e),
                     }
-                    Err(e) => self.app.message.set(e),
-                }
+                });
             })
         });
     }

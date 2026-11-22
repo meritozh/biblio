@@ -26,7 +26,7 @@ where
 }
 
 /// A profile under `dir` with a storage folder and the category "Shelf"
-/// holding one text file per name.
+/// holding one file per name (TXT by default).
 fn shelf(dir: &Path, names: Vec<String>) -> PathBuf {
     use biblio_core::commands::{category, file::create_replace::file_create, settings};
     let config = dir.join("config");
@@ -42,8 +42,11 @@ fn shelf(dir: &Path, names: Vec<String>) -> PathBuf {
                 .await?
                 .id;
         for name in names {
-            let source = sources.join(format!("{name}.txt"));
-            std::fs::write(&source, &name).unwrap();
+            let mut source = sources.join(&name);
+            if source.extension().is_none() {
+                source.set_extension("txt");
+            }
+            std::fs::write(&source, format!("Text of {name}")).unwrap();
             let path = source.display().to_string();
             file_create(
                 db.clone(),
@@ -78,6 +81,14 @@ fn window(config: &Path) -> Headless {
     })
     .unwrap()
 }
+
+fn grid_details(app: &mut Headless, card: &str) -> Result<(), String> {
+    app.wait_for(card)?;
+    app.right_click(card)?;
+    app.wait_for("label:View details")?;
+    app.press("label:View details")
+}
+
 #[test]
 fn import_search_favorite_edit_and_reopen() -> Result<(), String> {
     let dir = tempfile::tempdir().unwrap();
@@ -130,7 +141,7 @@ fn import_search_favorite_edit_and_reopen() -> Result<(), String> {
     app.type_text("label:Search library", "Autumn")?;
     app.submit("label:Search library")?;
     app.wait_for("label:Autumn catalogue")?;
-    app.press("label:Autumn catalogue")?;
+    grid_details(&mut app, "label:Autumn catalogue")?;
     app.wait_for("label:Save file")?;
     app.clear("label:Title")?;
     app.type_text("label:Title", "Autumn shelves")?;
@@ -255,7 +266,7 @@ fn file_menu_asks_before_deleting() -> Result<(), String> {
     app.press("label:Import this file")?;
     app.wait_for("Imported")?;
     app.press("id:navigation >> label:Ledgers")?;
-    app.press("label:Winter ledger.txt")?;
+    grid_details(&mut app, "label:Winter ledger.txt")?;
     app.wait_for("label:Save file")?;
     // Cancel keeps the file.
     app.on_dialog(|_| DialogAnswer::Press("Cancel".into()));
@@ -319,6 +330,15 @@ fn scroll_until(app: &mut Headless, scroller: &str, target: &str) -> Result<(), 
     app.wait_for(target)
 }
 
+/// True if the scroller moved. Reaching an edge is the expected alternative.
+fn scroll_forward(app: &mut Headless, scroller: &str, points: f32) -> Result<bool, String> {
+    match app.scroll(scroller, px(points)) {
+        Ok(()) => Ok(true),
+        Err(e) if e.contains("cannot scroll by") => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 #[test]
 fn the_shelf_loads_more_files_as_it_scrolls() -> Result<(), String> {
     let dir = tempfile::tempdir().unwrap();
@@ -330,16 +350,136 @@ fn the_shelf_loads_more_files_as_it_scrolls() -> Result<(), String> {
     // The first chunk holds 60 files; the rest come as the grid nears its
     // end.
     scroll_until(&mut app, "id:shelf", "label:File 75")?;
+    // Headless matches pre-rendered cells as well. Move to the end so the
+    // last cover is in the actual viewport before opening it.
+    scroll_forward(&mut app, "id:shelf", 1200.)?;
+    app.press("label:File 75")?;
+    app.wait_for("Text of File 75")?;
+    app.press("label:Back to library")?;
+    app.wait_for("id:shelf >> label:File 75")?;
     // The list is a table that loads the same way.
     app.press("label:List")?;
     app.wait_for("id:table:Files")?;
     app.wait_for("local · available")?;
     scroll_until(&mut app, "id:table:Files", "File 75")?;
-    // A row opens its file.
+    scroll_forward(&mut app, "id:table:Files", 1200.)?;
+    // Return to the same loaded table row without scrolling again.
     app.press("File 75")?;
+    app.wait_for("Text of File 75")?;
+    app.press_key("mod+[")?;
+    app.wait_for("id:table:Files >> File 75")?;
+    // The saved first row may have been partly clipped. The end must still
+    // be within one 44-point row of the restored offset.
+    scroll_forward(&mut app, "id:table:Files", 44.)?;
+    assert!(!scroll_forward(&mut app, "id:table:Files", 1.)?);
+    Ok(())
+}
+
+#[test]
+fn opens_from_grid_table_group_and_detail_and_restores_shelf() -> Result<(), String> {
+    let dir = tempfile::tempdir().unwrap();
+    let mut names: Vec<_> = (1..=75).map(|n| format!("Saga {n:02}")).collect();
+    names[2] = "Saga 03 Lantern".into();
+    names.reverse(); // Database IDs run in the opposite order to this group.
+    names.push("Map.pdf".into());
+    let config = shelf(dir.path(), names);
+    let mut app = window(&config);
+    app.wait_for("label:Map.pdf")?;
+    app.press("label:Map.pdf")?;
     app.wait_for("label:Save file")?;
+    assert_eq!(app.screen().input_text("label:Title")?, Some("Map.pdf"));
     app.press("label:Back to library")?;
-    app.wait_for("75 files")
+
+    app.press("id:navigation >> label:Shelf")?;
+    app.wait_for("label:View")?;
+    app.press("label:View")?;
+    app.press("label:By title")?;
+    app.wait_for("label:Saga")?;
+    app.press("label:List")?;
+    app.wait_for("id:table:Groups >> Saga")?;
+    app.press("id:table:Groups >> Saga")?;
+    let last = "id:table:Files >> Saga 75";
+    app.wait_for("id:table:Files >> Saga 01")?;
+    scroll_until(&mut app, "id:table:Files", last)?;
+    scroll_forward(&mut app, "id:table:Files", 1200.)?;
+    app.press(last)?;
+    app.wait_for("Text of Saga 75")?;
+    app.press("label:Back to library")?;
+    app.wait_for("label:All groups")?;
+    app.wait_for(last)?;
+
+    // Right-click a different row after a primary press opened the book.
+    let previous = "id:table:Files >> Saga 74";
+    app.right_click(previous)?;
+    app.choose_menu_item("View details")?;
+    app.wait_for("label:Open file")?;
+    assert_eq!(app.screen().input_text("label:Title")?, Some("Saga 74"));
+    app.press("label:Open file")?;
+    app.wait_for("Text of Saga 74")?;
+    app.press_key("mod+[")?;
+    app.wait_for(previous)?;
+
+    app.type_text("label:Search library", "Lantern")?;
+    app.submit("label:Search library")?;
+    app.wait_for("id:table:Files >> Saga 03 Lantern")?;
+    app.wait_for_gone("label:All groups", WAIT)?;
+    app.press("label:Lucky")?;
+    let pick = "label:Lucky picks >> label:Saga 03 Lantern";
+    app.wait_for(pick)?;
+    app.press(pick)?;
+    app.wait_for("Text of Saga 03 Lantern")?;
+    app.press_key("mod+[")?;
+    app.wait_for("id:table:Files >> Saga 03 Lantern")?;
+    assert_eq!(
+        app.screen().input_text("label:Search library")?,
+        Some("Lantern")
+    );
+    app.press("label:Clear")?;
+    app.wait_for("id:table:Files >> Saga 01")?;
+    app.wait_for("label:All groups")?;
+    app.press("id:navigation >> label:All files")?;
+    app.wait_for_gone("label:All groups", WAIT)?;
+    app.wait_for("id:table:Files >> Map.pdf")?;
+    app.press("id:table:Files >> Map.pdf")?;
+    app.wait_for("label:Save file")
+}
+
+#[test]
+fn selecting_and_favoriting_never_open_a_book() -> Result<(), String> {
+    let dir = tempfile::tempdir().unwrap();
+    let config = shelf(dir.path(), vec!["Alpha".into(), "Beta".into()]);
+    let mut app = window(&config);
+    app.wait_for("label:Alpha")?;
+    app.press("label:Select files")?;
+    app.press("label:Alpha")?;
+    app.wait_for("1 selected")?;
+    app.press("label:Select Alpha")?;
+    app.wait_for("0 selected")?;
+    app.press("label:Favorite >> nth=0")?;
+    app.wait_for("label:Unfavorite")?;
+    app.wait_for("0 selected")?;
+    app.press("label:List")?;
+    app.wait_for("id:table:Files >> Beta")?;
+    app.press("id:table:Files >> Alpha")?;
+    app.wait_for("1 selected")?;
+    app.press("id:table:Files >> label:Unfavorite")?;
+    app.wait_for_gone("label:Unfavorite", WAIT)?;
+    app.wait_for("1 selected")?;
+    app.press("label:Lucky")?;
+    app.wait_for("label:Lucky picks >> label:Beta")?;
+    app.press("label:Lucky picks >> label:Beta")?;
+    app.wait_for("2 selected")?;
+
+    // The row named by the hit owns its menu even with other rows selected.
+    app.right_click("id:table:Files >> Title")?;
+    assert!(app.menu().is_none());
+    app.right_click("id:table:Files")?;
+    assert!(app.menu().is_none());
+    app.right_click("id:table:Files >> Beta")?;
+    app.choose_menu_item("View details")?;
+    app.wait_for("label:Save file")?;
+    assert_eq!(app.screen().input_text("label:Title")?, Some("Beta"));
+    Ok(())
 }
 
 #[test]

@@ -1,6 +1,18 @@
 //! The shelf's views: the grid of slips and the table of files, which load
 //! more as they scroll; the groups of a grouped view; the lucky picks.
 use super::*;
+use crate::reader::navigation;
+use biblio_core::commands::text_open::Entry;
+use nsh_base::{DataTable, DataTableApi, DataTableContextMenu, DataTableElement, DataTableRange};
+use nsh_core::element::desktop::{MenuItem, popup_menu_at};
+
+fn press_file(app: App, id: i64, selection: Selection) {
+    if selection.active.get_untracked() {
+        selection.toggle(id);
+    } else {
+        navigation::activate(app, id, Entry::Shelf);
+    }
+}
 
 /// How many slips fit side by side in `width`.
 fn columns_for(width: f32) -> u32 {
@@ -14,9 +26,6 @@ pub(super) fn file_grid(
     selection: Selection,
     anchor: Stored<usize>,
 ) -> AnyElement {
-    let width = signal(0f32);
-    let columns = computed(move || columns_for(width.get() - inset().0 * 2.));
-    let start = anchor.with(|a| *a).min(files.len().saturating_sub(1));
     let list = virtual_list(
         move || files.len(),
         move |at: Position| {
@@ -34,27 +43,49 @@ pub(super) fn file_grid(
             .rows
             .with(|r| r.iter().map(|s| s.file.id).collect::<Vec<_>>())
     })
-    .columns(move || columns.get())
-    .column_gap(px(GRID_GAP_X))
-    .row_gap(px(GRID_GAP_Y))
-    .content_padding_x(inset())
-    .content_padding_top(px(4.))
-    .content_padding_bottom(px(32.))
-    // No size estimate: with columns, an estimate far from the slips'
-    // height left a cell unmade in the first window (nsh 0.4).
-    .initial_scroll_index(start)
     .on_load_more(move || files.more())
     .test_id("shelf")
-    .on_viewable_items_change(move |v: &ViewableItems| {
-        anchor.with(|a| *a = *v.indices().start());
-    })
-    .footer(loading_more(files))
-    .flex_1()
-    .min_h_0();
+    .footer(loading_more(files));
+    slip_grid(list, files.len(), anchor)
+}
+
+/// Apply the saved index after layout gives the grid its real column count.
+fn slip_grid(list: VirtualList, count: usize, anchor: Stored<usize>) -> AnyElement {
+    let width = signal(0f32);
+    let start = anchor.get().min(count.saturating_sub(1));
+    let pending = stored(start > 0);
+    let handle = element_ref();
+    let list = list
+        .element_ref(&handle)
+        .columns(move || columns_for(width.get() - inset().0 * 2.))
+        .column_gap(px(GRID_GAP_X))
+        .row_gap(px(GRID_GAP_Y))
+        .content_padding_x(inset())
+        .content_padding_top(px(4.))
+        .content_padding_bottom(px(32.))
+        .on_viewable_items_change(move |v: &ViewableItems| {
+            if let Some((first, _)) = v.viewable
+                && !pending.get()
+            {
+                anchor.replace(first);
+            }
+        })
+        .flex_1()
+        .min_h_0();
     view()
         .flex_1()
         .min_h_0()
-        .on_layout(move |b: &Bounds<Points>| width.set(b.size.width.0))
+        .on_layout(move |b: &Bounds<Points>| {
+            let first_layout = width.get_untracked() == 0. && b.size.width.0 > 0.;
+            width.set(b.size.width.0);
+            if first_layout && pending.get() {
+                spawn(async move {
+                    next_frame().await;
+                    pending.replace(false);
+                    handle.scroll_to_index(start as u32, Percentage(0.), px(0.), false);
+                });
+            }
+        })
         .child(list)
         .into_element()
 }
@@ -82,8 +113,40 @@ impl<T> PartialEq for Same<T> {
     }
 }
 
+/// The first nonempty range arrives once the table has data and a viewport.
+/// Restore there before recording subsequent scrolls in the shared shelf state.
+fn remember_rows(
+    table: DataTableElement,
+    handle: ComponentRef<DataTable>,
+    anchor: Stored<usize>,
+    count: impl Fn() -> usize + 'static,
+) -> DataTableElement {
+    let restore = stored(anchor.get() > 0);
+    table
+        .component_ref(&handle)
+        .on_visible_rows_change(move |range: &DataTableRange| {
+            if range.end <= range.start {
+                return;
+            }
+            if restore.replace(false)
+                && let Some(api) = handle.api::<DataTableApi>()
+            {
+                let row = anchor.get().min(count().saturating_sub(1));
+                api.scroll_to_row(row as u32, Some(false));
+                anchor.replace(api.visible_rows().start as usize);
+            } else {
+                anchor.replace(range.start as usize);
+            }
+        })
+}
+
 /// The shelf as a table: one row per file, loading more as it scrolls.
-pub(super) fn file_table(app: App, files: Paged<Shelved>, selection: Selection) -> AnyElement {
+pub(super) fn file_table(
+    app: App,
+    files: Paged<Shelved>,
+    selection: Selection,
+    anchor: Stored<usize>,
+) -> AnyElement {
     let cols = vec![
         Col::custom("title", "Title", None),
         Col::muted("authors", "Authors", Some(200.)),
@@ -163,6 +226,7 @@ pub(super) fn file_table(app: App, files: Paged<Shelved>, selection: Selection) 
         )
         .into_element()
     };
+    let handle = component_ref::<DataTable>();
     view()
         .flex_1()
         .min_h_0()
@@ -175,7 +239,8 @@ pub(super) fn file_table(app: App, files: Paged<Shelved>, selection: Selection) 
             rows,
             cell,
             move |t| {
-                t.has_more(move || files.has_more())
+                remember_rows(t, handle, anchor, move || files.len())
+                    .has_more(move || files.has_more())
                     .loading(move || files.loading.get())
                     .on_load_more(move || files.more())
                     .row_classes(move || {
@@ -205,11 +270,32 @@ pub(super) fn file_table(app: App, files: Paged<Shelved>, selection: Selection) 
                                 id,
                                 !item.file.is_favorite,
                             ));
-                        } else if selection.active.get_untracked() {
-                            selection.toggle(id);
                         } else {
-                            app.page.set(Page::File(id));
+                            press_file(app, id, selection);
                         }
+                    })
+                    .on_context_menu(move |hit: &DataTableContextMenu| {
+                        let Some(api) = handle.api::<DataTableApi>() else {
+                            return;
+                        };
+                        let Some(item) = hit.row.and_then(|row| files.at(row as usize)) else {
+                            api.clear_menu_target();
+                            return;
+                        };
+                        let id = item.file.id;
+                        let closed = popup_menu_at(
+                            vec![
+                                MenuItem::new("View details")
+                                    .on_select(move || app.page.set(Page::File(id))),
+                            ],
+                            point(hit.x, hit.y),
+                        );
+                        spawn(async move {
+                            closed.await;
+                            if let Some(api) = handle.api::<DataTableApi>() {
+                                api.clear_menu_target();
+                            }
+                        });
                     })
             },
         ))
@@ -223,6 +309,7 @@ pub(super) fn group_shelf(
     groups: Signal<Option<Rc<Result<Vec<Collection>, String>>>>,
     opened: Signal<Option<Opened>>,
     grid: bool,
+    anchor: Stored<usize>,
 ) -> AnyElement {
     let list = groups.get_untracked();
     let Some(Ok(list)) = list.as_deref() else {
@@ -262,17 +349,17 @@ pub(super) fn group_shelf(
                 move || rows.clone(),
                 |_| view().into_element(),
                 move |t| {
-                    t.on_row_press(move |p: &nsh_base::DataTablePress| {
-                        if let Some((g, _)) = open_row.get(p.row as usize) {
-                            opened.set(Some(g.clone()));
-                        }
-                    })
+                    remember_rows(t, component_ref::<DataTable>(), anchor, move || n).on_row_press(
+                        move |p: &nsh_base::DataTablePress| {
+                            if let Some((g, _)) = open_row.get(p.row as usize) {
+                                opened.set(Some(g.clone()));
+                            }
+                        },
+                    )
                 },
             ))
             .into_element();
     }
-    let width = signal(0f32);
-    let columns = computed(move || columns_for(width.get() - inset().0 * 2.));
     let list = virtual_list(n, move |at: Position| {
         let items = items.clone();
         dynamic(move || {
@@ -288,6 +375,7 @@ pub(super) fn group_shelf(
                         .accessibility_label(title_text.clone())
                         .on_press(move || opened.set(Some(group.clone())))
                         .w_full()
+                        .aspect_ratio(0.75)
                         .rounded(px(RADIUS_SM))
                         .transition()
                         .duration(tween(INSTANT))
@@ -318,21 +406,8 @@ pub(super) fn group_shelf(
                 .child(caption(count))
                 .into_element()
         })
-    })
-    .columns(move || columns.get())
-    .column_gap(px(GRID_GAP_X))
-    .row_gap(px(GRID_GAP_Y))
-    .content_padding_x(inset())
-    .content_padding_top(px(4.))
-    .content_padding_bottom(px(32.))
-    .flex_1()
-    .min_h_0();
-    view()
-        .flex_1()
-        .min_h_0()
-        .on_layout(move |b: &Bounds<Points>| width.set(b.size.width.0))
-        .child(list)
-        .into_element()
+    });
+    slip_grid(list, n, anchor)
 }
 
 /// Three files picked at random from what the shelf answers, with Shuffle
@@ -343,6 +418,7 @@ pub(super) fn lucky_picks(
     query: Signal<String>,
     chips: Signal<Vec<search::Chip>>,
     open: Signal<bool>,
+    selection: Selection,
 ) -> AnyElement {
     let round = signal(0u32);
     view()
@@ -378,30 +454,10 @@ pub(super) fn lucky_picks(
                             view()
                                 .gap(px(6.))
                                 .min_w_0()
-                                .child(
-                                    nsh_base::button()
-                                        .accessibility_label(file.display_name.clone())
-                                        .on_press(move || {
-                                            open.set(false);
-                                            app.page.set(Page::File(id));
-                                        })
-                                        .w_full()
-                                        .rounded(px(RADIUS_SM))
-                                        .hover(|s| s.opacity(0.86))
-                                        .focus(|s| {
-                                            s.outline(px(2.))
-                                                .outline_color(accent)
-                                                .outline_offset(px(2.))
-                                        })
-                                        .child(detail::slip_face(
-                                            app,
-                                            id,
-                                            file.display_name.clone(),
-                                            format_of(file),
-                                            file.progress.clone().unwrap_or_default(),
-                                            false,
-                                        )),
-                                )
+                                .child(detail::card_face(app, file, move || {
+                                    open.set(false);
+                                    press_file(app, id, selection);
+                                }))
                                 .child(
                                     label(file.display_name.clone())
                                         .font_weight(FontWeight::MEDIUM)
@@ -514,7 +570,7 @@ fn file_menu(app: App, file: &FileListItem, selection: Selection, about: View) -
     let on = file.is_favorite;
     let path = file.path.clone();
     context_menu(about)
-        .child(menu_item("Open", Some(Icon::Open), move || {
+        .child(menu_item("View details", Some(Icon::Open), move || {
             app.page.set(Page::File(id))
         }))
         .child(menu_item(
@@ -549,7 +605,9 @@ fn slip(app: App, item: &Shelved, selection: Selection) -> AnyElement {
     let authors = authors_of(file);
     let cover = view()
         .w_full()
-        .child(detail::card_face(app, file))
+        .child(detail::card_face(app, file, move || {
+            press_file(app, id, selection)
+        }))
         .child(view().absolute().top(px(8.)).left(px(8.)).child(favorite(
             app,
             id,

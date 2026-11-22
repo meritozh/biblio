@@ -137,11 +137,17 @@ fn with_db<T>(path: &Path, action: impl AsyncFnOnce(Library) -> T) -> T {
     out
 }
 
+fn view_details(window: &mut Headless, name: &str) -> Result<(), String> {
+    let card = format!("label:{name}");
+    window.wait_for(&card)?;
+    window.right_click(&card)?;
+    window.wait_for("label:View details")?;
+    window.press("label:View details")?;
+    window.wait_for("label:Open file")
+}
+
 fn open(window: &mut Headless, name: &str) -> Result<(), String> {
-    let detail = format!("label:{name}");
-    window.wait_for(&detail)?;
-    window.press(&detail)?;
-    window.wait_for("label:Open file")?;
+    view_details(window, name)?;
     window.press("label:Open file")
 }
 
@@ -349,12 +355,13 @@ fn retry_after_failure_never_launches_an_abandoned_open() -> Result<(), String> 
     w.press("label:Back to library")?;
     w.wait_for("label:Search library")?;
     tx.send_replace(CopyState::Ready(path.clone()));
-    w.press("label:Book")?;
-    w.wait_for("label:Open file")?;
+    view_details(&mut w, "Book")?;
     assert!(calls.lock().unwrap().is_empty());
-    w.press("label:Open file")?;
+    w.press("label:Back to library")?;
+    w.wait_for("label:Book")?;
+    w.press("label:Book")?;
     w.wait_until("the active open launches exactly once", WAIT, |s| {
-        calls.lock().unwrap().len() == 1 && s.matches("label:Open file").unwrap_or(false)
+        calls.lock().unwrap().len() == 1 && s.matches("id:shelf >> label:Book").unwrap_or(false)
     })?;
     assert_eq!(
         *calls.lock().unwrap(),
