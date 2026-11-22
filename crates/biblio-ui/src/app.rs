@@ -1,4 +1,4 @@
-use crate::{admin, catalog, detail, imports, settings, ui::*};
+use crate::{admin, catalog, detail, imports, reader, settings, ui::*};
 use biblio_core::{
     Library,
     commands::{category::category_list, processing::FilePreparedImport},
@@ -33,6 +33,7 @@ pub fn run_service<T: Send + 'static>(
 pub enum Page {
     Library,
     File(i64),
+    Reader(i64),
     Import,
     Categories,
     Tags,
@@ -61,7 +62,9 @@ pub struct App {
     /// The last request a search field took, so one made before the field
     /// existed (from another page) is taken when it appears.
     pub found: Stored<u64>,
-    owner: Owner,
+    pub reader: reader::navigation::Navigation,
+    pub writes: Stored<reader::writes::ReaderWrites>,
+    pub owner: Owner,
 }
 impl App {
     pub fn db(self) -> Library {
@@ -179,7 +182,9 @@ impl App {
     }
 }
 
-pub fn start(dir: PathBuf) -> AnyElement {
+pub fn start(dir: PathBuf, writes: reader::writes::ReaderWrites) -> AnyElement {
+    stored(reader::writes::WindowWriter(writes.clone()));
+    let writes = stored(writes);
     let (tx, mut rx) = mpsc::unbounded_channel();
     let open = run_service(async move {
         use biblio_core::commands::settings::settings_get;
@@ -266,6 +271,8 @@ pub fn start(dir: PathBuf) -> AnyElement {
                     analyzing,
                     sources,
                     roots: stored(std::collections::HashMap::new()),
+                    reader: reader::navigation::Navigation::new(),
+                    writes,
                     owner: Owner::current(),
                 })
             }),
@@ -322,9 +329,9 @@ fn chrome(app: App, menu: Signal<bool>) {
                 MenuItem::role(MenuRole::Paste),
                 MenuItem::role(MenuRole::SelectAll),
                 MenuItem::separator(),
-                MenuItem::new("Find in Library")
+                MenuItem::new("Find")
                     .shortcut("mod+f")
-                    .on_select(move || find(app, menu)),
+                    .on_select(move || find_on_current_page(app, menu)),
             ],
         ),
         MenuItem::submenu(
@@ -339,9 +346,8 @@ fn chrome(app: App, menu: Signal<bool>) {
                 MenuItem::new("Back to Library")
                     .shortcut("mod+[")
                     .on_select(move || {
-                        if matches!(app.page.get_untracked(), Page::File(_)) {
-                            go(Page::Library);
-                        }
+                        menu.set(false);
+                        reader::navigation::back(app);
                     }),
                 MenuItem::separator(),
                 MenuItem::new("Categories").on_select(move || go(Page::Categories)),
@@ -371,13 +377,22 @@ fn find(app: App, menu: Signal<bool>) {
     app.find.update(|n| *n += 1);
 }
 
+fn find_on_current_page(app: App, menu: Signal<bool>) {
+    if matches!(app.page.get_untracked(), Page::Reader(_)) {
+        menu.set(false);
+        app.reader.find.update(|n| *n += 1);
+    } else {
+        find(app, menu);
+    }
+}
+
 fn shortcuts(app: App, menu: Signal<bool>) {
     let go = move |page: Page| {
         menu.set(false);
         app.page.set(page);
     };
     on_key("mod+k", move |_| find(app, menu));
-    on_key("mod+f", move |_| find(app, menu));
+    on_key("mod+f", move |_| find_on_current_page(app, menu));
     on_key("mod+i", move |_| go(Page::Import));
     on_key("mod+,", move |_| go(Page::Settings));
     on_key("mod+1", move |_| {
@@ -385,9 +400,8 @@ fn shortcuts(app: App, menu: Signal<bool>) {
         go(Page::Library);
     });
     on_key("mod+[", move |_| {
-        if matches!(app.page.get_untracked(), Page::File(_)) {
-            go(Page::Library);
-        }
+        menu.set(false);
+        reader::navigation::back(app);
     });
 }
 
@@ -421,8 +435,10 @@ fn workspace(app: App) -> AnyElement {
     let narrow = computed(compact);
     let page = view().flex_1().min_w_0().min_h_0().child(dynamic(move || {
         let page = app.page.get();
+        app.reader.page_epoch.with(|n| *n += 1);
         untracked(|| match page {
             Page::Library => catalog::screen(app),
+            Page::Reader(id) => reader::navigation::screen(app, id),
             Page::File(id) => detail::screen(app, id),
             Page::Import => imports::screen(app),
             Page::Settings => settings::screen(app),

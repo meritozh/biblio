@@ -2,7 +2,7 @@
     all(target_os = "windows", not(debug_assertions)),
     windows_subsystem = "windows"
 )]
-use biblio_ui::{APP_ID, root};
+use biblio_ui::{APP_ID, root_with_reader_writes};
 #[cfg(target_os = "linux")]
 use nsh_platform_linux as platform;
 #[cfg(target_os = "macos")]
@@ -15,7 +15,7 @@ fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
         .map(std::path::PathBuf::from)
         .or_else(|| dirs::config_dir().map(|base| base.join(APP_ID)))
         .ok_or("Cannot locate the application configuration directory")?;
-    let root = root(&dir)?;
+    let (root, writes) = root_with_reader_writes(&dir)?;
     let status = platform::run_app(
         platform::AppSource::Rust(root),
         platform::AppOptions {
@@ -26,5 +26,6 @@ fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
             ..Default::default()
         },
     );
+    writes.drain()?;
     Ok(std::process::Termination::report(status))
 }

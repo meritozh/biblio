@@ -256,7 +256,7 @@ fn file_page(app: App, file: &api::FileWithDetails) -> AnyElement {
     let favorite = file.is_favorite;
     let header = header_bar(
         icon_button("Back to library", Icon::Back, Some("⌘["), move || {
-            app.page.set(Page::Library)
+            crate::reader::navigation::back(app)
         })
         .into_element(),
         file.display_name.clone(),
@@ -285,7 +285,13 @@ fn file_page(app: App, file: &api::FileWithDetails) -> AnyElement {
                 Variant::Default,
                 ButtonSize::Md,
                 Some(Icon::Open),
-                move || app.job(cache::cache_open(app.db(), id), |_| {}),
+                move || {
+                    crate::reader::navigation::activate(
+                        app,
+                        id,
+                        biblio_core::commands::text_open::Entry::DetailOpen,
+                    )
+                },
             )
             .w_full(),
         )
