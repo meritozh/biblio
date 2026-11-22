@@ -8,6 +8,76 @@
 
 use crate::Library;
 use serde::Serialize;
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
+use tokio::sync::watch;
+
+pub use crate::services::download_worker::CopyState;
+
+/// Read the current value before waiting for a change. Dropping this subscription
+/// leaves the shared transfer running for later opens and manual downloads.
+pub async fn readable_copy(
+    app: &Library,
+    file_id: i64,
+) -> Result<watch::Receiver<CopyState>, String> {
+    // A cache publication cannot pass between our disk check and registration.
+    // Transfers proceed independently while readers resolve their paths.
+    let _read = app.cache_access.read().await;
+    let (cache, path, kind): (Option<String>, String, String) = sqlx::query_as(
+        "SELECT local_cache_path, path, COALESCE(storage_kind, 'local') FROM files WHERE id = ?",
+    )
+    .bind(file_id)
+    .fetch_optional(&app.pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or("FILE_NOT_FOUND")?;
+    let roots = super::settings::load_path_roots(&app.pool).await?;
+    let cache = cache.as_deref().filter(|_| kind == "remote");
+    if let Some(target) = copy_path(cache, &path, &kind, &roots) {
+        match check_readable(&target).await {
+            Ok(()) => {
+                let absolute = std::path::absolute(target).map_err(|e| e.to_string())?;
+                return Ok(watch::channel(CopyState::Ready(absolute)).1);
+            }
+            Err(e) if kind == "remote" && e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("Cannot read {}: {e}", target.display())),
+        }
+    }
+    app.queues.download.enqueue(file_id)
+}
+
+async fn check_readable(path: &Path) -> io::Result<()> {
+    if !tokio::fs::metadata(path).await?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    tokio::fs::File::open(path).await?;
+    Ok(())
+}
+
+fn copy_path(
+    cache: Option<&str>,
+    path: &str,
+    kind: &str,
+    roots: &super::settings::PathRoots,
+) -> Option<PathBuf> {
+    if let Some(cache) = cache.filter(|s| !s.is_empty()) {
+        Some(crate::path_resolve::cache_to_absolute(
+            cache,
+            &roots.storage_path,
+        ))
+    } else if kind == "local" {
+        Some(crate::path_resolve::to_absolute(
+            kind,
+            path,
+            &roots.storage_path,
+            &roots.app_root,
+        ))
+    } else {
+        None
+    }
+}
 
 #[derive(Serialize)]
 pub struct CacheActionResponse {
@@ -37,6 +107,7 @@ pub struct CacheActionResponse {
 /// opener can still fail (no default app for the extension, or the
 /// configured app isn't installed); that error is surfaced as-is.
 pub async fn cache_open(app: Library, file_id: i64) -> Result<CacheActionResponse, String> {
+    let _read = app.cache_access.read().await;
     let pool = app.pool.clone();
 
     let row: Option<(Option<String>, String, String, Option<String>)> = sqlx::query_as(
@@ -57,19 +128,8 @@ pub async fn cache_open(app: Library, file_id: i64) -> Result<CacheActionRespons
     // Stored paths are relative to storage_path (cache + local rows) or
     // app_root (remote rows). Resolve to absolute before opening.
     let roots = super::settings::load_path_roots(&pool).await?;
-    let target = match (local_cache_path.as_deref(), storage_kind.as_str()) {
-        (Some(cache), _) if !cache.is_empty() => {
-            crate::path_resolve::cache_to_absolute(cache, &roots.storage_path)
-                .to_string_lossy()
-                .to_string()
-        }
-        (_, "local") => crate::path_resolve::to_absolute(
-            "local", &path, &roots.storage_path, &roots.app_root,
-        )
-        .to_string_lossy()
-        .to_string(),
-        _ => return Err("CACHE_NOT_FOUND".to_string()),
-    };
+    let target = copy_path(local_cache_path.as_deref(), &path, &storage_kind, &roots)
+        .ok_or("CACHE_NOT_FOUND")?;
 
     let configured_app = extract_open_app(view_config.as_deref());
 
@@ -77,7 +137,7 @@ pub async fn cache_open(app: Library, file_id: i64) -> Result<CacheActionRespons
         Some(program) => open::with_detached(target, program),
         None => open::that_detached(target),
     }
-        .map_err(|e| format!("Failed to open: {e}"))?;
+    .map_err(|e| format!("Failed to open: {e}"))?;
 
     Ok(CacheActionResponse { success: true })
 }
@@ -106,6 +166,7 @@ fn extract_open_app(view_config: Option<&str>) -> Option<String> {
 /// invariant "the file is gone" is already satisfied — the user just
 /// wants the column cleaned up).
 pub async fn cache_clear(app: Library, file_id: i64) -> Result<CacheActionResponse, String> {
+    let _write = app.cache_access.write().await;
     let pool = app.pool.clone();
 
     let row: Option<(Option<String>,)> =

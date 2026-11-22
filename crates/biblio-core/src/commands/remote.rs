@@ -255,13 +255,8 @@ pub async fn file_download_from_remote(
     app: crate::Library,
     file_ids: Vec<i64>,
 ) -> Result<(), String> {
-    use crate::services::download_worker::DownloadJob;
-
-    let sender = &app.queues.download;
     for file_id in file_ids {
-        sender
-            .send(DownloadJob { file_id })
-            .map_err(|e| format!("Download queue is closed: {e}"))?;
+        app.queues.download.enqueue(file_id)?;
     }
     Ok(())
 }

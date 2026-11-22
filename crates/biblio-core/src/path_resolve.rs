@@ -7,8 +7,8 @@
 //!
 //! Every site that needs an absolute filesystem path (open, stat, read,
 //! delete, archive operations) goes through these helpers. Every site
-//! that writes a path to the DB calls the inverse (`to_relative`) to
-//! strip the root prefix first.
+//! that stores an absolute local path strips the root prefix first. Cache
+//! publication builds its relative filename directly.
 //!
 //! Resolution is defensive: if a stored value is already absolute
 //! (starts with `/`), it passes through unchanged. This survives:
@@ -71,11 +71,6 @@ pub fn cache_to_absolute(stored: &str, storage_path: &str) -> PathBuf {
 /// `path` must be absolute and canonicalized by the caller — this is a
 /// pure string operation, not a filesystem walk.
 pub fn to_relative_local(absolute: &str, storage_path: &str) -> String {
-    strip_root(absolute, storage_path)
-}
-
-/// Inverse for cache writes. Cache always lives under `storage_path`.
-pub fn to_relative_cache(absolute: &str, storage_path: &str) -> String {
     strip_root(absolute, storage_path)
 }
 

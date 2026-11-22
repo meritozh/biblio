@@ -10,6 +10,7 @@ pub struct ServiceState {
     pub(crate) transfer_dir: PathBuf,
     _profile_lock: std::fs::File,
     pub(crate) pool: sqlx::SqlitePool,
+    pub(crate) cache_access: tokio::sync::RwLock<()>,
     pub(crate) covers: PreparedCoverCache,
     pub(crate) cancel: Arc<ProcessingCancel>,
     events: Box<EventSink>,
@@ -30,7 +31,7 @@ impl ServiceState {
 
 pub(crate) struct Queues {
     pub upload: UnboundedSender<upload_worker::UploadJob>,
-    pub download: UnboundedSender<download_worker::DownloadJob>,
+    pub download: download_worker::DownloadQueue,
     pub delete: UnboundedSender<delete_worker::DeleteJob>,
     pub reencrypt: UnboundedSender<reencrypt_worker::ReencryptJob>,
     pub import: UnboundedSender<import_worker::ImportJob>,
@@ -75,6 +76,7 @@ impl Library {
         upload_worker::sweep_stale_upload_temps(&transfer_dir);
         let services = Arc::new(ServiceState {
             pool,
+            cache_access: Default::default(),
             config_dir,
             transfer_dir,
             _profile_lock: profile_lock,
