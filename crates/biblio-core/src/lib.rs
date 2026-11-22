@@ -7,6 +7,7 @@ mod pipeline;
 mod providers;
 mod schema;
 mod services;
+pub mod text_reader;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
