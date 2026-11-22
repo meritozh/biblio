@@ -657,6 +657,12 @@ fn scrolls_both_ways_after_a_distant_contents_jump() -> Result<(), String> {
         w.press("label:Contents")?;
         w.press(&format!("label:/^第{chapter}章 旅途 ·/"))?;
         w.wait_for(&format!("id:reader-viewport >> text:第{chapter}章 旅途"))?;
+        // The headless drag targets an absolute offset. Let the reader prepend
+        // the preceding window before the gesture picks its destination.
+        w.wait_for(&format!(
+            "id:reader-viewport >> text:/段落{}-0999/",
+            chapter - 1
+        ))?;
         w.scroll("id:reader-viewport", px(1150.))?;
         w.wait_for(&format!("id:reader-viewport >> text:/段落{chapter}-0025/"))?;
         w.scroll("id:reader-viewport", px(-1600.))?;
