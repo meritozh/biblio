@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 biblio-ui = { path = "crates/biblio-ui" }
-dirs = "6"
+dirs = "7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos = { version = "=0.4.0", default-features = false }
